@@ -196,8 +196,8 @@ if os.getenv("RAILWAY_ENVIRONMENT") or os.getenv("RRI_STORAGE_DIR"):
 else:
     # Local development: use Google Drive via CloudStorage FUSE mount
     GDRIVE_BASE = Path.home() / "Library/CloudStorage/GoogleDrive-kad@rabidraccoonintelligence.org/My Drive"
-    LOGS_DIR = GDRIVE_BASE / "Logs"
-    OUTPUTS_DIR = GDRIVE_BASE / "Anansi/Raccoon Outputs"
+    LOGS_DIR = GDRIVE_BASE / "Logs_v2_live"
+    OUTPUTS_DIR = GDRIVE_BASE / "Logs_v2_live"
     CONTEXT_FILE = GDRIVE_BASE / "RRI_Context/boot_context.md"
 
 def load_boot_context():
