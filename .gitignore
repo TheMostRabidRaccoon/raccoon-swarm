@@ -1,0 +1,32 @@
+# Environment
+.env
+.env.local
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+venv/
+.venv/
+
+# macOS
+.DS_Store
+
+# Sensitive / runtime data
+ideas.json
+vault/
+raccoon_memory/
+
+# Runtime artifacts
+*.log
+*.mp3
+/tmp/
+
+# Output files (generated at runtime)
+*.docx
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
