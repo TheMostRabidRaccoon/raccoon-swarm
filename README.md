@@ -1,6 +1,6 @@
 # Raccoon Swarm
 
-**Repo:** `https://github.com/rabidraccoon/raccoon-swarm` (private)
+**Repo:** `https://github.com/TheMostRabidRaccoon/raccoon-swarm` (private)
 
 **Rabid Raccoon Intelligence, LLC** — Multi-Model AI Orchestration Server
 
@@ -42,7 +42,7 @@ Python, Flask, SSE, ThreadPoolExecutor, Anthropic/OpenAI/Google GenAI/XAI/Perple
 
 ```bash
 # Clone
-git clone https://github.com/rabidraccoon/raccoon-swarm.git
+git clone https://github.com/TheMostRabidRaccoon/raccoon-swarm.git
 cd raccoon-swarm
 
 # Install dependencies
