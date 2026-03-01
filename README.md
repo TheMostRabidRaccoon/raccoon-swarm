@@ -76,6 +76,21 @@ python3 raccoon_swarm_server.py
 - [ ] Session resume (pick up an interrupted loop from where it left off)
 - [ ] Swarm-to-swarm protocol (formalized cross-model routing with Claude as hub conductor)
 
+## About the Builder
+
+**Who I am**
+
+Builder. I make AI systems that solve real problems for real people — not demos, not prototypes, working products.
+
+**What I build**
+
+- **Legal tech** — AI tools that help legal professionals work faster without losing accuracy
+- **Sports analytics** — data-driven systems for competitive edges
+- **Prosody & speech** — teaching machines how humans actually talk — rhythm, tone, emphasis
+- **AI agent swarms** — multi-agent systems that coordinate to handle complex workflows
+
+I build the systems you already wish existed.
+
 ---
 
 *Rabid Raccoon Intelligence, LLC — Cognitive Partnership, Not a Tool*
