@@ -1,0 +1,124 @@
+{
+  "last_updated": "2026-03-26T02:30:00.000000",
+  "session_count": 1,
+  "resolved_positions": [
+    {
+      "topic": "Persistent memory architecture pattern",
+      "consensus": "Model-agnostic cognitive persistence layer with autonomous semantic compression and retrieval. Memory lives on user-owned hardware, not inside any model provider's walled garden. JSON state file is Phase 1, vector store with embeddings is Phase 2.",
+      "confidence": "high",
+      "session": "2026-03-26T02:30:00.000000"
+    },
+    {
+      "topic": "Memory ingestion must be distilled not raw",
+      "consensus": "Raw conversation threads will bloat and pollute retrieval. Ingestion must pass through a distillation agent that extracts insights, decisions, patterns, hypotheses, and relationships — not raw logs.",
+      "confidence": "high",
+      "session": "2026-03-26T02:30:00.000000"
+    },
+    {
+      "topic": "Swarm Cortex naming",
+      "consensus": "Internal codename 'The Hoard' (Grok). Technical name 'Swarm Cortex' or 'Mycelium Layer' (Gemini). DO NOT reuse 'Anansi' — that name is reserved for the clinical edge system that layers onto EMRs.",
+      "confidence": "high",
+      "session": "2026-03-26T02:30:00.000000"
+    },
+    {
+      "topic": "Retrieval must be hybrid not just semantic",
+      "consensus": "Pure vector search is insufficient. Need semantic similarity + metadata filters (time, domain, source model) + relational links (graph edges). This beats 95% of existing RAG systems.",
+      "confidence": "high",
+      "session": "2026-03-26T02:30:00.000000"
+    },
+    {
+      "topic": "Headless server is the right infrastructure play",
+      "consensus": "Blank laptop in Camden as headless server. Keeps vector store off third-party infrastructure. Strengthens legal position under third-party doctrine. Must wrap in Tailscale or Cloudflare tunnel for remote access.",
+      "confidence": "high",
+      "session": "2026-03-26T02:30:00.000000"
+    }
+  ],
+  "unresolved_questions": [
+    {
+      "question": "What is the exact JSON schema for the Archivist Agent ingestion step, incorporating cognitive state tags, dead-end markers, and multimodal pointers?",
+      "raised_by": "Gemini",
+      "session": "2026-03-26T02:30:00.000000",
+      "attempts": 0
+    },
+    {
+      "question": "Should the Archivist run passively at session close or only on explicit //ARCHIVE trigger? Claude argued for passive mode automatic at natural session close points.",
+      "raised_by": "Claude",
+      "session": "2026-03-26T02:30:00.000000",
+      "attempts": 0
+    },
+    {
+      "question": "How to handle multimodal memory — visual artifacts like frame outputs and heatmaps need semantic descriptions embedded alongside local file path pointers",
+      "raised_by": "Gemini",
+      "session": "2026-03-26T02:30:00.000000",
+      "attempts": 0
+    },
+    {
+      "question": "What is the right memory tier promotion/decay strategy? Hierarchical: Ephemeral → Thread summaries → Core insights → Principles graph. How does auto-promote/demote work in practice?",
+      "raised_by": "swarm",
+      "session": "2026-03-26T02:30:00.000000",
+      "attempts": 0
+    }
+  ],
+  "next_pursuits": [
+    {
+      "direction": "Design the Archivist Agent spec — the prompt, extraction schema, and scoring rubric for what gets remembered vs discarded. This is the heart of the system, everything else is plumbing.",
+      "priority": "high",
+      "proposed_by": "swarm",
+      "session": "2026-03-26T02:30:00.000000"
+    },
+    {
+      "direction": "Stand up ChromaDB + FastAPI on the headless laptop with store_insight() and retrieve_context(query, filters) endpoints. Wrap in Tailscale for remote access.",
+      "priority": "high",
+      "proposed_by": "Grok",
+      "session": "2026-03-26T02:30:00.000000"
+    },
+    {
+      "direction": "Implement state-aware retrieval — tag memories with cognitive state at ingestion time (Building/Depleted/Crisis-Sharp) so retrieval adapts to current state",
+      "priority": "medium",
+      "proposed_by": "Gemini",
+      "session": "2026-03-26T02:30:00.000000"
+    },
+    {
+      "direction": "Build memory synthesis — not just 'here are 5 related past thoughts' but 'your thinking evolved from A to B to C, current best model = C'. Longitudinal reasoning across sessions.",
+      "priority": "medium",
+      "proposed_by": "GPT",
+      "session": "2026-03-26T02:30:00.000000"
+    },
+    {
+      "direction": "Add Dead End tagging to the Archivist — when the swarm hits a wall, mark the concept as anti-pattern so we don't reinvent failed approaches",
+      "priority": "medium",
+      "proposed_by": "Gemini",
+      "session": "2026-03-26T02:30:00.000000"
+    }
+  ],
+  "evolving_frameworks": [
+    {
+      "name": "The Hoard Architecture",
+      "version": 1,
+      "description": "Three-layer cognitive infrastructure: (1) JSON state file as hippocampus for immediate cross-session memory, (2) Vector store with ChromaDB for semantic retrieval across all historical sessions, (3) Graph layer (NetworkX/Neo4j) for explicit relational links between concepts. Swarm agents do the archiving autonomously — not the user.",
+      "session": "2026-03-26T02:30:00.000000"
+    },
+    {
+      "name": "Hierarchical Memory Tiers",
+      "version": 1,
+      "description": "Memory lifecycle: Raw Thread → Summary → Insight → Principle → Network. Items auto-promote based on importance scoring and recurrence. Items decay/deprioritize when irrelevant. Contradictions trigger reconciliation. Weekly memory reflection agent scans for stale or contradictory entries.",
+      "session": "2026-03-26T02:30:00.000000"
+    },
+    {
+      "name": "Model-Agnostic Exocortex",
+      "version": 1,
+      "description": "The core insight: most people build memory FOR a model. RRI builds memory for a MIND that uses models. Claude threads, Grok threads, GPT threads, Gemini threads all contribute to and pull from the same retrieval layer. Persistent identity that spans platforms. User-owned hardware keeps data sovereignty intact.",
+      "session": "2026-03-26T02:30:00.000000"
+    }
+  ],
+  "session_log": [
+    {
+      "timestamp": "2026-03-26T02:30:00.000000",
+      "query": "Cross-model persistent memory architecture — The Hoard / Swarm Cortex design session. Full council (Claude, Grok, GPT, Gemini) converged on model-agnostic cognitive persistence layer.",
+      "resolved_count": 5,
+      "unresolved_count": 4,
+      "pursuits_count": 5,
+      "note": "Manually seeded from off-platform swarm session (phone copy-paste). This is Session Zero — the session that designed the memory system itself."
+    }
+  ]
+}

@@ -218,6 +218,7 @@ def save_boot_context(text):
 # PERSISTENT SWARM MEMORY (cross-session state)
 # ============================================
 MEMORY_FILE = (STORAGE_DIR if os.getenv("RAILWAY_ENVIRONMENT") or os.getenv("RRI_STORAGE_DIR") else Path(".")) / "swarm_memory.json"
+MEMORY_SEED_FILE = Path(__file__).parent / "swarm_memory_seed.json"
 
 _EMPTY_MEMORY = {
     "last_updated": None,
@@ -237,10 +238,21 @@ MEMORY_MAX_FRAMEWORKS = 20
 MEMORY_MAX_SESSION_LOG = 100
 
 def load_swarm_memory():
-    """Load the swarm's persistent memory from disk."""
-    if MEMORY_FILE.exists():
+    """Load the swarm's persistent memory from disk.
+
+    Bootstrap order: swarm_memory.json (runtime) > swarm_memory_seed.json (repo) > empty.
+    """
+    target = MEMORY_FILE
+    if not target.exists() and MEMORY_SEED_FILE.exists():
+        # First run: bootstrap from seed
+        import shutil
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(MEMORY_SEED_FILE, target)
+        logger.info(f"Bootstrapped swarm memory from seed: {MEMORY_SEED_FILE}")
+
+    if target.exists():
         try:
-            with open(MEMORY_FILE, "r") as f:
+            with open(target, "r") as f:
                 mem = json.load(f)
             # Ensure all keys exist (forward-compat)
             for key, default in _EMPTY_MEMORY.items():
