@@ -9,6 +9,7 @@ Features:
 - Human-in-the-Loop: Join the round table as a 6th participant
 - Persistent Swarm Memory: Cross-session state — the swarm remembers what it argued about
 - Headless Mode: The swarm wakes itself up and continues from memory
+- Swarm Daemon: Autonomous background loop — the swarm thinks while you sleep
 - Voice Output: ElevenLabs TTS per model with distinct voice casting
 - Real-time SSE streaming for loop mode
 - Password-protected authentication (for hosted deployment)
@@ -2438,57 +2439,41 @@ def get_pursuits():
 # ============================================
 # HEADLESS MODE — The swarm wakes itself up
 # ============================================
-@app.route("/headless", methods=["POST"])
-@require_auth
-def headless_run():
-    """Run a headless swarm session. The swarm picks its own topic from memory.
 
-    Optional JSON body:
-    - override_query: Force a specific query instead of auto-selecting
-    - rounds: Number of rounds (default 3, max 10)
-    - models: List of model keys to use (default all)
-
-    The swarm reads its persistent memory, picks the highest-priority
-    next pursuit or unresolved question, and runs a full loop autonomously.
-    """
-    data = request.get_json() or {}
-    override_query = data.get("override_query", "").strip()
-    num_rounds = min(data.get("rounds", 3), 10)
-    selected_models = data.get("models", [])
-
-    memory = load_swarm_memory()
-
+def select_next_query(memory, override_query=None):
+    """Pick the next query from swarm memory. Returns (query, source) or (None, None)."""
     if override_query:
-        query = override_query
-        source = "override"
-    elif memory.get("next_pursuits"):
-        # Pick highest priority pursuit
+        return override_query, "override"
+
+    if memory.get("next_pursuits"):
         pursuits = memory["next_pursuits"]
         high = [p for p in pursuits if p.get("priority") == "high"]
         chosen = high[0] if high else pursuits[0]
-        query = f"Continue the swarm's investigation: {chosen['direction']}"
-        source = "next_pursuit"
-    elif memory.get("unresolved_questions"):
-        # Pick most-attempted unresolved question
+        return f"Continue the swarm's investigation: {chosen['direction']}", "next_pursuit"
+
+    if memory.get("unresolved_questions"):
         unresolved = sorted(memory["unresolved_questions"],
                           key=lambda q: q.get("attempts", 0), reverse=True)
         chosen = unresolved[0]
-        query = f"Resolve this open question from a previous session: {chosen['question']}"
-        source = "unresolved_question"
-    else:
-        return jsonify({
-            "error": "No memory to draw from. Run at least one session first, "
-                     "or provide override_query."
-        }), 400
+        return f"Resolve this open question from a previous session: {chosen['question']}", "unresolved_question"
 
-    # Reuse the loop machinery
-    active_loop_models = SWARM_LOOP
-    if selected_models:
-        active_loop_models = {k: v for k, v in SWARM_LOOP.items() if k.lower() in selected_models}
+    return None, None
 
-    session_id = f"headless_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+def run_headless_session(query, source, num_rounds=3, active_loop_models=None, session_id=None):
+    """Run a complete headless swarm session. Returns session results dict.
+
+    Can be called from the /headless endpoint or from the daemon.
+    Creates its own SSE queue for streaming, runs the loop, persists memory.
+    """
+    if active_loop_models is None:
+        active_loop_models = SWARM_LOOP
+    if session_id is None:
+        session_id = f"headless_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+
     q = queue.Queue()
     loop_sessions[session_id] = q
+
+    result_holder = {}
 
     def headless_worker():
         try:
@@ -2526,6 +2511,7 @@ def headless_run():
 
             # Persist memory
             q.put(("memory_update_start", {}))
+            delta = None
             try:
                 delta = extract_memory_delta(query, all_rounds, synthesis)
                 updated_memory = update_swarm_memory(query, delta)
@@ -2542,18 +2528,55 @@ def headless_run():
 
             complete_data = {
                 "duration": duration, "log_file": log_file, "docx_file": docx_file,
-                "source": source, "query": query
+                "source": source, "query": query, "session_id": session_id
             }
             if docx_file and docx_file != "docx_unavailable":
                 complete_data["download_url"] = f"/download/{docx_file}"
             q.put(("complete", complete_data))
+
+            result_holder["result"] = complete_data
+            result_holder["delta"] = delta
         except Exception as e:
             logger.error(f"Headless loop error: {e}")
             q.put(("error_msg", {"message": str(e)}))
+            result_holder["error"] = str(e)
         finally:
             q.put(("DONE", None))
 
-    threading.Thread(target=headless_worker, daemon=True).start()
+    t = threading.Thread(target=headless_worker, daemon=True)
+    t.start()
+
+    return session_id, q, t, result_holder
+
+@app.route("/headless", methods=["POST"])
+@require_auth
+def headless_run():
+    """Run a headless swarm session. The swarm picks its own topic from memory.
+
+    Optional JSON body:
+    - override_query: Force a specific query instead of auto-selecting
+    - rounds: Number of rounds (default 3, max 10)
+    - models: List of model keys to use (default all)
+    """
+    data = request.get_json() or {}
+    override_query = data.get("override_query", "").strip()
+    num_rounds = min(data.get("rounds", 3), 10)
+    selected_models = data.get("models", [])
+
+    memory = load_swarm_memory()
+    query, source = select_next_query(memory, override_query or None)
+
+    if query is None:
+        return jsonify({
+            "error": "No memory to draw from. Run at least one session first, "
+                     "or provide override_query."
+        }), 400
+
+    active_loop_models = SWARM_LOOP
+    if selected_models:
+        active_loop_models = {k: v for k, v in SWARM_LOOP.items() if k.lower() in selected_models}
+
+    session_id, _, _, _ = run_headless_session(query, source, num_rounds, active_loop_models)
 
     return jsonify({
         "session_id": session_id,
@@ -2561,6 +2584,283 @@ def headless_run():
         "source": source,
         "stream_url": f"/loop-stream/{session_id}"
     })
+
+# ============================================
+# SWARM DAEMON — Autonomous background thinking
+# ============================================
+
+class SwarmDaemon:
+    """Background daemon that runs the swarm autonomously on an interval.
+
+    The daemon wakes up, checks memory for pursuits or unresolved questions,
+    runs a headless session, updates memory, and optionally chains into
+    the next pursuit if a high-priority one emerged.
+
+    Controls:
+    - interval_seconds: Time between autonomous sessions (default 6 hours)
+    - cooldown_seconds: Minimum time after a session before the next can start (default 30 min)
+    - max_chain_depth: Max consecutive sessions before forcing a sleep (default 3)
+    - max_daily_sessions: Hard cap on sessions per 24h period (default 12)
+    - rounds_per_session: Rounds per autonomous session (default 3)
+    """
+
+    def __init__(self):
+        self._thread = None
+        self._stop_event = threading.Event()
+        self._running = False
+        self._lock = threading.Lock()
+
+        # Configuration (can be updated via /daemon/configure)
+        self.interval_seconds = int(os.getenv("SWARM_DAEMON_INTERVAL", 6 * 3600))  # 6 hours
+        self.cooldown_seconds = int(os.getenv("SWARM_DAEMON_COOLDOWN", 30 * 60))   # 30 minutes
+        self.max_chain_depth = int(os.getenv("SWARM_DAEMON_MAX_CHAIN", 3))
+        self.max_daily_sessions = int(os.getenv("SWARM_DAEMON_MAX_DAILY", 12))
+        self.rounds_per_session = int(os.getenv("SWARM_DAEMON_ROUNDS", 3))
+
+        # State
+        self.sessions_today = 0
+        self.last_session_time = None
+        self.last_reset_date = None
+        self.current_chain_depth = 0
+        self.history = []  # Recent daemon session summaries
+
+    def start(self):
+        with self._lock:
+            if self._running:
+                return False, "Daemon is already running"
+            self._stop_event.clear()
+            self._running = True
+            self._thread = threading.Thread(target=self._daemon_loop, daemon=True, name="SwarmDaemon")
+            self._thread.start()
+            logger.info(f"Swarm daemon started: interval={self.interval_seconds}s, "
+                       f"cooldown={self.cooldown_seconds}s, max_chain={self.max_chain_depth}, "
+                       f"max_daily={self.max_daily_sessions}")
+            return True, "Daemon started"
+
+    def stop(self):
+        with self._lock:
+            if not self._running:
+                return False, "Daemon is not running"
+            self._stop_event.set()
+            self._running = False
+            logger.info("Swarm daemon stop requested")
+            return True, "Daemon stop signal sent"
+
+    def status(self):
+        memory = load_swarm_memory()
+        next_query, next_source = select_next_query(memory)
+        return {
+            "running": self._running,
+            "interval_seconds": self.interval_seconds,
+            "cooldown_seconds": self.cooldown_seconds,
+            "max_chain_depth": self.max_chain_depth,
+            "max_daily_sessions": self.max_daily_sessions,
+            "rounds_per_session": self.rounds_per_session,
+            "sessions_today": self.sessions_today,
+            "current_chain_depth": self.current_chain_depth,
+            "last_session_time": self.last_session_time,
+            "next_query": next_query,
+            "next_source": next_source,
+            "memory_session_count": memory.get("session_count", 0),
+            "pursuits_available": len(memory.get("next_pursuits", [])),
+            "unresolved_available": len(memory.get("unresolved_questions", [])),
+            "recent_history": self.history[-10:]
+        }
+
+    def configure(self, **kwargs):
+        """Update daemon configuration. Only updates provided keys."""
+        changed = {}
+        for key in ["interval_seconds", "cooldown_seconds", "max_chain_depth",
+                     "max_daily_sessions", "rounds_per_session"]:
+            if key in kwargs:
+                val = int(kwargs[key])
+                setattr(self, key, val)
+                changed[key] = val
+        if changed:
+            logger.info(f"Daemon reconfigured: {changed}")
+        return changed
+
+    def _reset_daily_counter(self):
+        today = datetime.now().date().isoformat()
+        if self.last_reset_date != today:
+            self.sessions_today = 0
+            self.last_reset_date = today
+
+    def _can_run(self):
+        """Check all gates before running a session."""
+        self._reset_daily_counter()
+
+        if self.sessions_today >= self.max_daily_sessions:
+            return False, "Daily session limit reached"
+
+        if self.last_session_time:
+            elapsed = time.time() - self.last_session_time
+            if elapsed < self.cooldown_seconds:
+                return False, f"Cooldown: {int(self.cooldown_seconds - elapsed)}s remaining"
+
+        memory = load_swarm_memory()
+        query, source = select_next_query(memory)
+        if query is None:
+            return False, "No pursuits or unresolved questions in memory"
+
+        return True, "Ready"
+
+    def _daemon_loop(self):
+        """Main daemon loop. Runs until stop is requested."""
+        logger.info("Swarm daemon loop entered")
+
+        while not self._stop_event.is_set():
+            try:
+                self._reset_daily_counter()
+
+                can_run, reason = self._can_run()
+                if not can_run:
+                    logger.info(f"Daemon skipping cycle: {reason}")
+                    # Wait for interval or until stopped
+                    self._stop_event.wait(timeout=min(self.interval_seconds, 300))
+                    continue
+
+                # Run a session (possibly chaining)
+                self.current_chain_depth = 0
+                self._run_chain()
+
+                # Sleep until next interval
+                logger.info(f"Daemon sleeping for {self.interval_seconds}s until next cycle")
+                self._stop_event.wait(timeout=self.interval_seconds)
+
+            except Exception as e:
+                logger.error(f"Daemon loop error: {e}")
+                # Don't crash the daemon — sleep and retry
+                self._stop_event.wait(timeout=60)
+
+        logger.info("Swarm daemon loop exited")
+
+    def _run_chain(self):
+        """Run one or more chained headless sessions."""
+        while self.current_chain_depth < self.max_chain_depth:
+            if self._stop_event.is_set():
+                break
+
+            self._reset_daily_counter()
+            if self.sessions_today >= self.max_daily_sessions:
+                logger.info("Chain halted: daily limit reached")
+                break
+
+            memory = load_swarm_memory()
+            query, source = select_next_query(memory)
+            if query is None:
+                logger.info("Chain halted: no more pursuits")
+                break
+
+            self.current_chain_depth += 1
+            chain_label = f"chain {self.current_chain_depth}/{self.max_chain_depth}"
+
+            logger.info(f"Daemon session ({chain_label}): [{source}] {query[:100]}")
+
+            session_id, q, thread, result_holder = run_headless_session(
+                query, source, self.rounds_per_session
+            )
+
+            # Wait for the session to complete
+            thread.join(timeout=self.rounds_per_session * 200 + 300)  # generous timeout
+
+            self.last_session_time = time.time()
+            self.sessions_today += 1
+
+            # Record history
+            entry = {
+                "timestamp": datetime.now().isoformat(),
+                "session_id": session_id,
+                "query": query[:200],
+                "source": source,
+                "chain_depth": self.current_chain_depth,
+            }
+            if "result" in result_holder:
+                entry["duration"] = result_holder["result"].get("duration")
+                entry["status"] = "complete"
+            elif "error" in result_holder:
+                entry["status"] = "error"
+                entry["error"] = result_holder["error"][:200]
+            else:
+                entry["status"] = "timeout"
+
+            self.history.append(entry)
+            # Keep history bounded
+            self.history = self.history[-50:]
+
+            logger.info(f"Daemon session complete ({chain_label}): {entry.get('status')} "
+                       f"in {entry.get('duration', '?')}s")
+
+            # Check if we should chain: only if a new high-priority pursuit emerged
+            if self.current_chain_depth < self.max_chain_depth:
+                delta = result_holder.get("delta")
+                if delta and delta.get("next_pursuits"):
+                    high = [p for p in delta["next_pursuits"] if p.get("priority") == "high"]
+                    if high:
+                        logger.info(f"High-priority pursuit emerged, chaining: {high[0].get('direction', '')[:80]}")
+                        # Brief cooldown between chained sessions
+                        self._stop_event.wait(timeout=30)
+                        continue
+                # No high-priority pursuit — stop chaining
+                break
+            break
+
+        self.current_chain_depth = 0
+
+# Singleton daemon instance
+swarm_daemon = SwarmDaemon()
+
+@app.route("/daemon/start", methods=["POST"])
+@require_auth
+def daemon_start():
+    """Start the autonomous swarm daemon.
+
+    Optional JSON body for configuration:
+    - interval_seconds: Time between cycles (default 21600 = 6 hours)
+    - cooldown_seconds: Min gap between sessions (default 1800 = 30 min)
+    - max_chain_depth: Max consecutive sessions (default 3)
+    - max_daily_sessions: Hard daily cap (default 12)
+    - rounds_per_session: Rounds per session (default 3)
+    """
+    data = request.get_json() or {}
+    if data:
+        swarm_daemon.configure(**data)
+    success, msg = swarm_daemon.start()
+    status_code = 200 if success else 409
+    return jsonify({"status": msg, **swarm_daemon.status()}), status_code
+
+@app.route("/daemon/stop", methods=["POST"])
+@require_auth
+def daemon_stop():
+    """Stop the autonomous swarm daemon."""
+    success, msg = swarm_daemon.stop()
+    status_code = 200 if success else 409
+    return jsonify({"status": msg, **swarm_daemon.status()}), status_code
+
+@app.route("/daemon/status", methods=["GET"])
+@require_auth
+def daemon_status():
+    """Get the daemon's current state, config, and recent history."""
+    return jsonify(swarm_daemon.status())
+
+@app.route("/daemon/configure", methods=["POST"])
+@require_auth
+def daemon_configure():
+    """Update daemon configuration without restarting.
+
+    JSON body with any of:
+    - interval_seconds, cooldown_seconds, max_chain_depth,
+      max_daily_sessions, rounds_per_session
+    """
+    data = request.get_json() or {}
+    changed = swarm_daemon.configure(**data)
+    return jsonify({"updated": changed, **swarm_daemon.status()})
+
+@app.route("/daemon/history", methods=["GET"])
+@require_auth
+def daemon_history():
+    """Get the daemon's session history."""
+    return jsonify({"history": swarm_daemon.history, "total": len(swarm_daemon.history)})
 
 # ============================================
 # MAIN
@@ -2574,6 +2874,7 @@ if __name__ == "__main__":
     print(f"Auth:        {'ENABLED' if is_auth_enabled() else 'DISABLED (set RRI_AUTH_TOKEN + RRI_PASSWORD_HASH)'}")
     print(f"Storage:     {OUTPUTS_DIR}")
     print(f"Memory:      {MEMORY_FILE}")
+    print(f"Daemon:      interval={swarm_daemon.interval_seconds}s, max_daily={swarm_daemon.max_daily_sessions}")
     print("Endpoints:")
     print("  GET  /               - Swarm UI")
     print("  POST /ping-swarm     - Single-shot swarm")
@@ -2588,7 +2889,12 @@ if __name__ == "__main__":
     print("  GET  /memory         - View swarm persistent memory")
     print("  POST /memory/clear   - Reset swarm memory (with backup)")
     print("  GET  /memory/pursuits- Next self-directed goals")
-    print("  POST /headless       - Autonomous swarm session from memory")
+    print("  POST /headless       - Single autonomous session from memory")
+    print("  POST /daemon/start   - Start autonomous background daemon")
+    print("  POST /daemon/stop    - Stop the daemon")
+    print("  GET  /daemon/status  - Daemon state + config + next query")
+    print("  POST /daemon/configure - Update daemon settings live")
+    print("  GET  /daemon/history - Daemon session history")
     print("  GET  /login          - Authentication")
     print("=" * 55 + "\n")
     app.run(host="0.0.0.0", port=port, debug=False, threaded=True)
