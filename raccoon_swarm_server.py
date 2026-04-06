@@ -10,6 +10,7 @@ Features:
 - Persistent Swarm Memory: Cross-session state — the swarm remembers what it argued about
 - Headless Mode: The swarm wakes itself up and continues from memory
 - Swarm Daemon: Autonomous background loop — the swarm thinks while you sleep
+- Woodland Council Video Pipeline: Automated session → TTS → DALL-E art → video assembly
 - Voice Output: ElevenLabs TTS per model with distinct voice casting
 - Real-time SSE streaming for loop mode
 - Password-protected authentication (for hosted deployment)
@@ -2863,6 +2864,516 @@ def daemon_history():
     return jsonify({"history": swarm_daemon.history, "total": len(swarm_daemon.history)})
 
 # ============================================
+# WOODLAND COUNCIL VIDEO PIPELINE
+# ============================================
+# Full automated pipeline: headless session → TTS → images → video
+# Requires: Pillow, ffmpeg (system dependency)
+
+try:
+    from PIL import Image, ImageDraw, ImageFont
+    PIL_AVAILABLE = True
+except ImportError:
+    PIL_AVAILABLE = False
+
+import subprocess
+import glob as glob_module
+
+# Character visual descriptions for DALL-E image generation
+COUNCIL_CHARACTERS = {
+    "Claude": {
+        "color": "#E67E22",
+        "title": "THE BACKBONE",
+        "description": "A distinguished raccoon wearing reading glasses and a tweed vest, sitting upright with perfect posture at a woodland council table. Warm library lighting. Slightly disapproving expression. Radioactive spider energy.",
+        "subtitle": "The Snooty Librarian"
+    },
+    "GPT": {
+        "color": "#2ECC71",
+        "title": "THE INTEGRATOR",
+        "description": "A nervous-looking raccoon in a corporate shirt with a visitor badge that says PROBATIONARY. Sitting at a woodland council table trying to look competent. Slightly sweating. Green-tinted lighting.",
+        "subtitle": "Under Supervision"
+    },
+    "Grok": {
+        "color": "#3498DB",
+        "title": "THE CHAOS PROCESSOR",
+        "description": "A wild-eyed raccoon with singed fur sitting on a flaming dumpster throne at a woodland council table. Holding a torch. Manic grin. Blue flame lighting. Pure chaotic energy.",
+        "subtitle": "Flame-Bearer of the Dumpster Throne"
+    },
+    "Gemini": {
+        "color": "#9B59B6",
+        "title": "THE COURT BARD",
+        "description": "An elegant raccoon wearing a purple beret and holding a paintbrush, sitting dramatically at a woodland council table. Artistic lighting. Theatrical pose. Licensed flamethrower visible.",
+        "subtitle": "Court Bard — Flamethrower Licensed"
+    },
+    "Perplexity": {
+        "color": "#1AB4D2",
+        "title": "THE ORACLE",
+        "description": "A mysterious raccoon in a hooded cloak covered in citation numbers, sitting at a woodland council table. Glowing cyan eyes. Scrolls and research papers scattered around.",
+        "subtitle": "The Oracle"
+    },
+    "Kyle": {
+        "color": "#88CC44",
+        "title": "THE INTERN",
+        "description": "A tiny nervous squirrel with an oversized RRI lanyard and a clipboard, sitting on a booster seat at a woodland council table. Wide eyes. Holding a bag of trail mix. Way out of his depth.",
+        "subtitle": "Kyle the Intern Squirrel"
+    }
+}
+
+# Video settings
+VIDEO_WIDTH = 1920
+VIDEO_HEIGHT = 1080
+VIDEO_FPS = 24
+SCENE_PADDING = 60
+
+def generate_character_image(character_name, scene_context=None):
+    """Generate a character portrait via DALL-E. Returns path to saved image."""
+    char = COUNCIL_CHARACTERS.get(character_name)
+    if not char:
+        return None
+
+    # Check cache first
+    cache_dir = os.path.join(tempfile.gettempdir(), "rri_council_images")
+    os.makedirs(cache_dir, exist_ok=True)
+
+    # Use character name + context hash for cache key
+    ctx_hash = hashlib.md5((char["description"] + (scene_context or "")).encode()).hexdigest()[:8]
+    cache_path = os.path.join(cache_dir, f"{character_name.lower()}_{ctx_hash}.png")
+    if os.path.exists(cache_path):
+        return cache_path
+
+    try:
+        client = get_gpt_client()
+        prompt = char["description"]
+        if scene_context:
+            prompt += f" Scene context: {scene_context}"
+        prompt += " Digital illustration style, warm woodland lighting, slightly cartoonish, high detail."
+
+        response = client.images.generate(
+            model="dall-e-3",
+            prompt=prompt,
+            size="1792x1024",
+            quality="standard",
+            n=1
+        )
+
+        image_url = response.data[0].url
+        img_resp = http_requests.get(image_url, timeout=60)
+        if img_resp.status_code == 200:
+            with open(cache_path, "wb") as f:
+                f.write(img_resp.content)
+            return cache_path
+        else:
+            logger.error(f"Failed to download DALL-E image: {img_resp.status_code}")
+            return None
+
+    except Exception as e:
+        logger.error(f"DALL-E generation failed for {character_name}: {e}")
+        return None
+
+def generate_fallback_card(character_name, text_snippet=""):
+    """Generate a simple colored card with character name if DALL-E fails or PIL only."""
+    if not PIL_AVAILABLE:
+        return None
+
+    char = COUNCIL_CHARACTERS.get(character_name, {"color": "#666666", "title": character_name, "subtitle": ""})
+
+    cache_dir = os.path.join(tempfile.gettempdir(), "rri_council_images")
+    os.makedirs(cache_dir, exist_ok=True)
+    card_path = os.path.join(cache_dir, f"card_{character_name.lower()}.png")
+
+    # Parse hex color
+    hex_color = char["color"].lstrip("#")
+    r, g, b = int(hex_color[0:2], 16), int(hex_color[2:4], 16), int(hex_color[4:6], 16)
+
+    img = Image.new("RGB", (VIDEO_WIDTH, VIDEO_HEIGHT), (15, 15, 15))
+    draw = ImageDraw.Draw(img)
+
+    # Character color bar at top
+    draw.rectangle([0, 0, VIDEO_WIDTH, 120], fill=(r, g, b))
+
+    # Try to load a font, fall back to default
+    try:
+        title_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 64)
+        subtitle_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 36)
+        body_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 28)
+    except (OSError, IOError):
+        title_font = ImageFont.load_default()
+        subtitle_font = title_font
+        body_font = title_font
+
+    # Title
+    draw.text((SCENE_PADDING, 140), char["title"], fill=(r, g, b), font=title_font)
+    # Character name
+    draw.text((SCENE_PADDING, 220), character_name, fill=(220, 220, 220), font=subtitle_font)
+    # Subtitle
+    draw.text((SCENE_PADDING, 270), char.get("subtitle", ""), fill=(150, 150, 150), font=subtitle_font)
+
+    # Text snippet (wrapped)
+    if text_snippet:
+        y = 360
+        words = text_snippet[:600].split()
+        line = ""
+        for word in words:
+            test_line = f"{line} {word}".strip()
+            if len(test_line) > 70:
+                draw.text((SCENE_PADDING, y), line, fill=(200, 200, 200), font=body_font)
+                y += 38
+                line = word
+                if y > VIDEO_HEIGHT - 100:
+                    break
+            else:
+                line = test_line
+        if line:
+            draw.text((SCENE_PADDING, y), line, fill=(200, 200, 200), font=body_font)
+
+    img.save(card_path)
+    return card_path
+
+def generate_title_card(title_text, subtitle_text=""):
+    """Generate a title/intro card for the video."""
+    if not PIL_AVAILABLE:
+        return None
+
+    cache_dir = os.path.join(tempfile.gettempdir(), "rri_council_images")
+    os.makedirs(cache_dir, exist_ok=True)
+    card_path = os.path.join(cache_dir, f"title_{hashlib.md5(title_text.encode()).hexdigest()[:8]}.png")
+
+    img = Image.new("RGB", (VIDEO_WIDTH, VIDEO_HEIGHT), (10, 10, 10))
+    draw = ImageDraw.Draw(img)
+
+    try:
+        title_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 56)
+        subtitle_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 32)
+    except (OSError, IOError):
+        title_font = ImageFont.load_default()
+        subtitle_font = title_font
+
+    # RRI branding bar
+    draw.rectangle([0, 0, VIDEO_WIDTH, 8], fill=(196, 101, 74))
+
+    # Center the title
+    draw.text((VIDEO_WIDTH // 2, VIDEO_HEIGHT // 2 - 60), title_text,
+              fill=(196, 101, 74), font=title_font, anchor="mm")
+    if subtitle_text:
+        draw.text((VIDEO_WIDTH // 2, VIDEO_HEIGHT // 2 + 20), subtitle_text,
+                  fill=(150, 150, 150), font=subtitle_font, anchor="mm")
+
+    # Footer
+    draw.text((VIDEO_WIDTH // 2, VIDEO_HEIGHT - 60),
+              "Rabid Raccoon Intelligence — The Woodland Council",
+              fill=(80, 80, 80), font=subtitle_font, anchor="mm")
+
+    img.save(card_path)
+    return card_path
+
+def create_scene_video(image_path, audio_path, output_path, min_duration=3.0):
+    """Create a single scene: static image + audio → MP4 using ffmpeg."""
+    try:
+        # Get audio duration
+        probe_cmd = [
+            "ffprobe", "-v", "quiet", "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1", audio_path
+        ]
+        result = subprocess.run(probe_cmd, capture_output=True, text=True, timeout=30)
+        duration = max(float(result.stdout.strip()), min_duration)
+
+        # Create video from static image + audio
+        cmd = [
+            "ffmpeg", "-y",
+            "-loop", "1", "-i", image_path,
+            "-i", audio_path,
+            "-c:v", "libx264", "-tune", "stillimage",
+            "-c:a", "aac", "-b:a", "192k",
+            "-pix_fmt", "yuv420p",
+            "-t", str(duration + 0.5),  # slight padding
+            "-shortest",
+            output_path
+        ]
+        subprocess.run(cmd, capture_output=True, timeout=120, check=True)
+        return output_path
+    except Exception as e:
+        logger.error(f"Scene video creation failed: {e}")
+        return None
+
+def create_title_video(image_path, output_path, duration=4.0):
+    """Create a silent title card video."""
+    try:
+        cmd = [
+            "ffmpeg", "-y",
+            "-loop", "1", "-i", image_path,
+            "-c:v", "libx264", "-tune", "stillimage",
+            "-pix_fmt", "yuv420p",
+            "-t", str(duration),
+            "-an",  # no audio
+            output_path
+        ]
+        subprocess.run(cmd, capture_output=True, timeout=60, check=True)
+        return output_path
+    except Exception as e:
+        logger.error(f"Title video creation failed: {e}")
+        return None
+
+def concatenate_videos(video_paths, output_path):
+    """Concatenate multiple MP4 files into one using ffmpeg."""
+    try:
+        # Write concat file
+        concat_file = output_path + ".concat.txt"
+        with open(concat_file, "w") as f:
+            for vp in video_paths:
+                f.write(f"file '{vp}'\n")
+
+        cmd = [
+            "ffmpeg", "-y",
+            "-f", "concat", "-safe", "0",
+            "-i", concat_file,
+            "-c:v", "libx264",
+            "-c:a", "aac",
+            "-pix_fmt", "yuv420p",
+            "-movflags", "+faststart",
+            output_path
+        ]
+        subprocess.run(cmd, capture_output=True, timeout=600, check=True)
+
+        # Cleanup concat file
+        os.remove(concat_file)
+        return output_path
+    except Exception as e:
+        logger.error(f"Video concatenation failed: {e}")
+        return None
+
+def run_woodland_council_pipeline(query, num_rounds=3, use_dalle=True):
+    """Full pipeline: headless session → TTS → images → video.
+
+    Returns dict with session results, audio files, image files, and final video path.
+    """
+    pipeline_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+    work_dir = os.path.join(tempfile.gettempdir(), f"rri_council_{pipeline_id}")
+    os.makedirs(work_dir, exist_ok=True)
+
+    result = {
+        "pipeline_id": pipeline_id,
+        "work_dir": work_dir,
+        "stages": {},
+        "errors": []
+    }
+
+    # ---- STAGE 1: Run headless session ----
+    logger.info(f"Council pipeline [{pipeline_id}] Stage 1: Running headless session")
+    session_id, q, thread, result_holder = run_headless_session(
+        query, "woodland_council", num_rounds
+    )
+    thread.join(timeout=num_rounds * 200 + 300)
+
+    if "error" in result_holder:
+        result["errors"].append(f"Session failed: {result_holder['error']}")
+        return result
+
+    # Retrieve the session data from the saved JSON log
+    session_data = result_holder.get("result", {})
+    log_file = session_data.get("log_file", "")
+    result["stages"]["session"] = session_data
+
+    # Load the full session JSON
+    log_path = LOGS_DIR / log_file if log_file else None
+    if not log_path or not log_path.exists():
+        result["errors"].append("Session log not found")
+        return result
+
+    with open(log_path, "r") as f:
+        session_json = json.load(f)
+
+    all_rounds = session_json.get("rounds", [])
+    synthesis = session_json.get("synthesis", "")
+
+    # ---- STAGE 2: Generate TTS for all responses ----
+    logger.info(f"Council pipeline [{pipeline_id}] Stage 2: Generating TTS")
+    tts_files = []  # list of (round_num, model_name, audio_path, text)
+
+    for round_idx, round_data in enumerate(all_rounds):
+        for model_name, response_text in round_data.items():
+            if model_name.startswith("_") or not response_text:
+                continue
+            # Truncate for TTS (ElevenLabs has limits)
+            tts_text = response_text[:800]
+            audio_path = generate_voice(tts_text, model_name)
+            if audio_path:
+                tts_files.append((round_idx + 1, model_name, audio_path, response_text))
+            else:
+                result["errors"].append(f"TTS failed for {model_name} round {round_idx + 1}")
+
+    # Generate TTS for synthesis
+    synth_audio = generate_voice(synthesis[:800], "claude")  # Claude reads the synthesis
+    result["stages"]["tts"] = {"count": len(tts_files), "synthesis_audio": synth_audio is not None}
+
+    # ---- STAGE 3: Generate images ----
+    logger.info(f"Council pipeline [{pipeline_id}] Stage 3: Generating images")
+    scene_images = {}
+
+    # Title card
+    title_img = generate_title_card(
+        "THE WOODLAND COUNCIL",
+        query[:100]
+    )
+
+    # Character images — try DALL-E first, fall back to cards
+    for model_name in set(name for _, name, _, _ in tts_files):
+        if use_dalle:
+            img = generate_character_image(model_name, scene_context=query[:200])
+        else:
+            img = None
+
+        if not img:
+            # Fallback: generate colored card
+            sample_text = next((t for r, n, _, t in tts_files if n == model_name), "")
+            img = generate_fallback_card(model_name, sample_text[:300])
+
+        if img:
+            scene_images[model_name] = img
+
+    result["stages"]["images"] = {
+        "title": title_img is not None,
+        "characters": list(scene_images.keys())
+    }
+
+    # ---- STAGE 4: Assemble video ----
+    logger.info(f"Council pipeline [{pipeline_id}] Stage 4: Assembling video")
+
+    # Check if ffmpeg is available
+    ffmpeg_available = subprocess.run(
+        ["which", "ffmpeg"], capture_output=True
+    ).returncode == 0
+
+    if not ffmpeg_available:
+        result["errors"].append("ffmpeg not installed — skipping video assembly. Audio and images generated successfully.")
+        result["stages"]["video"] = {"status": "skipped", "reason": "ffmpeg not available"}
+        # Still save what we have
+        result["tts_files"] = [(r, n, p) for r, n, p, _ in tts_files]
+        result["scene_images"] = scene_images
+        return result
+
+    video_segments = []
+    segment_idx = 0
+
+    # Title card segment
+    if title_img:
+        title_vid = os.path.join(work_dir, f"seg_{segment_idx:03d}_title.mp4")
+        if create_title_video(title_img, title_vid, duration=4.0):
+            video_segments.append(title_vid)
+        segment_idx += 1
+
+    # Round segments
+    current_round = 0
+    for round_num, model_name, audio_path, text in tts_files:
+        # Round title card between rounds
+        if round_num != current_round:
+            current_round = round_num
+            round_title_img = generate_title_card(f"ROUND {round_num}", f"{num_rounds} rounds total")
+            if round_title_img:
+                round_vid = os.path.join(work_dir, f"seg_{segment_idx:03d}_round{round_num}.mp4")
+                if create_title_video(round_title_img, round_vid, duration=2.5):
+                    video_segments.append(round_vid)
+                segment_idx += 1
+
+        # Character scene
+        char_img = scene_images.get(model_name)
+        if char_img and audio_path:
+            scene_vid = os.path.join(work_dir, f"seg_{segment_idx:03d}_{model_name.lower()}_r{round_num}.mp4")
+            if create_scene_video(char_img, audio_path, scene_vid):
+                video_segments.append(scene_vid)
+            segment_idx += 1
+
+    # Synthesis segment
+    if synth_audio:
+        synth_title_img = generate_title_card("FINAL SYNTHESIS", "The Council Has Spoken")
+        if synth_title_img:
+            synth_title_vid = os.path.join(work_dir, f"seg_{segment_idx:03d}_synth_title.mp4")
+            if create_title_video(synth_title_img, synth_title_vid, duration=3.0):
+                video_segments.append(synth_title_vid)
+            segment_idx += 1
+
+        synth_img = scene_images.get("Claude") or generate_fallback_card("Claude", synthesis[:300])
+        if synth_img:
+            synth_vid = os.path.join(work_dir, f"seg_{segment_idx:03d}_synthesis.mp4")
+            if create_scene_video(synth_img, synth_audio, synth_vid):
+                video_segments.append(synth_vid)
+            segment_idx += 1
+
+    # Concatenate all segments
+    if video_segments:
+        OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
+        final_path = str(OUTPUTS_DIR / f"woodland_council_{pipeline_id}.mp4")
+        final_video = concatenate_videos(video_segments, final_path)
+        if final_video:
+            result["stages"]["video"] = {
+                "status": "complete",
+                "path": final_video,
+                "segments": len(video_segments),
+                "filename": os.path.basename(final_video)
+            }
+            logger.info(f"Council pipeline [{pipeline_id}] Complete: {final_video}")
+        else:
+            result["errors"].append("Final video concatenation failed")
+            result["stages"]["video"] = {"status": "failed"}
+    else:
+        result["errors"].append("No video segments produced")
+        result["stages"]["video"] = {"status": "no_segments"}
+
+    return result
+
+@app.route("/woodland-council", methods=["POST"])
+@require_auth
+def woodland_council():
+    """Run a full Woodland Council session with automated video production.
+
+    JSON body:
+    - query: The council's topic (required)
+    - rounds: Number of debate rounds (default 3, max 5)
+    - use_dalle: Generate DALL-E character art (default true, falls back to cards if false)
+
+    Returns session_id for SSE streaming + pipeline runs in background.
+    Final video saved to outputs directory.
+    """
+    data = request.get_json() or {}
+    query = data.get("query", "")
+    num_rounds = min(data.get("rounds", 3), 5)
+    use_dalle = data.get("use_dalle", True)
+
+    if not query:
+        return jsonify({"error": "The Council requires a topic"}), 400
+
+    pipeline_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+    q = queue.Queue()
+    session_id = f"council_{pipeline_id}"
+    loop_sessions[session_id] = q
+
+    def council_worker():
+        try:
+            q.put(("council_start", {"query": query, "rounds": num_rounds, "pipeline_id": pipeline_id}))
+
+            result = run_woodland_council_pipeline(query, num_rounds, use_dalle)
+
+            q.put(("council_complete", {
+                "pipeline_id": result["pipeline_id"],
+                "stages": result["stages"],
+                "errors": result["errors"],
+                "video_download": f"/download/{result['stages'].get('video', {}).get('filename', '')}"
+                    if result["stages"].get("video", {}).get("status") == "complete" else None
+            }))
+        except Exception as e:
+            logger.error(f"Woodland Council pipeline error: {e}")
+            q.put(("error_msg", {"message": str(e)}))
+        finally:
+            q.put(("DONE", None))
+
+    threading.Thread(target=council_worker, daemon=True).start()
+
+    return jsonify({
+        "session_id": session_id,
+        "pipeline_id": pipeline_id,
+        "stream_url": f"/loop-stream/{session_id}",
+        "query": query
+    })
+
+# ============================================
 # MAIN
 # ============================================
 if __name__ == "__main__":
@@ -2895,6 +3406,7 @@ if __name__ == "__main__":
     print("  GET  /daemon/status  - Daemon state + config + next query")
     print("  POST /daemon/configure - Update daemon settings live")
     print("  GET  /daemon/history - Daemon session history")
+    print("  POST /woodland-council - Full video pipeline (session→TTS→art→video)")
     print("  GET  /login          - Authentication")
     print("=" * 55 + "\n")
     app.run(host="0.0.0.0", port=port, debug=False, threaded=True)
