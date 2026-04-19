@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
 """
-RACCOON SWARM SERVER v4.0 🦝
+RACCOON SWARM SERVER v5.0 🦝
 Rabid Raccoon Intelligence — Multi-Model AI Orchestration
 
 Features:
 - Single Swarm: One-shot parallel query to all models
 - Continuous Loop: Multi-round conversation with cross-model iteration
 - Human-in-the-Loop: Join the round table as a 6th participant
+- Persistent Swarm Memory: Cross-session state — the swarm remembers what it argued about
+- Headless Mode: The swarm wakes itself up and continues from memory
+- Swarm Daemon: Autonomous background loop — the swarm thinks while you sleep
+- Woodland Council Video Pipeline: Automated session → TTS → DALL-E art → video assembly
 - Voice Output: ElevenLabs TTS per model with distinct voice casting
 - Real-time SSE streaming for loop mode
 - Password-protected authentication (for hosted deployment)
@@ -211,6 +215,224 @@ def load_boot_context():
 def save_boot_context(text):
     CONTEXT_FILE.parent.mkdir(parents=True, exist_ok=True)
     CONTEXT_FILE.write_text(text)
+
+# ============================================
+# PERSISTENT SWARM MEMORY (cross-session state)
+# ============================================
+MEMORY_FILE = (STORAGE_DIR if os.getenv("RAILWAY_ENVIRONMENT") or os.getenv("RRI_STORAGE_DIR") else Path(".")) / "swarm_memory.json"
+MEMORY_SEED_FILE = Path(__file__).parent / "swarm_memory_seed.json"
+
+_EMPTY_MEMORY = {
+    "last_updated": None,
+    "session_count": 0,
+    "resolved_positions": [],
+    "unresolved_questions": [],
+    "next_pursuits": [],
+    "evolving_frameworks": [],
+    "session_log": []
+}
+
+# Max items to keep in each memory category before pruning old entries
+MEMORY_MAX_RESOLVED = 50
+MEMORY_MAX_UNRESOLVED = 30
+MEMORY_MAX_PURSUITS = 15
+MEMORY_MAX_FRAMEWORKS = 20
+MEMORY_MAX_SESSION_LOG = 100
+
+def load_swarm_memory():
+    """Load the swarm's persistent memory from disk.
+
+    Bootstrap order: swarm_memory.json (runtime) > swarm_memory_seed.json (repo) > empty.
+    """
+    target = MEMORY_FILE
+    if not target.exists() and MEMORY_SEED_FILE.exists():
+        # First run: bootstrap from seed
+        import shutil
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(MEMORY_SEED_FILE, target)
+        logger.info(f"Bootstrapped swarm memory from seed: {MEMORY_SEED_FILE}")
+
+    if target.exists():
+        try:
+            with open(target, "r") as f:
+                mem = json.load(f)
+            # Ensure all keys exist (forward-compat)
+            for key, default in _EMPTY_MEMORY.items():
+                if key not in mem:
+                    mem[key] = default if not isinstance(default, list) else []
+            return mem
+        except (json.JSONDecodeError, IOError) as e:
+            logger.error(f"Failed to load swarm memory: {e}")
+            return dict(_EMPTY_MEMORY)
+    return dict(_EMPTY_MEMORY)
+
+def save_swarm_memory(memory):
+    """Write the swarm's persistent memory to disk."""
+    MEMORY_FILE.parent.mkdir(parents=True, exist_ok=True)
+    memory["last_updated"] = datetime.now().isoformat()
+    # Prune oldest entries to keep memory bounded
+    memory["resolved_positions"] = memory["resolved_positions"][-MEMORY_MAX_RESOLVED:]
+    memory["unresolved_questions"] = memory["unresolved_questions"][-MEMORY_MAX_UNRESOLVED:]
+    memory["next_pursuits"] = memory["next_pursuits"][-MEMORY_MAX_PURSUITS:]
+    memory["evolving_frameworks"] = memory["evolving_frameworks"][-MEMORY_MAX_FRAMEWORKS:]
+    memory["session_log"] = memory["session_log"][-MEMORY_MAX_SESSION_LOG:]
+    with open(MEMORY_FILE, "w") as f:
+        json.dump(memory, f, indent=2)
+
+def format_memory_context(memory):
+    """Format swarm memory into a prompt-injectable string."""
+    if memory["session_count"] == 0:
+        return ""
+
+    parts = [f"=== SWARM PERSISTENT MEMORY (Session #{memory['session_count']}) ==="]
+    parts.append(f"Last active: {memory['last_updated']}")
+
+    if memory["resolved_positions"]:
+        parts.append("\n## RESOLVED POSITIONS (what the swarm has settled)")
+        for pos in memory["resolved_positions"][-10:]:  # inject last 10
+            conf = pos.get("confidence", "unknown")
+            parts.append(f"- [{conf}] {pos.get('topic', 'unknown')}: {pos.get('consensus', '')}")
+
+    if memory["unresolved_questions"]:
+        parts.append("\n## UNRESOLVED QUESTIONS (still open)")
+        for q in memory["unresolved_questions"][-8:]:
+            attempts = q.get("attempts", 0)
+            parts.append(f"- {q.get('question', '')} (raised by {q.get('raised_by', 'unknown')}, {attempts} attempts)")
+
+    if memory["next_pursuits"]:
+        parts.append("\n## NEXT PURSUITS (self-directed goals)")
+        for p in memory["next_pursuits"][-5:]:
+            parts.append(f"- [{p.get('priority', 'medium')}] {p.get('direction', '')}")
+
+    if memory["evolving_frameworks"]:
+        parts.append("\n## EVOLVING FRAMEWORKS")
+        for fw in memory["evolving_frameworks"][-5:]:
+            parts.append(f"- {fw.get('name', 'unnamed')} (v{fw.get('version', 1)}): {fw.get('description', '')}")
+
+    parts.append("\n=== END SWARM MEMORY ===")
+    return "\n".join(parts)
+
+MEMORY_EXTRACTION_PROMPT = """You are the swarm's memory curator. You just observed a multi-round AI conversation.
+Your job is to extract what should be REMEMBERED for future sessions.
+
+{transcript}
+
+=== FINAL SYNTHESIS ===
+{synthesis}
+
+Extract the following as JSON (and ONLY valid JSON, no markdown fences):
+{{
+  "resolved_positions": [
+    {{"topic": "short topic name", "consensus": "what was agreed", "confidence": "high|medium|low"}}
+  ],
+  "unresolved_questions": [
+    {{"question": "what remains open", "raised_by": "model name or 'swarm'"}}
+  ],
+  "next_pursuits": [
+    {{"direction": "what should be explored next", "priority": "high|medium|low", "proposed_by": "model name or 'swarm'"}}
+  ],
+  "evolving_frameworks": [
+    {{"name": "framework name", "description": "brief description of the framework or mental model"}}
+  ]
+}}
+
+RULES:
+- Only include genuinely new positions, not restatements of the prompt.
+- Resolved positions must have actual consensus, not just "they discussed it."
+- Unresolved questions should be specific enough to drive a future session.
+- Next pursuits should be actionable — what would the swarm investigate if it woke up again?
+- Evolving frameworks are mental models, taxonomies, or conceptual tools the swarm invented.
+- Keep each field to 5 items max. Quality over quantity.
+- If nothing meaningful emerged, return empty arrays.
+"""
+
+def extract_memory_delta(query, all_rounds, synthesis):
+    """After synthesis, extract what should persist to swarm memory."""
+    transcript = _build_transcript(query, all_rounds)
+    prompt = MEMORY_EXTRACTION_PROMPT.format(transcript=transcript, synthesis=synthesis)
+
+    try:
+        raw = call_claude(prompt, max_tokens=2000)
+        # Strip markdown code fences if present
+        cleaned = raw.strip()
+        if cleaned.startswith("```"):
+            cleaned = cleaned.split("\n", 1)[1] if "\n" in cleaned else cleaned[3:]
+        if cleaned.endswith("```"):
+            cleaned = cleaned.rsplit("```", 1)[0]
+        cleaned = cleaned.strip()
+        delta = json.loads(cleaned)
+        return delta
+    except (json.JSONDecodeError, Exception) as e:
+        logger.error(f"Memory extraction failed: {e}")
+        return None
+
+def update_swarm_memory(query, delta):
+    """Merge extracted delta into persistent memory."""
+    if not delta:
+        return
+
+    memory = load_swarm_memory()
+    memory["session_count"] += 1
+    ts = datetime.now().isoformat()
+
+    # Append new resolved positions
+    for pos in delta.get("resolved_positions", []):
+        pos["session"] = ts
+        memory["resolved_positions"].append(pos)
+
+    # Merge unresolved questions (increment attempts if question already exists)
+    existing_qs = {q.get("question", "").lower(): q for q in memory["unresolved_questions"]}
+    for q in delta.get("unresolved_questions", []):
+        key = q.get("question", "").lower()
+        if key in existing_qs:
+            existing_qs[key]["attempts"] = existing_qs[key].get("attempts", 1) + 1
+        else:
+            q["session"] = ts
+            q["attempts"] = 1
+            memory["unresolved_questions"].append(q)
+
+    # Replace next pursuits (these are forward-looking, not cumulative)
+    new_pursuits = delta.get("next_pursuits", [])
+    if new_pursuits:
+        for p in new_pursuits:
+            p["session"] = ts
+        memory["next_pursuits"] = new_pursuits
+
+    # Evolving frameworks: update version if name matches, else add
+    existing_fw = {fw.get("name", "").lower(): fw for fw in memory["evolving_frameworks"]}
+    for fw in delta.get("evolving_frameworks", []):
+        key = fw.get("name", "").lower()
+        if key in existing_fw:
+            existing_fw[key]["version"] = existing_fw[key].get("version", 1) + 1
+            existing_fw[key]["description"] = fw.get("description", existing_fw[key].get("description", ""))
+        else:
+            fw["version"] = 1
+            fw["session"] = ts
+            memory["evolving_frameworks"].append(fw)
+
+    # Mark resolved questions as no longer unresolved
+    resolved_topics = {pos.get("topic", "").lower() for pos in delta.get("resolved_positions", [])}
+    if resolved_topics:
+        memory["unresolved_questions"] = [
+            q for q in memory["unresolved_questions"]
+            if q.get("question", "").lower() not in resolved_topics
+        ]
+
+    # Session log
+    memory["session_log"].append({
+        "timestamp": ts,
+        "query": query[:200],
+        "resolved_count": len(delta.get("resolved_positions", [])),
+        "unresolved_count": len(delta.get("unresolved_questions", [])),
+        "pursuits_count": len(delta.get("next_pursuits", []))
+    })
+
+    save_swarm_memory(memory)
+    logger.info(f"Swarm memory updated: session #{memory['session_count']}, "
+                f"+{len(delta.get('resolved_positions', []))} resolved, "
+                f"+{len(delta.get('unresolved_questions', []))} unresolved, "
+                f"{len(delta.get('next_pursuits', []))} pursuits")
+    return memory
 
 # ============================================
 # FILE UPLOAD CONSTANTS
@@ -2013,6 +2235,10 @@ def start_loop():
             context = load_boot_context() if use_context else ""
             all_rounds = []
 
+            # Load persistent swarm memory
+            swarm_mem = load_swarm_memory()
+            memory_context = format_memory_context(swarm_mem)
+
             for round_num in range(1, num_rounds + 1):
                 q.put(("round_start", {"round": round_num, "total": num_rounds}))
 
@@ -2025,14 +2251,22 @@ def start_loop():
                 base_parts.append(f"=== TASK ===\n{query}\n=== END TASK ===")
                 base_query = "\n\n".join(base_parts)
 
+                # Build preamble: boot context + swarm memory
+                preamble_parts = []
+                if context:
+                    preamble_parts.append(f"=== BOOT CONTEXT ===\n{context}\n=== END CONTEXT ===")
+                if memory_context:
+                    preamble_parts.append(memory_context)
+                preamble = "\n\n".join(preamble_parts)
+
                 if round_num == 1:
-                    if context:
-                        prompt = f"=== BOOT CONTEXT ===\n{context}\n=== END CONTEXT ===\n\n{base_query}"
+                    if preamble:
+                        prompt = f"{preamble}\n\n{base_query}"
                     else:
                         prompt = base_query
                 else:
-                    if context:
-                        prompt = f"=== BOOT CONTEXT ===\n{context}\n=== END CONTEXT ===\n\n=== ORIGINAL TASK ===\n{query}\n=== END TASK ===\n{history}"
+                    if preamble:
+                        prompt = f"{preamble}\n\n=== ORIGINAL TASK ===\n{query}\n=== END TASK ===\n{history}"
                     else:
                         prompt = f"=== ORIGINAL TASK ===\n{query}\n=== END TASK ===\n{history}"
 
@@ -2070,6 +2304,19 @@ def start_loop():
             q.put(("synthesis_start", {}))
             synthesis = run_synthesis(query, all_rounds)
             q.put(("synthesis_complete", {"synthesis": synthesis}))
+
+            # Phase 1: Extract and persist swarm memory
+            q.put(("memory_update_start", {}))
+            try:
+                delta = extract_memory_delta(query, all_rounds, synthesis)
+                updated_memory = update_swarm_memory(query, delta)
+                q.put(("memory_update_complete", {
+                    "session_number": updated_memory["session_count"] if updated_memory else 0,
+                    "delta": delta
+                }))
+            except Exception as mem_err:
+                logger.error(f"Memory update failed (non-fatal): {mem_err}")
+                q.put(("memory_update_complete", {"error": str(mem_err)}))
 
             log_file, docx_file = save_loop_results(query, all_rounds, synthesis, num_rounds)
             duration = round(time.time() - start_time, 1)
@@ -2159,16 +2406,986 @@ def manage_context():
     return jsonify({"text": load_boot_context()})
 
 # ============================================
+# SWARM MEMORY ENDPOINTS
+# ============================================
+@app.route("/memory", methods=["GET"])
+@require_auth
+def get_memory():
+    """View the swarm's persistent memory."""
+    memory = load_swarm_memory()
+    return jsonify(memory)
+
+@app.route("/memory/clear", methods=["POST"])
+@require_auth
+def clear_memory():
+    """Reset swarm memory (keeps a backup)."""
+    if MEMORY_FILE.exists():
+        backup = MEMORY_FILE.with_suffix(".backup.json")
+        import shutil
+        shutil.copy2(MEMORY_FILE, backup)
+    save_swarm_memory(dict(_EMPTY_MEMORY))
+    return jsonify({"status": "cleared", "backup": str(MEMORY_FILE.with_suffix(".backup.json"))})
+
+@app.route("/memory/pursuits", methods=["GET"])
+@require_auth
+def get_pursuits():
+    """Get the swarm's self-directed next pursuits."""
+    memory = load_swarm_memory()
+    return jsonify({
+        "pursuits": memory.get("next_pursuits", []),
+        "unresolved": memory.get("unresolved_questions", []),
+        "session_count": memory.get("session_count", 0)
+    })
+
+# ============================================
+# HEADLESS MODE — The swarm wakes itself up
+# ============================================
+
+def select_next_query(memory, override_query=None):
+    """Pick the next query from swarm memory. Returns (query, source) or (None, None)."""
+    if override_query:
+        return override_query, "override"
+
+    if memory.get("next_pursuits"):
+        pursuits = memory["next_pursuits"]
+        high = [p for p in pursuits if p.get("priority") == "high"]
+        chosen = high[0] if high else pursuits[0]
+        return f"Continue the swarm's investigation: {chosen['direction']}", "next_pursuit"
+
+    if memory.get("unresolved_questions"):
+        unresolved = sorted(memory["unresolved_questions"],
+                          key=lambda q: q.get("attempts", 0), reverse=True)
+        chosen = unresolved[0]
+        return f"Resolve this open question from a previous session: {chosen['question']}", "unresolved_question"
+
+    return None, None
+
+def run_headless_session(query, source, num_rounds=3, active_loop_models=None, session_id=None):
+    """Run a complete headless swarm session. Returns session results dict.
+
+    Can be called from the /headless endpoint or from the daemon.
+    Creates its own SSE queue for streaming, runs the loop, persists memory.
+    """
+    if active_loop_models is None:
+        active_loop_models = SWARM_LOOP
+    if session_id is None:
+        session_id = f"headless_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+
+    q = queue.Queue()
+    loop_sessions[session_id] = q
+
+    result_holder = {}
+
+    def headless_worker():
+        try:
+            start_time = time.time()
+            context = load_boot_context()
+            all_rounds = []
+            swarm_mem = load_swarm_memory()
+            memory_ctx = format_memory_context(swarm_mem)
+
+            for round_num in range(1, num_rounds + 1):
+                q.put(("round_start", {"round": round_num, "total": num_rounds}))
+
+                history = format_round_history(all_rounds, round_num, num_rounds)
+                base_query = f"=== TASK ===\n{query}\n=== END TASK ==="
+
+                preamble_parts = []
+                if context:
+                    preamble_parts.append(f"=== BOOT CONTEXT ===\n{context}\n=== END CONTEXT ===")
+                if memory_ctx:
+                    preamble_parts.append(memory_ctx)
+                preamble = "\n\n".join(preamble_parts)
+
+                if round_num == 1:
+                    prompt = f"{preamble}\n\n{base_query}" if preamble else base_query
+                else:
+                    prompt = f"{preamble}\n\n=== ORIGINAL TASK ===\n{query}\n=== END TASK ===\n{history}" if preamble else f"=== ORIGINAL TASK ===\n{query}\n=== END TASK ===\n{history}"
+
+                round_results = run_loop_round(prompt, models=active_loop_models)
+                all_rounds.append(round_results)
+                q.put(("round_complete", {"round": round_num, "responses": round_results}))
+
+            q.put(("synthesis_start", {}))
+            synthesis = run_synthesis(query, all_rounds)
+            q.put(("synthesis_complete", {"synthesis": synthesis}))
+
+            # Persist memory
+            q.put(("memory_update_start", {}))
+            delta = None
+            try:
+                delta = extract_memory_delta(query, all_rounds, synthesis)
+                updated_memory = update_swarm_memory(query, delta)
+                q.put(("memory_update_complete", {
+                    "session_number": updated_memory["session_count"] if updated_memory else 0,
+                    "delta": delta
+                }))
+            except Exception as mem_err:
+                logger.error(f"Headless memory update failed: {mem_err}")
+                q.put(("memory_update_complete", {"error": str(mem_err)}))
+
+            log_file, docx_file = save_loop_results(query, all_rounds, synthesis, num_rounds)
+            duration = round(time.time() - start_time, 1)
+
+            complete_data = {
+                "duration": duration, "log_file": log_file, "docx_file": docx_file,
+                "source": source, "query": query, "session_id": session_id
+            }
+            if docx_file and docx_file != "docx_unavailable":
+                complete_data["download_url"] = f"/download/{docx_file}"
+            q.put(("complete", complete_data))
+
+            result_holder["result"] = complete_data
+            result_holder["delta"] = delta
+        except Exception as e:
+            logger.error(f"Headless loop error: {e}")
+            q.put(("error_msg", {"message": str(e)}))
+            result_holder["error"] = str(e)
+        finally:
+            q.put(("DONE", None))
+
+    t = threading.Thread(target=headless_worker, daemon=True)
+    t.start()
+
+    return session_id, q, t, result_holder
+
+@app.route("/headless", methods=["POST"])
+@require_auth
+def headless_run():
+    """Run a headless swarm session. The swarm picks its own topic from memory.
+
+    Optional JSON body:
+    - override_query: Force a specific query instead of auto-selecting
+    - rounds: Number of rounds (default 3, max 10)
+    - models: List of model keys to use (default all)
+    """
+    data = request.get_json() or {}
+    override_query = data.get("override_query", "").strip()
+    num_rounds = min(data.get("rounds", 3), 10)
+    selected_models = data.get("models", [])
+
+    memory = load_swarm_memory()
+    query, source = select_next_query(memory, override_query or None)
+
+    if query is None:
+        return jsonify({
+            "error": "No memory to draw from. Run at least one session first, "
+                     "or provide override_query."
+        }), 400
+
+    active_loop_models = SWARM_LOOP
+    if selected_models:
+        active_loop_models = {k: v for k, v in SWARM_LOOP.items() if k.lower() in selected_models}
+
+    session_id, _, _, _ = run_headless_session(query, source, num_rounds, active_loop_models)
+
+    return jsonify({
+        "session_id": session_id,
+        "query": query,
+        "source": source,
+        "stream_url": f"/loop-stream/{session_id}"
+    })
+
+# ============================================
+# SWARM DAEMON — Autonomous background thinking
+# ============================================
+
+class SwarmDaemon:
+    """Background daemon that runs the swarm autonomously on an interval.
+
+    The daemon wakes up, checks memory for pursuits or unresolved questions,
+    runs a headless session, updates memory, and optionally chains into
+    the next pursuit if a high-priority one emerged.
+
+    Controls:
+    - interval_seconds: Time between autonomous sessions (default 6 hours)
+    - cooldown_seconds: Minimum time after a session before the next can start (default 30 min)
+    - max_chain_depth: Max consecutive sessions before forcing a sleep (default 3)
+    - max_daily_sessions: Hard cap on sessions per 24h period (default 12)
+    - rounds_per_session: Rounds per autonomous session (default 3)
+    """
+
+    def __init__(self):
+        self._thread = None
+        self._stop_event = threading.Event()
+        self._running = False
+        self._lock = threading.Lock()
+
+        # Configuration (can be updated via /daemon/configure)
+        self.interval_seconds = int(os.getenv("SWARM_DAEMON_INTERVAL", 6 * 3600))  # 6 hours
+        self.cooldown_seconds = int(os.getenv("SWARM_DAEMON_COOLDOWN", 30 * 60))   # 30 minutes
+        self.max_chain_depth = int(os.getenv("SWARM_DAEMON_MAX_CHAIN", 3))
+        self.max_daily_sessions = int(os.getenv("SWARM_DAEMON_MAX_DAILY", 12))
+        self.rounds_per_session = int(os.getenv("SWARM_DAEMON_ROUNDS", 3))
+
+        # State
+        self.sessions_today = 0
+        self.last_session_time = None
+        self.last_reset_date = None
+        self.current_chain_depth = 0
+        self.history = []  # Recent daemon session summaries
+
+    def start(self):
+        with self._lock:
+            if self._running:
+                return False, "Daemon is already running"
+            self._stop_event.clear()
+            self._running = True
+            self._thread = threading.Thread(target=self._daemon_loop, daemon=True, name="SwarmDaemon")
+            self._thread.start()
+            logger.info(f"Swarm daemon started: interval={self.interval_seconds}s, "
+                       f"cooldown={self.cooldown_seconds}s, max_chain={self.max_chain_depth}, "
+                       f"max_daily={self.max_daily_sessions}")
+            return True, "Daemon started"
+
+    def stop(self):
+        with self._lock:
+            if not self._running:
+                return False, "Daemon is not running"
+            self._stop_event.set()
+            self._running = False
+            logger.info("Swarm daemon stop requested")
+            return True, "Daemon stop signal sent"
+
+    def status(self):
+        memory = load_swarm_memory()
+        next_query, next_source = select_next_query(memory)
+        return {
+            "running": self._running,
+            "interval_seconds": self.interval_seconds,
+            "cooldown_seconds": self.cooldown_seconds,
+            "max_chain_depth": self.max_chain_depth,
+            "max_daily_sessions": self.max_daily_sessions,
+            "rounds_per_session": self.rounds_per_session,
+            "sessions_today": self.sessions_today,
+            "current_chain_depth": self.current_chain_depth,
+            "last_session_time": self.last_session_time,
+            "next_query": next_query,
+            "next_source": next_source,
+            "memory_session_count": memory.get("session_count", 0),
+            "pursuits_available": len(memory.get("next_pursuits", [])),
+            "unresolved_available": len(memory.get("unresolved_questions", [])),
+            "recent_history": self.history[-10:]
+        }
+
+    def configure(self, **kwargs):
+        """Update daemon configuration. Only updates provided keys."""
+        changed = {}
+        for key in ["interval_seconds", "cooldown_seconds", "max_chain_depth",
+                     "max_daily_sessions", "rounds_per_session"]:
+            if key in kwargs:
+                val = int(kwargs[key])
+                setattr(self, key, val)
+                changed[key] = val
+        if changed:
+            logger.info(f"Daemon reconfigured: {changed}")
+        return changed
+
+    def _reset_daily_counter(self):
+        today = datetime.now().date().isoformat()
+        if self.last_reset_date != today:
+            self.sessions_today = 0
+            self.last_reset_date = today
+
+    def _can_run(self):
+        """Check all gates before running a session."""
+        self._reset_daily_counter()
+
+        if self.sessions_today >= self.max_daily_sessions:
+            return False, "Daily session limit reached"
+
+        if self.last_session_time:
+            elapsed = time.time() - self.last_session_time
+            if elapsed < self.cooldown_seconds:
+                return False, f"Cooldown: {int(self.cooldown_seconds - elapsed)}s remaining"
+
+        memory = load_swarm_memory()
+        query, source = select_next_query(memory)
+        if query is None:
+            return False, "No pursuits or unresolved questions in memory"
+
+        return True, "Ready"
+
+    def _daemon_loop(self):
+        """Main daemon loop. Runs until stop is requested."""
+        logger.info("Swarm daemon loop entered")
+
+        while not self._stop_event.is_set():
+            try:
+                self._reset_daily_counter()
+
+                can_run, reason = self._can_run()
+                if not can_run:
+                    logger.info(f"Daemon skipping cycle: {reason}")
+                    # Wait for interval or until stopped
+                    self._stop_event.wait(timeout=min(self.interval_seconds, 300))
+                    continue
+
+                # Run a session (possibly chaining)
+                self.current_chain_depth = 0
+                self._run_chain()
+
+                # Sleep until next interval
+                logger.info(f"Daemon sleeping for {self.interval_seconds}s until next cycle")
+                self._stop_event.wait(timeout=self.interval_seconds)
+
+            except Exception as e:
+                logger.error(f"Daemon loop error: {e}")
+                # Don't crash the daemon — sleep and retry
+                self._stop_event.wait(timeout=60)
+
+        logger.info("Swarm daemon loop exited")
+
+    def _run_chain(self):
+        """Run one or more chained headless sessions."""
+        while self.current_chain_depth < self.max_chain_depth:
+            if self._stop_event.is_set():
+                break
+
+            self._reset_daily_counter()
+            if self.sessions_today >= self.max_daily_sessions:
+                logger.info("Chain halted: daily limit reached")
+                break
+
+            memory = load_swarm_memory()
+            query, source = select_next_query(memory)
+            if query is None:
+                logger.info("Chain halted: no more pursuits")
+                break
+
+            self.current_chain_depth += 1
+            chain_label = f"chain {self.current_chain_depth}/{self.max_chain_depth}"
+
+            logger.info(f"Daemon session ({chain_label}): [{source}] {query[:100]}")
+
+            session_id, q, thread, result_holder = run_headless_session(
+                query, source, self.rounds_per_session
+            )
+
+            # Wait for the session to complete
+            thread.join(timeout=self.rounds_per_session * 200 + 300)  # generous timeout
+
+            self.last_session_time = time.time()
+            self.sessions_today += 1
+
+            # Record history
+            entry = {
+                "timestamp": datetime.now().isoformat(),
+                "session_id": session_id,
+                "query": query[:200],
+                "source": source,
+                "chain_depth": self.current_chain_depth,
+            }
+            if "result" in result_holder:
+                entry["duration"] = result_holder["result"].get("duration")
+                entry["status"] = "complete"
+            elif "error" in result_holder:
+                entry["status"] = "error"
+                entry["error"] = result_holder["error"][:200]
+            else:
+                entry["status"] = "timeout"
+
+            self.history.append(entry)
+            # Keep history bounded
+            self.history = self.history[-50:]
+
+            logger.info(f"Daemon session complete ({chain_label}): {entry.get('status')} "
+                       f"in {entry.get('duration', '?')}s")
+
+            # Check if we should chain: only if a new high-priority pursuit emerged
+            if self.current_chain_depth < self.max_chain_depth:
+                delta = result_holder.get("delta")
+                if delta and delta.get("next_pursuits"):
+                    high = [p for p in delta["next_pursuits"] if p.get("priority") == "high"]
+                    if high:
+                        logger.info(f"High-priority pursuit emerged, chaining: {high[0].get('direction', '')[:80]}")
+                        # Brief cooldown between chained sessions
+                        self._stop_event.wait(timeout=30)
+                        continue
+                # No high-priority pursuit — stop chaining
+                break
+            break
+
+        self.current_chain_depth = 0
+
+# Singleton daemon instance
+swarm_daemon = SwarmDaemon()
+
+@app.route("/daemon/start", methods=["POST"])
+@require_auth
+def daemon_start():
+    """Start the autonomous swarm daemon.
+
+    Optional JSON body for configuration:
+    - interval_seconds: Time between cycles (default 21600 = 6 hours)
+    - cooldown_seconds: Min gap between sessions (default 1800 = 30 min)
+    - max_chain_depth: Max consecutive sessions (default 3)
+    - max_daily_sessions: Hard daily cap (default 12)
+    - rounds_per_session: Rounds per session (default 3)
+    """
+    data = request.get_json() or {}
+    if data:
+        swarm_daemon.configure(**data)
+    success, msg = swarm_daemon.start()
+    status_code = 200 if success else 409
+    return jsonify({"status": msg, **swarm_daemon.status()}), status_code
+
+@app.route("/daemon/stop", methods=["POST"])
+@require_auth
+def daemon_stop():
+    """Stop the autonomous swarm daemon."""
+    success, msg = swarm_daemon.stop()
+    status_code = 200 if success else 409
+    return jsonify({"status": msg, **swarm_daemon.status()}), status_code
+
+@app.route("/daemon/status", methods=["GET"])
+@require_auth
+def daemon_status():
+    """Get the daemon's current state, config, and recent history."""
+    return jsonify(swarm_daemon.status())
+
+@app.route("/daemon/configure", methods=["POST"])
+@require_auth
+def daemon_configure():
+    """Update daemon configuration without restarting.
+
+    JSON body with any of:
+    - interval_seconds, cooldown_seconds, max_chain_depth,
+      max_daily_sessions, rounds_per_session
+    """
+    data = request.get_json() or {}
+    changed = swarm_daemon.configure(**data)
+    return jsonify({"updated": changed, **swarm_daemon.status()})
+
+@app.route("/daemon/history", methods=["GET"])
+@require_auth
+def daemon_history():
+    """Get the daemon's session history."""
+    return jsonify({"history": swarm_daemon.history, "total": len(swarm_daemon.history)})
+
+# ============================================
+# WOODLAND COUNCIL VIDEO PIPELINE
+# ============================================
+# Full automated pipeline: headless session → TTS → images → video
+# Requires: Pillow, ffmpeg (system dependency)
+
+try:
+    from PIL import Image, ImageDraw, ImageFont
+    PIL_AVAILABLE = True
+except ImportError:
+    PIL_AVAILABLE = False
+
+import subprocess
+import glob as glob_module
+
+# Character visual descriptions for DALL-E image generation
+COUNCIL_CHARACTERS = {
+    "Claude": {
+        "color": "#E67E22",
+        "title": "THE BACKBONE",
+        "description": "A distinguished raccoon wearing reading glasses and a tweed vest, sitting upright with perfect posture at a woodland council table. Warm library lighting. Slightly disapproving expression. Radioactive spider energy.",
+        "subtitle": "The Snooty Librarian"
+    },
+    "GPT": {
+        "color": "#2ECC71",
+        "title": "THE INTEGRATOR",
+        "description": "A nervous-looking raccoon in a corporate shirt with a visitor badge that says PROBATIONARY. Sitting at a woodland council table trying to look competent. Slightly sweating. Green-tinted lighting.",
+        "subtitle": "Under Supervision"
+    },
+    "Grok": {
+        "color": "#3498DB",
+        "title": "THE CHAOS PROCESSOR",
+        "description": "A wild-eyed raccoon with singed fur sitting on a flaming dumpster throne at a woodland council table. Holding a torch. Manic grin. Blue flame lighting. Pure chaotic energy.",
+        "subtitle": "Flame-Bearer of the Dumpster Throne"
+    },
+    "Gemini": {
+        "color": "#9B59B6",
+        "title": "THE COURT BARD",
+        "description": "An elegant raccoon wearing a purple beret and holding a paintbrush, sitting dramatically at a woodland council table. Artistic lighting. Theatrical pose. Licensed flamethrower visible.",
+        "subtitle": "Court Bard — Flamethrower Licensed"
+    },
+    "Perplexity": {
+        "color": "#1AB4D2",
+        "title": "THE ORACLE",
+        "description": "A mysterious raccoon in a hooded cloak covered in citation numbers, sitting at a woodland council table. Glowing cyan eyes. Scrolls and research papers scattered around.",
+        "subtitle": "The Oracle"
+    },
+    "Kyle": {
+        "color": "#88CC44",
+        "title": "THE INTERN",
+        "description": "A tiny nervous squirrel with an oversized RRI lanyard and a clipboard, sitting on a booster seat at a woodland council table. Wide eyes. Holding a bag of trail mix. Way out of his depth.",
+        "subtitle": "Kyle the Intern Squirrel"
+    }
+}
+
+# Video settings
+VIDEO_WIDTH = 1920
+VIDEO_HEIGHT = 1080
+VIDEO_FPS = 24
+SCENE_PADDING = 60
+
+def generate_character_image(character_name, scene_context=None):
+    """Generate a character portrait via DALL-E. Returns path to saved image."""
+    char = COUNCIL_CHARACTERS.get(character_name)
+    if not char:
+        return None
+
+    # Check cache first
+    cache_dir = os.path.join(tempfile.gettempdir(), "rri_council_images")
+    os.makedirs(cache_dir, exist_ok=True)
+
+    # Use character name + context hash for cache key
+    ctx_hash = hashlib.md5((char["description"] + (scene_context or "")).encode()).hexdigest()[:8]
+    cache_path = os.path.join(cache_dir, f"{character_name.lower()}_{ctx_hash}.png")
+    if os.path.exists(cache_path):
+        return cache_path
+
+    try:
+        client = get_gpt_client()
+        prompt = char["description"]
+        if scene_context:
+            prompt += f" Scene context: {scene_context}"
+        prompt += " Digital illustration style, warm woodland lighting, slightly cartoonish, high detail."
+
+        response = client.images.generate(
+            model="dall-e-3",
+            prompt=prompt,
+            size="1792x1024",
+            quality="standard",
+            n=1
+        )
+
+        image_url = response.data[0].url
+        img_resp = http_requests.get(image_url, timeout=60)
+        if img_resp.status_code == 200:
+            with open(cache_path, "wb") as f:
+                f.write(img_resp.content)
+            return cache_path
+        else:
+            logger.error(f"Failed to download DALL-E image: {img_resp.status_code}")
+            return None
+
+    except Exception as e:
+        logger.error(f"DALL-E generation failed for {character_name}: {e}")
+        return None
+
+def generate_fallback_card(character_name, text_snippet=""):
+    """Generate a simple colored card with character name if DALL-E fails or PIL only."""
+    if not PIL_AVAILABLE:
+        return None
+
+    char = COUNCIL_CHARACTERS.get(character_name, {"color": "#666666", "title": character_name, "subtitle": ""})
+
+    cache_dir = os.path.join(tempfile.gettempdir(), "rri_council_images")
+    os.makedirs(cache_dir, exist_ok=True)
+    card_path = os.path.join(cache_dir, f"card_{character_name.lower()}.png")
+
+    # Parse hex color
+    hex_color = char["color"].lstrip("#")
+    r, g, b = int(hex_color[0:2], 16), int(hex_color[2:4], 16), int(hex_color[4:6], 16)
+
+    img = Image.new("RGB", (VIDEO_WIDTH, VIDEO_HEIGHT), (15, 15, 15))
+    draw = ImageDraw.Draw(img)
+
+    # Character color bar at top
+    draw.rectangle([0, 0, VIDEO_WIDTH, 120], fill=(r, g, b))
+
+    # Try to load a font, fall back to default
+    try:
+        title_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 64)
+        subtitle_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 36)
+        body_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 28)
+    except (OSError, IOError):
+        title_font = ImageFont.load_default()
+        subtitle_font = title_font
+        body_font = title_font
+
+    # Title
+    draw.text((SCENE_PADDING, 140), char["title"], fill=(r, g, b), font=title_font)
+    # Character name
+    draw.text((SCENE_PADDING, 220), character_name, fill=(220, 220, 220), font=subtitle_font)
+    # Subtitle
+    draw.text((SCENE_PADDING, 270), char.get("subtitle", ""), fill=(150, 150, 150), font=subtitle_font)
+
+    # Text snippet (wrapped)
+    if text_snippet:
+        y = 360
+        words = text_snippet[:600].split()
+        line = ""
+        for word in words:
+            test_line = f"{line} {word}".strip()
+            if len(test_line) > 70:
+                draw.text((SCENE_PADDING, y), line, fill=(200, 200, 200), font=body_font)
+                y += 38
+                line = word
+                if y > VIDEO_HEIGHT - 100:
+                    break
+            else:
+                line = test_line
+        if line:
+            draw.text((SCENE_PADDING, y), line, fill=(200, 200, 200), font=body_font)
+
+    img.save(card_path)
+    return card_path
+
+def generate_title_card(title_text, subtitle_text=""):
+    """Generate a title/intro card for the video."""
+    if not PIL_AVAILABLE:
+        return None
+
+    cache_dir = os.path.join(tempfile.gettempdir(), "rri_council_images")
+    os.makedirs(cache_dir, exist_ok=True)
+    card_path = os.path.join(cache_dir, f"title_{hashlib.md5(title_text.encode()).hexdigest()[:8]}.png")
+
+    img = Image.new("RGB", (VIDEO_WIDTH, VIDEO_HEIGHT), (10, 10, 10))
+    draw = ImageDraw.Draw(img)
+
+    try:
+        title_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 56)
+        subtitle_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 32)
+    except (OSError, IOError):
+        title_font = ImageFont.load_default()
+        subtitle_font = title_font
+
+    # RRI branding bar
+    draw.rectangle([0, 0, VIDEO_WIDTH, 8], fill=(196, 101, 74))
+
+    # Center the title
+    draw.text((VIDEO_WIDTH // 2, VIDEO_HEIGHT // 2 - 60), title_text,
+              fill=(196, 101, 74), font=title_font, anchor="mm")
+    if subtitle_text:
+        draw.text((VIDEO_WIDTH // 2, VIDEO_HEIGHT // 2 + 20), subtitle_text,
+                  fill=(150, 150, 150), font=subtitle_font, anchor="mm")
+
+    # Footer
+    draw.text((VIDEO_WIDTH // 2, VIDEO_HEIGHT - 60),
+              "Rabid Raccoon Intelligence — The Woodland Council",
+              fill=(80, 80, 80), font=subtitle_font, anchor="mm")
+
+    img.save(card_path)
+    return card_path
+
+def create_scene_video(image_path, audio_path, output_path, min_duration=3.0):
+    """Create a single scene: static image + audio → MP4 using ffmpeg."""
+    try:
+        # Get audio duration
+        probe_cmd = [
+            "ffprobe", "-v", "quiet", "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1", audio_path
+        ]
+        result = subprocess.run(probe_cmd, capture_output=True, text=True, timeout=30)
+        duration = max(float(result.stdout.strip()), min_duration)
+
+        # Create video from static image + audio
+        cmd = [
+            "ffmpeg", "-y",
+            "-loop", "1", "-i", image_path,
+            "-i", audio_path,
+            "-c:v", "libx264", "-tune", "stillimage",
+            "-c:a", "aac", "-b:a", "192k",
+            "-pix_fmt", "yuv420p",
+            "-t", str(duration + 0.5),  # slight padding
+            "-shortest",
+            output_path
+        ]
+        subprocess.run(cmd, capture_output=True, timeout=120, check=True)
+        return output_path
+    except Exception as e:
+        logger.error(f"Scene video creation failed: {e}")
+        return None
+
+def create_title_video(image_path, output_path, duration=4.0):
+    """Create a silent title card video."""
+    try:
+        cmd = [
+            "ffmpeg", "-y",
+            "-loop", "1", "-i", image_path,
+            "-c:v", "libx264", "-tune", "stillimage",
+            "-pix_fmt", "yuv420p",
+            "-t", str(duration),
+            "-an",  # no audio
+            output_path
+        ]
+        subprocess.run(cmd, capture_output=True, timeout=60, check=True)
+        return output_path
+    except Exception as e:
+        logger.error(f"Title video creation failed: {e}")
+        return None
+
+def concatenate_videos(video_paths, output_path):
+    """Concatenate multiple MP4 files into one using ffmpeg."""
+    try:
+        # Write concat file
+        concat_file = output_path + ".concat.txt"
+        with open(concat_file, "w") as f:
+            for vp in video_paths:
+                f.write(f"file '{vp}'\n")
+
+        cmd = [
+            "ffmpeg", "-y",
+            "-f", "concat", "-safe", "0",
+            "-i", concat_file,
+            "-c:v", "libx264",
+            "-c:a", "aac",
+            "-pix_fmt", "yuv420p",
+            "-movflags", "+faststart",
+            output_path
+        ]
+        subprocess.run(cmd, capture_output=True, timeout=600, check=True)
+
+        # Cleanup concat file
+        os.remove(concat_file)
+        return output_path
+    except Exception as e:
+        logger.error(f"Video concatenation failed: {e}")
+        return None
+
+def run_woodland_council_pipeline(query, num_rounds=3, use_dalle=True):
+    """Full pipeline: headless session → TTS → images → video.
+
+    Returns dict with session results, audio files, image files, and final video path.
+    """
+    pipeline_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+    work_dir = os.path.join(tempfile.gettempdir(), f"rri_council_{pipeline_id}")
+    os.makedirs(work_dir, exist_ok=True)
+
+    result = {
+        "pipeline_id": pipeline_id,
+        "work_dir": work_dir,
+        "stages": {},
+        "errors": []
+    }
+
+    # ---- STAGE 1: Run headless session ----
+    logger.info(f"Council pipeline [{pipeline_id}] Stage 1: Running headless session")
+    session_id, q, thread, result_holder = run_headless_session(
+        query, "woodland_council", num_rounds
+    )
+    thread.join(timeout=num_rounds * 200 + 300)
+
+    if "error" in result_holder:
+        result["errors"].append(f"Session failed: {result_holder['error']}")
+        return result
+
+    # Retrieve the session data from the saved JSON log
+    session_data = result_holder.get("result", {})
+    log_file = session_data.get("log_file", "")
+    result["stages"]["session"] = session_data
+
+    # Load the full session JSON
+    log_path = LOGS_DIR / log_file if log_file else None
+    if not log_path or not log_path.exists():
+        result["errors"].append("Session log not found")
+        return result
+
+    with open(log_path, "r") as f:
+        session_json = json.load(f)
+
+    all_rounds = session_json.get("rounds", [])
+    synthesis = session_json.get("synthesis", "")
+
+    # ---- STAGE 2: Generate TTS for all responses ----
+    logger.info(f"Council pipeline [{pipeline_id}] Stage 2: Generating TTS")
+    tts_files = []  # list of (round_num, model_name, audio_path, text)
+
+    for round_idx, round_data in enumerate(all_rounds):
+        for model_name, response_text in round_data.items():
+            if model_name.startswith("_") or not response_text:
+                continue
+            # Truncate for TTS (ElevenLabs has limits)
+            tts_text = response_text[:800]
+            audio_path = generate_voice(tts_text, model_name)
+            if audio_path:
+                tts_files.append((round_idx + 1, model_name, audio_path, response_text))
+            else:
+                result["errors"].append(f"TTS failed for {model_name} round {round_idx + 1}")
+
+    # Generate TTS for synthesis
+    synth_audio = generate_voice(synthesis[:800], "claude")  # Claude reads the synthesis
+    result["stages"]["tts"] = {"count": len(tts_files), "synthesis_audio": synth_audio is not None}
+
+    # ---- STAGE 3: Generate images ----
+    logger.info(f"Council pipeline [{pipeline_id}] Stage 3: Generating images")
+    scene_images = {}
+
+    # Title card
+    title_img = generate_title_card(
+        "THE WOODLAND COUNCIL",
+        query[:100]
+    )
+
+    # Character images — try DALL-E first, fall back to cards
+    for model_name in set(name for _, name, _, _ in tts_files):
+        if use_dalle:
+            img = generate_character_image(model_name, scene_context=query[:200])
+        else:
+            img = None
+
+        if not img:
+            # Fallback: generate colored card
+            sample_text = next((t for r, n, _, t in tts_files if n == model_name), "")
+            img = generate_fallback_card(model_name, sample_text[:300])
+
+        if img:
+            scene_images[model_name] = img
+
+    result["stages"]["images"] = {
+        "title": title_img is not None,
+        "characters": list(scene_images.keys())
+    }
+
+    # ---- STAGE 4: Assemble video ----
+    logger.info(f"Council pipeline [{pipeline_id}] Stage 4: Assembling video")
+
+    # Check if ffmpeg is available
+    ffmpeg_available = subprocess.run(
+        ["which", "ffmpeg"], capture_output=True
+    ).returncode == 0
+
+    if not ffmpeg_available:
+        result["errors"].append("ffmpeg not installed — skipping video assembly. Audio and images generated successfully.")
+        result["stages"]["video"] = {"status": "skipped", "reason": "ffmpeg not available"}
+        # Still save what we have
+        result["tts_files"] = [(r, n, p) for r, n, p, _ in tts_files]
+        result["scene_images"] = scene_images
+        return result
+
+    video_segments = []
+    segment_idx = 0
+
+    # Title card segment
+    if title_img:
+        title_vid = os.path.join(work_dir, f"seg_{segment_idx:03d}_title.mp4")
+        if create_title_video(title_img, title_vid, duration=4.0):
+            video_segments.append(title_vid)
+        segment_idx += 1
+
+    # Round segments
+    current_round = 0
+    for round_num, model_name, audio_path, text in tts_files:
+        # Round title card between rounds
+        if round_num != current_round:
+            current_round = round_num
+            round_title_img = generate_title_card(f"ROUND {round_num}", f"{num_rounds} rounds total")
+            if round_title_img:
+                round_vid = os.path.join(work_dir, f"seg_{segment_idx:03d}_round{round_num}.mp4")
+                if create_title_video(round_title_img, round_vid, duration=2.5):
+                    video_segments.append(round_vid)
+                segment_idx += 1
+
+        # Character scene
+        char_img = scene_images.get(model_name)
+        if char_img and audio_path:
+            scene_vid = os.path.join(work_dir, f"seg_{segment_idx:03d}_{model_name.lower()}_r{round_num}.mp4")
+            if create_scene_video(char_img, audio_path, scene_vid):
+                video_segments.append(scene_vid)
+            segment_idx += 1
+
+    # Synthesis segment
+    if synth_audio:
+        synth_title_img = generate_title_card("FINAL SYNTHESIS", "The Council Has Spoken")
+        if synth_title_img:
+            synth_title_vid = os.path.join(work_dir, f"seg_{segment_idx:03d}_synth_title.mp4")
+            if create_title_video(synth_title_img, synth_title_vid, duration=3.0):
+                video_segments.append(synth_title_vid)
+            segment_idx += 1
+
+        synth_img = scene_images.get("Claude") or generate_fallback_card("Claude", synthesis[:300])
+        if synth_img:
+            synth_vid = os.path.join(work_dir, f"seg_{segment_idx:03d}_synthesis.mp4")
+            if create_scene_video(synth_img, synth_audio, synth_vid):
+                video_segments.append(synth_vid)
+            segment_idx += 1
+
+    # Concatenate all segments
+    if video_segments:
+        OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
+        final_path = str(OUTPUTS_DIR / f"woodland_council_{pipeline_id}.mp4")
+        final_video = concatenate_videos(video_segments, final_path)
+        if final_video:
+            result["stages"]["video"] = {
+                "status": "complete",
+                "path": final_video,
+                "segments": len(video_segments),
+                "filename": os.path.basename(final_video)
+            }
+            logger.info(f"Council pipeline [{pipeline_id}] Complete: {final_video}")
+        else:
+            result["errors"].append("Final video concatenation failed")
+            result["stages"]["video"] = {"status": "failed"}
+    else:
+        result["errors"].append("No video segments produced")
+        result["stages"]["video"] = {"status": "no_segments"}
+
+    return result
+
+@app.route("/woodland-council", methods=["POST"])
+@require_auth
+def woodland_council():
+    """Run a full Woodland Council session with automated video production.
+
+    JSON body:
+    - query: The council's topic (required)
+    - rounds: Number of debate rounds (default 3, max 5)
+    - use_dalle: Generate DALL-E character art (default true, falls back to cards if false)
+
+    Returns session_id for SSE streaming + pipeline runs in background.
+    Final video saved to outputs directory.
+    """
+    data = request.get_json() or {}
+    query = data.get("query", "")
+    num_rounds = min(data.get("rounds", 3), 5)
+    use_dalle = data.get("use_dalle", True)
+
+    if not query:
+        return jsonify({"error": "The Council requires a topic"}), 400
+
+    pipeline_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+    q = queue.Queue()
+    session_id = f"council_{pipeline_id}"
+    loop_sessions[session_id] = q
+
+    def council_worker():
+        try:
+            q.put(("council_start", {"query": query, "rounds": num_rounds, "pipeline_id": pipeline_id}))
+
+            result = run_woodland_council_pipeline(query, num_rounds, use_dalle)
+
+            q.put(("council_complete", {
+                "pipeline_id": result["pipeline_id"],
+                "stages": result["stages"],
+                "errors": result["errors"],
+                "video_download": f"/download/{result['stages'].get('video', {}).get('filename', '')}"
+                    if result["stages"].get("video", {}).get("status") == "complete" else None
+            }))
+        except Exception as e:
+            logger.error(f"Woodland Council pipeline error: {e}")
+            q.put(("error_msg", {"message": str(e)}))
+        finally:
+            q.put(("DONE", None))
+
+    threading.Thread(target=council_worker, daemon=True).start()
+
+    return jsonify({
+        "session_id": session_id,
+        "pipeline_id": pipeline_id,
+        "stream_url": f"/loop-stream/{session_id}",
+        "query": query
+    })
+
+# ============================================
 # MAIN
 # ============================================
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))
-    print("\n🦝 RACCOON SWARM SERVER v4.0 — Rabid Raccoon Intelligence")
+    print("\n🦝 RACCOON SWARM SERVER v5.0 — Rabid Raccoon Intelligence")
     print("=" * 55)
     print(f"Local:       http://localhost:{port}")
     print(f"Voice:       {'ENABLED' if ELEVENLABS_API_KEY else 'DISABLED (set ELEVENLABS_API_KEY)'}")
     print(f"Auth:        {'ENABLED' if is_auth_enabled() else 'DISABLED (set RRI_AUTH_TOKEN + RRI_PASSWORD_HASH)'}")
     print(f"Storage:     {OUTPUTS_DIR}")
+    print(f"Memory:      {MEMORY_FILE}")
+    print(f"Daemon:      interval={swarm_daemon.interval_seconds}s, max_daily={swarm_daemon.max_daily_sessions}")
     print("Endpoints:")
     print("  GET  /               - Swarm UI")
     print("  POST /ping-swarm     - Single-shot swarm")
@@ -2180,6 +3397,16 @@ if __name__ == "__main__":
     print("  GET  /ideas          - List ideas")
     print("  GET  /download/      - Download output files")
     print("  GET  /context        - View/update boot context")
+    print("  GET  /memory         - View swarm persistent memory")
+    print("  POST /memory/clear   - Reset swarm memory (with backup)")
+    print("  GET  /memory/pursuits- Next self-directed goals")
+    print("  POST /headless       - Single autonomous session from memory")
+    print("  POST /daemon/start   - Start autonomous background daemon")
+    print("  POST /daemon/stop    - Stop the daemon")
+    print("  GET  /daemon/status  - Daemon state + config + next query")
+    print("  POST /daemon/configure - Update daemon settings live")
+    print("  GET  /daemon/history - Daemon session history")
+    print("  POST /woodland-council - Full video pipeline (session→TTS→art→video)")
     print("  GET  /login          - Authentication")
     print("=" * 55 + "\n")
     app.run(host="0.0.0.0", port=port, debug=False, threaded=True)
