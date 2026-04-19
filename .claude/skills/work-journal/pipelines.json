@@ -1,0 +1,35 @@
+{
+  "_comment": "Fill in doc_id for each work pipeline with the Google Doc ID of that pipeline's journal Doc. The personal pipeline MUST have local_only=true and doc_id=null — the SessionEnd flush script asserts this invariant.",
+  "pipelines": {
+    "applications": {
+      "local_only": false,
+      "doc_id": null,
+      "local_path": "journals/applications.md"
+    },
+    "paper6": {
+      "local_only": false,
+      "doc_id": null,
+      "local_path": "journals/paper6.md"
+    },
+    "swarm_ops": {
+      "local_only": false,
+      "doc_id": null,
+      "local_path": "journals/swarm_ops.md"
+    },
+    "content": {
+      "local_only": false,
+      "doc_id": null,
+      "local_path": "journals/content.md"
+    },
+    "consulting": {
+      "local_only": false,
+      "doc_id": null,
+      "local_path": "journals/consulting.md"
+    },
+    "personal": {
+      "local_only": true,
+      "doc_id": null,
+      "local_path": "journals/personal.md"
+    }
+  }
+}
