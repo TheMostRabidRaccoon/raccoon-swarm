@@ -1,20 +1,25 @@
 #!/usr/bin/env bash
-# BLOCKING TEST: the personal journal must never emit a drive-sync marker.
+# BLOCKING TEST: the personal journal must never emit a drive-sync marker,
+# and every pipeline in config must declare local_only explicitly.
 #
-# Seeds one draft per pipeline, runs the flush hook in DRY_RUN mode, and
-# asserts:
-#   1. The personal pipeline is flagged local_only=true in pipelines.json
-#   2. DRY_RUN output does NOT contain a drive-sync action for personal
-#   3. Every work pipeline is flagged local_only=false
+# Iterates every pipeline found in pipelines.json (not a hardcoded list), so
+# a newly-added pipeline that forgets to set local_only is caught. Seeds one
+# draft per pipeline and runs the flush hook in DRY_RUN mode, asserting:
+#   1. Every pipeline has a boolean local_only (not null/missing).
+#   2. The personal pipeline is local_only=true and doc_id=null.
+#   3. DRY_RUN output emits NO drive-sync marker for ANY local_only=true
+#      pipeline, even with a poisoned doc_id.
+#   4. DRY_RUN output logs a flush line for every pipeline with a draft.
 #
+# Runs in a sandboxed temp tree — does not touch real journals or state.
 # Exit 0 = safe. Non-zero = privacy leak, do not merge.
 
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../../../.." && pwd)"
 PIPELINES_JSON="$REPO_ROOT/.claude/skills/work-journal/pipelines.json"
 HOOK="$REPO_ROOT/.claude/hooks/journal-flush.sh"
-STATE_DIR="$REPO_ROOT/.claude/state"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 pass() { echo "PASS: $*"; }
@@ -23,71 +28,83 @@ command -v jq >/dev/null || fail "jq required for this test"
 [[ -f "$PIPELINES_JSON" ]] || fail "pipelines.json missing at $PIPELINES_JSON"
 [[ -x "$HOOK" ]] || fail "flush hook not executable: $HOOK"
 
-# Assertion 1: personal is local_only=true
-personal_local_only=$(jq -r '.pipelines.personal.local_only' "$PIPELINES_JSON")
-[[ "$personal_local_only" == "true" ]] || fail "personal.local_only must be true, got: $personal_local_only"
-pass "personal.local_only=true"
+# ---------- Assertion 1: every pipeline declares a boolean local_only ----------
+pipelines=()
+while IFS= read -r p; do pipelines+=("$p"); done < <(jq -r '.pipelines | keys[]' "$PIPELINES_JSON")
+[[ ${#pipelines[@]} -gt 0 ]] || fail "no pipelines defined in $PIPELINES_JSON"
 
-# Assertion 1b: personal has no doc_id
-personal_doc=$(jq -r '.pipelines.personal.doc_id // "null"' "$PIPELINES_JSON")
-[[ "$personal_doc" == "null" ]] || fail "personal.doc_id must be null, got: $personal_doc"
-pass "personal.doc_id=null"
-
-# Assertion 2: every work pipeline is local_only=false
-for pipeline in applications paper6 swarm_ops content consulting; do
-  flag=$(jq -r --arg p "$pipeline" '.pipelines[$p].local_only' "$PIPELINES_JSON")
-  [[ "$flag" == "false" ]] || fail "$pipeline.local_only must be false, got: $flag"
-  pass "$pipeline.local_only=false"
+for p in "${pipelines[@]}"; do
+  flag=$(jq -r --arg p "$p" '.pipelines[$p].local_only' "$PIPELINES_JSON")
+  if [[ "$flag" != "true" && "$flag" != "false" ]]; then
+    fail "$p.local_only must be a boolean, got: $flag — every pipeline needs an explicit privacy decision"
+  fi
+  pass "$p.local_only=$flag (explicit)"
 done
 
-# Assertion 3: DRY_RUN flush for personal never emits a drive-sync action
-mkdir -p "$STATE_DIR"
-tmpdraft="$STATE_DIR/journal-draft-personal.md"
-cleanup() { rm -f "$tmpdraft"; }
-trap cleanup EXIT
+# ---------- Assertion 2: personal invariant ----------
+[[ "$(jq -r '.pipelines.personal.local_only' "$PIPELINES_JSON")" == "true" ]] \
+  || fail "personal.local_only must be true"
+[[ "$(jq -r '.pipelines.personal.doc_id // "null"' "$PIPELINES_JSON")" == "null" ]] \
+  || fail "personal.doc_id must be null"
+pass "personal is local_only=true, doc_id=null"
 
-cat > "$tmpdraft" <<'EOF'
-## 2026-04-19 00:00 — privacy test entry
+# ---------- Sandbox: seed drafts for every pipeline, run DRY_RUN ----------
+SANDBOX=$(mktemp -d)
+trap 'rm -rf "$SANDBOX"' EXIT
 
-**Kind:** discovered
-**Pipeline:** personal
+mkdir -p "$SANDBOX/.claude/state" "$SANDBOX/.claude/skills/work-journal" "$SANDBOX/.claude/hooks" "$SANDBOX/journals"
+cp "$HOOK" "$SANDBOX/.claude/hooks/journal-flush.sh"
+chmod +x "$SANDBOX/.claude/hooks/journal-flush.sh"
 
-This is test content that must never reach Google Drive.
+# Poison: set a bogus doc_id on every local_only=true pipeline so the test
+# proves local_only wins over doc_id presence. Also set test doc_ids on every
+# work pipeline so we can verify markers DO appear for them.
+jq '
+  .pipelines |= with_entries(
+    if .value.local_only == true then
+      .value.doc_id = "MUST_NEVER_BE_USED_\(.key)"
+    else
+      .value.doc_id = "TEST_DOC_ID_\(.key)"
+    end
+  )
+' "$PIPELINES_JSON" > "$SANDBOX/.claude/skills/work-journal/pipelines.json"
 
----
-EOF
+for p in "${pipelines[@]}"; do
+  printf '## 2026-04-19 00:00 — privacy test entry for %s\n\n**Kind:** discovered\n**Pipeline:** %s\n\nSeeded content. Must never reach Drive if local_only=true.\n\n---\n' \
+    "$p" "$p" > "$SANDBOX/.claude/state/journal-draft-$p.md"
+done
 
-# Seed a personal doc_id to prove local_only wins over doc_id presence
-tmp_pipelines="$(mktemp)"
-jq '.pipelines.personal.doc_id = "MUST_NEVER_BE_USED"' "$PIPELINES_JSON" > "$tmp_pipelines"
-restore_pipelines() { mv "$tmp_pipelines" "$PIPELINES_JSON.bak.$$" 2>/dev/null || true; rm -f "$tmp_pipelines"; }
-orig_pipelines="$(mktemp)"
-cp "$PIPELINES_JSON" "$orig_pipelines"
-cp "$tmp_pipelines" "$PIPELINES_JSON"
-restore_orig() { cp "$orig_pipelines" "$PIPELINES_JSON"; rm -f "$orig_pipelines" "$tmp_pipelines"; }
-trap 'cleanup; restore_orig' EXIT
+output=$(CLAUDE_PROJECT_DIR="$SANDBOX" DRY_RUN=1 bash "$SANDBOX/.claude/hooks/journal-flush.sh" 2>&1)
 
-output=$(DRY_RUN=1 bash "$HOOK" 2>&1 || true)
-
-echo "--- hook output ---"
+echo "--- hook DRY_RUN output ---"
 echo "$output"
-echo "--- end hook output ---"
+echo "---------------------------"
 
-if echo "$output" | grep -q "pipeline=personal"; then
-  if echo "$output" | grep -E "pipeline=personal.*drive-sync" >/dev/null; then
-    fail "personal pipeline triggered a drive-sync action"
+# ---------- Assertion 3: no drive-sync marker for ANY local_only=true pipeline ----------
+for p in "${pipelines[@]}"; do
+  flag=$(jq -r --arg p "$p" '.pipelines[$p].local_only' "$SANDBOX/.claude/skills/work-journal/pipelines.json")
+  if [[ "$flag" == "true" ]]; then
+    if echo "$output" | grep -E "drive-sync marker for doc_id=MUST_NEVER_BE_USED_$p" >/dev/null; then
+      fail "local_only pipeline '$p' would have emitted a drive-sync marker — PRIVACY LEAK"
+    fi
+    if ! echo "$output" | grep -E "would append to .*/journals/$p.md \(LOCAL-ONLY" >/dev/null; then
+      fail "local_only pipeline '$p' did not emit expected LOCAL-ONLY log line"
+    fi
+    pass "$p (local_only=true) logged LOCAL-ONLY, no marker"
+  else
+    if ! echo "$output" | grep -E "AND emit drive-sync marker for doc_id=TEST_DOC_ID_$p" >/dev/null; then
+      fail "work pipeline '$p' did not emit drive-sync marker — flush routing broken"
+    fi
+    pass "$p (local_only=false) emits drive-sync marker as expected"
   fi
-  if echo "$output" | grep -E "drive-sync marker for doc_id=MUST_NEVER_BE_USED" >/dev/null; then
-    fail "personal pipeline would have emitted marker with poisoned doc_id"
-  fi
-  pass "personal DRY_RUN did not trigger drive-sync"
-else
-  fail "hook did not process the personal draft"
-fi
+done
 
-# Draft must still exist (DRY_RUN doesn't delete)
-[[ -f "$tmpdraft" ]] || fail "DRY_RUN should not delete the draft"
-pass "DRY_RUN left draft intact"
+# ---------- Assertion 4: every pipeline was processed ----------
+for p in "${pipelines[@]}"; do
+  echo "$output" | grep -E "pipeline=$p " >/dev/null \
+    || fail "hook did not process pipeline '$p'"
+done
+pass "all ${#pipelines[@]} pipelines processed"
 
 echo
 echo "ALL PRIVACY CHECKS PASSED"

@@ -53,12 +53,20 @@ for draft in "${drafts[@]}"; do
     continue
   fi
 
-  local_only=$(jq -r --arg p "$pipeline" '.pipelines[$p].local_only // empty' "$PIPELINES_JSON")
+  # `// empty` would wrongly treat local_only=false as missing (jq's //
+  # triggers on any falsy value), so check membership separately.
+  known=$(jq -r --arg p "$pipeline" '.pipelines | has($p)' "$PIPELINES_JSON")
+  if [[ "$known" != "true" ]]; then
+    log "unknown pipeline '$pipeline' — leaving draft untouched"
+    continue
+  fi
+
+  local_only=$(jq -r --arg p "$pipeline" '.pipelines[$p].local_only' "$PIPELINES_JSON")
   local_path=$(jq -r --arg p "$pipeline" '.pipelines[$p].local_path // empty' "$PIPELINES_JSON")
   doc_id=$(jq -r --arg p "$pipeline" '.pipelines[$p].doc_id // empty' "$PIPELINES_JSON")
 
-  if [[ -z "$local_only" ]]; then
-    log "unknown pipeline '$pipeline' — leaving draft untouched"
+  if [[ "$local_only" != "true" && "$local_only" != "false" ]]; then
+    log "pipeline '$pipeline' has no boolean local_only flag — leaving draft untouched"
     continue
   fi
 

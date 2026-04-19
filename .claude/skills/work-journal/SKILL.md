@@ -82,6 +82,22 @@ The user runs this on Mac with Claude Desktop's existing MCP config. Before the 
 
 Never install an MCP server autonomously. The user drives that.
 
+## Draining pending drive-syncs at session start
+
+The `SessionStart` hook (`.claude/hooks/journal-sync-startup.sh`) scans for `pending-drive-sync-<pipeline>.md` markers left by the previous session's flush and emits a banner into the session context listing each pending pipeline and its Doc ID.
+
+When you see that banner:
+
+1. **Check MCP availability first.** If no Google Docs append tool is available, tell the user once ("Google Docs MCP not detected — markers left for next session") and **stop**. Do not delete any markers.
+2. **For each pending pipeline in the banner:**
+   - Read the marker file (the banner lists the full path).
+   - Append its content to the Google Doc (Doc ID listed in the banner) using the MCP append tool.
+   - **Only after the MCP call succeeds**, delete the marker with `rm`.
+   - If the MCP call fails, leave the marker in place and report the error to the user — do not retry blindly.
+3. **Never drain a `personal` marker.** The hook exits non-zero if one exists; if you somehow see a `pending-drive-sync-personal.md`, surface it to the user, do not push it to any MCP, and let the user inspect it before deletion.
+
+Draining is additive — the Doc keeps growing. No deduplication yet; if you push a marker twice, you'll get duplicate entries in the Doc.
+
 ## Out of scope for this pass
 
 - Headless/Lenovo service-account auth — Mac + interactive OAuth only.
