@@ -17,6 +17,14 @@ ideas.json
 vault/
 raccoon_memory/
 
+# Work-journal: local journal contents and scratch state — privacy-critical.
+# personal.md must never be committed. .gitkeep is whitelisted to preserve
+# the directories.
+journals/*
+!journals/.gitkeep
+.claude/state/*
+!.claude/state/.gitkeep
+
 # Runtime artifacts
 *.log
 *.mp3
