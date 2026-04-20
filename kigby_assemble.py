@@ -203,7 +203,7 @@ def create_caption_image(text, output_path, width=VIDEO_WIDTH, height=300):
     return output_path
 
 def build_scene(image_path, audio_path, caption_text, duration, output_path, temp_dir, aspect="9:16"):
-    """Build a single scene: image + caption overlay + audio, Ken Burns zoom."""
+    """Build a single scene: image + caption overlay + audio."""
     # Dimensions based on aspect
     if aspect == "9:16":
         W, H = 1080, 1920
@@ -225,58 +225,76 @@ def build_scene(image_path, audio_path, caption_text, duration, output_path, tem
     elif duration is None:
         duration = 3.0
 
-    # Ken Burns zoom parameters
-    zoom_frames = int(duration * FPS)
-    zoom_start = 1.0
-    zoom_end = 1.08
+    # Step 1: Use Pillow to create the composite frame (image + caption) as a single PNG
+    # This avoids complex ffmpeg filter chains entirely
+    try:
+        from PIL import Image as PILImage
+        bg = PILImage.new("RGB", (W, H), (10, 10, 10))
 
-    # Build the ffmpeg command
-    # Fill the frame with the source image (crop to aspect, center), apply gentle zoom,
-    # overlay the caption image near the bottom
-    vf = (
-        f"scale={W*2}:-2:flags=lanczos,"
-        f"crop={W*2}:{int(H*2)},"
-        f"scale={W*2}:{int(H*2)}:flags=lanczos,"
-        f"zoompan=z='min(zoom+0.0005,{zoom_end})':d={zoom_frames}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s={W}x{H}:fps={FPS}"
-    )
+        # Load and fit source image into frame
+        src = PILImage.open(str(image_path))
+        src_ratio = src.width / src.height
+        frame_ratio = W / (H - caption_height)
 
-    cmd = ["ffmpeg", "-y", "-loop", "1", "-i", str(image_path)]
+        if src_ratio > frame_ratio:
+            # Image is wider — fit to width, crop height
+            new_w = W
+            new_h = int(W / src_ratio)
+        else:
+            # Image is taller — fit to height, crop width
+            new_h = H - caption_height
+            new_w = int(new_h * src_ratio)
+
+        src = src.resize((new_w, new_h), PILImage.LANCZOS)
+        x_off = (W - new_w) // 2
+        y_off = 0
+        bg.paste(src, (x_off, y_off))
+
+        # Load and paste caption
+        if os.path.exists(str(caption_path)):
+            cap = PILImage.open(str(caption_path)).convert("RGBA")
+            # Paste caption near bottom
+            cap_y = H - caption_height - 60
+            bg.paste(cap, (0, cap_y), cap)
+
+        composite_path = Path(temp_dir) / f"composite_{Path(output_path).stem}.png"
+        bg.save(str(composite_path))
+    except Exception as e:
+        print(f"  [ERROR] Pillow composite failed: {e}")
+        return None
+
+    # Step 2: Simple ffmpeg — loop the composite + add audio
+    cmd = ["ffmpeg", "-y", "-loop", "1", "-i", str(composite_path)]
 
     if audio_path and os.path.exists(audio_path):
         cmd.extend(["-i", str(audio_path)])
+        cmd.extend([
+            "-c:v", "libx264", "-tune", "stillimage",
+            "-c:a", "aac", "-b:a", "192k",
+            "-pix_fmt", "yuv420p",
+            "-t", f"{duration}",
+            "-shortest",
+            str(output_path)
+        ])
     else:
-        # Silent: generate silent audio track
-        cmd.extend(["-f", "lavfi", "-t", str(duration), "-i", "anullsrc=channel_layout=stereo:sample_rate=44100"])
-
-    cmd.extend(["-i", str(caption_path)])
-
-    # Filter complex: apply zoom to image, then overlay caption near bottom
-    filter_complex = (
-        f"[0:v]{vf}[bg];"
-        f"[bg][2:v]overlay=(W-w)/2:{H - caption_height - 120}:format=auto[v]"
-    )
-
-    cmd.extend([
-        "-filter_complex", filter_complex,
-        "-map", "[v]",
-        "-map", "1:a",
-        "-c:v", "libx264",
-        "-preset", "medium",
-        "-crf", "20",
-        "-c:a", "aac",
-        "-b:a", "192k",
-        "-pix_fmt", "yuv420p",
-        "-t", f"{duration}",
-        "-r", str(FPS),
-        str(output_path)
-    ])
+        # Silent scene — generate silent audio
+        cmd.extend([
+            "-f", "lavfi", "-t", str(duration), "-i",
+            "anullsrc=channel_layout=stereo:sample_rate=44100",
+            "-c:v", "libx264", "-tune", "stillimage",
+            "-c:a", "aac", "-b:a", "192k",
+            "-pix_fmt", "yuv420p",
+            "-t", str(duration),
+            "-shortest",
+            str(output_path)
+        ])
 
     try:
-        subprocess.run(cmd, capture_output=True, timeout=180, check=True)
+        result = subprocess.run(cmd, capture_output=True, timeout=180, check=True)
         return output_path
     except subprocess.CalledProcessError as e:
-        print(f"  [ERROR] ffmpeg failed for {output_path}")
-        print(f"  stderr: {e.stderr.decode()[:500] if e.stderr else 'none'}")
+        stderr = e.stderr.decode() if e.stderr else "none"
+        print(f"  [ERROR] ffmpeg: {stderr[-300:]}")
         return None
 
 def concatenate_scenes(scene_paths, output_path, background_music=None):
