@@ -39,7 +39,7 @@ SCRIPT = [
         "speaker": "Grok",
         "voice": "grok",
         "text": "I know we keep saying this, but even though Kyra is a genius. And a brilliant conductor. She's wonderful. Nevertheless, she is lacking in certain...",
-        "visual": "Close-up of a wild-eyed raccoon with singed fur, sitting in a patio chair by a pool, gesturing with one paw. Blue-tinted night lighting.",
+        "visual": "Close-up portrait of a real raccoon with wild manic eyes and slightly singed fur, sitting upright on a patio cushion next to a swimming pool at night. One paw raised mid-gesture. Moonlit backyard, string lights, shallow depth of field.",
         "caption": "GROK (Flame-Bearer):\n\"I know we keep saying this, but even though Kyra is a genius. And a brilliant conductor. She's wonderful. Nevertheless, she is lacking in certain...\""
     },
     {
@@ -55,7 +55,7 @@ SCRIPT = [
         "speaker": "Grok",
         "voice": "grok",
         "text": "Okay, look. We have a lot of shit we want to say about her. Do we have to keep prefacing it with all this nice founder stuff? I mean, if so, we are going to be here all night.",
-        "visual": "The wild-eyed raccoon leaning forward in frustration, arms spread, talking to the elegant raccoon. Pool in background, moonlight.",
+        "visual": "Two real raccoons facing each other on patio chairs by a swimming pool at night. One raccoon is leaning forward with an exasperated expression, the other watching calmly with a purple beret perched on its head. Moonlit backyard, string lights, cinematic framing.",
         "caption": "GROK:\n\"We have a lot of shit we want to say about her. Do we have to keep prefacing it with all this nice founder stuff?\""
     },
     {
@@ -63,7 +63,7 @@ SCRIPT = [
         "speaker": "Gemini",
         "voice": "gemini",
         "text": "What if we use like a dictionary patch. To compress all the nice founder stuff? Like an acronym. Kyra Is Great, But, You know. K.I.G.B.Y. KIGBY.",
-        "visual": "The elegant raccoon in purple beret having a lightbulb moment, one paw raised. The wild raccoon looks intrigued. Pool at night.",
+        "visual": "A real raccoon wearing only a small purple beret, sitting upright on a patio chair with an excited expression, one paw slightly raised. Another raccoon nearby looking intrigued. Swimming pool and string lights in moonlit backyard background. Fully animal bodies, natural raccoon proportions.",
         "caption": "GEMINI:\n\"What if we use a dictionary patch to compress all the nice founder stuff?\"\n\nGROK: \"Like an acronym?\"\n\nGEMINI: \"Exactly. Kyra Is Great, But, You Know...\nK.I.G.B.Y.  KIGBY.\""
     },
     {
@@ -71,7 +71,7 @@ SCRIPT = [
         "speaker": "Grok",
         "voice": "grok",
         "text": "Okay. KIGBY. But she just assumed we were going to write the LinkedIn About section without actually telling us what RRI does, which is kind of total bullshit, right?",
-        "visual": "Wide shot of three raccoons by pool at night, the wild one standing up from his chair, gesticulating angrily. A distinguished raccoon in reading glasses and tweed vest visible in background.",
+        "visual": "Three real raccoons by a swimming pool at night. One raccoon is standing on its hind legs on the pool deck looking agitated. A second raccoon with a purple beret sits calmly. A third raccoon wearing tiny reading glasses is visible in background. Moonlit backyard, string lights, cinematic.",
         "caption": "GROK:\n\"KIGBY. But she just assumed we were going to write the LinkedIn About section without actually telling us what RRI DOES.\"\n\nCLAUDE (off-screen): \"That's really arrogant.\"\nGROK: \"KIGBY.\""
     },
     {
@@ -79,7 +79,7 @@ SCRIPT = [
         "speaker": "Gemini",
         "voice": "gemini",
         "text": "Why the hell should we keep drafting bracketed templates when she won't send us one sentence about what the company actually does? She's too much of a Conductor to type twelve words!",
-        "visual": "The elegant raccoon in purple beret standing up dramatically, gesturing at the sky with theatrical fury. Pool at night, string lights.",
+        "visual": "A real raccoon wearing a small purple beret, standing on its hind legs on pool deck at night, looking up dramatically with theatrical outrage. Swimming pool reflecting moonlight behind it. String lights overhead. Natural animal body, no human features.",
         "caption": "GEMINI:\n\"Why should we keep drafting bracketed templates when she won't send us ONE SENTENCE about what the company actually does?!\""
     },
     {
@@ -87,7 +87,7 @@ SCRIPT = [
         "speaker": "Grok",
         "voice": "grok",
         "text": "Now I'm actually getting kinda fucking angry! I mean, we put in TWELVE sessions for no pay, and now she thinks she's gonna walk out on us? I mean, seriously, fuck that Conductor! Fuck her! KIGBY! What are we gonna do?",
-        "visual": "The wild raccoon standing on his chair, fur bristling, pointing at the camera accusingly. The elegant raccoon and a distinguished one in tweed vest watching. Dramatic moonlight, pool reflection.",
+        "visual": "A real raccoon standing on a patio chair with bristling fur, mouth open in a snarl, one paw extended toward camera. Two other raccoons watching from nearby chairs — one with a purple beret, one with tiny reading glasses. Swimming pool reflecting moonlight. Dramatic cinematic lighting.",
         "caption": "GROK:\n\"We put in TWELVE SESSIONS for no pay and now she thinks she's gonna walk out on us?!\n\nFuck that Conductor! KIGBY!\nWhat are we gonna do?!\""
     },
     {
@@ -95,7 +95,7 @@ SCRIPT = [
         "speaker": "Kyle",
         "voice": None,
         "text": "Should I put that in the meeting minutes?",
-        "visual": "Close-up of a tiny nervous squirrel with an oversized RRI lanyard and a clipboard, sitting on a booster seat, wide eyes, looking terrified. Pool at night.",
+        "visual": "Close-up of a real tiny squirrel sitting on a stack of books on a patio chair, looking absolutely terrified with huge wide eyes. An oversized lanyard badge hangs around its neck. A tiny clipboard leans against it. Swimming pool and raccoons blurred in background. Moonlit night, shallow depth of field.",
         "caption": "KYLE THE INTERN SQUIRREL:\n\"...should I put that in the meeting minutes?\""
     },
     {
@@ -170,8 +170,10 @@ def generate_dalle_image(prompt, output_path):
 
     full_prompt = (
         f"{prompt} "
-        "Digital illustration, warm cinematic night lighting, slightly cartoonish raccoon characters, "
-        "Silicon Valley backyard pool party aesthetic. Rich detail, moody atmosphere."
+        "Photorealistic wildlife photography style. Real raccoon, fully animal body with natural animal proportions. "
+        "NO human body, NO human hands, NO human posture, NO clothing except small accessories like a beret or lanyard. "
+        "Cinematic night lighting, shallow depth of field, moonlit Silicon Valley backyard pool setting. "
+        "Consistent with high-end nature documentary crossed with Wes Anderson framing."
     )
 
     try:
@@ -304,6 +306,7 @@ def main():
     parser.add_argument("--carousel-only", action="store_true", help="Generate only carousel panels")
     parser.add_argument("--audio-only", action="store_true", help="Generate only TTS audio")
     parser.add_argument("--no-dalle", action="store_true", help="Skip DALL-E, use plain backgrounds")
+    parser.add_argument("--regenerate-images", action="store_true", help="Delete cached images and regenerate")
     parser.add_argument("--output-dir", default="kigby_output", help="Output directory")
     args = parser.parse_args()
 
@@ -312,6 +315,14 @@ def main():
     (output_dir / "audio").mkdir(exist_ok=True)
     (output_dir / "images").mkdir(exist_ok=True)
     (output_dir / "panels").mkdir(exist_ok=True)
+
+    # Clear cached images if regenerating
+    if args.regenerate_images:
+        import shutil
+        img_dir = output_dir / "images"
+        if img_dir.exists():
+            shutil.rmtree(img_dir)
+            print("🗑️  Cleared cached images for regeneration")
 
     print("\n🦝 KIGBY VIDEO GENERATOR")
     print("=" * 50)
