@@ -1,0 +1,33 @@
+name: work-journal privacy check
+
+# Runs the blocking privacy test on any PR that touches the work-journal skill,
+# its hooks, or this workflow. Protects the invariant that the `personal`
+# pipeline is local-only — the test fails closed on misconfig (missing
+# local_only, personal.doc_id set, local_only pipeline emitting a marker).
+
+on:
+  pull_request:
+    paths:
+      - '.claude/skills/work-journal/**'
+      - '.claude/hooks/journal-flush.sh'
+      - '.claude/hooks/journal-sync-startup.sh'
+      - '.github/workflows/work-journal-privacy.yml'
+  push:
+    branches: [main]
+    paths:
+      - '.claude/skills/work-journal/**'
+      - '.claude/hooks/journal-flush.sh'
+      - '.claude/hooks/journal-sync-startup.sh'
+      - '.github/workflows/work-journal-privacy.yml'
+
+jobs:
+  privacy-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y jq
+
+      - name: Run privacy check
+        run: bash .claude/skills/work-journal/tests/privacy-check.sh

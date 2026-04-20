@@ -26,13 +26,16 @@ DRY_RUN="${DRY_RUN:-0}"
 log() { echo "[journal-flush] $*" >&2; }
 
 if [[ ! -f "$PIPELINES_JSON" ]]; then
-  log "pipelines.json missing at $PIPELINES_JSON — aborting"
-  exit 0
+  log "ERROR pipelines.json missing at $PIPELINES_JSON"
+  log "ERROR drafts in $STATE_DIR will not be flushed until this is restored"
+  exit 1
 fi
 
 if ! command -v jq >/dev/null 2>&1; then
-  log "jq not found on PATH — aborting (install jq to enable flushing)"
-  exit 0
+  log "ERROR jq not found on PATH — cannot resolve pipelines.json"
+  log "ERROR drafts in $STATE_DIR will be preserved for next session"
+  log "ERROR install jq (brew install jq / apt-get install jq) to enable flushing"
+  exit 1
 fi
 
 shopt -s nullglob
