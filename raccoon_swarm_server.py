@@ -2474,6 +2474,79 @@ def select_next_query(memory, override_query=None):
 
     return None, None
 
+def build_memory_audit_query(memory):
+    """Construct a self-reflection query that forces the swarm to audit its own memory.
+
+    This is the anti-bias-compounding mechanism: periodically, the swarm runs on
+    its own accumulated state as the topic. Resolved positions get challenged,
+    contradictions get surfaced, stale or wrong memories get flagged for revision.
+    """
+    parts = [
+        "=== MEMORY AUDIT SESSION ===",
+        "",
+        "This is a self-reflection session. You are the swarm auditing its own memory.",
+        f"Session #{memory.get('session_count', 0)} — what do we think we know?",
+        "",
+        "## YOUR TASK",
+        "Below is the swarm's accumulated memory. Challenge it.",
+        "",
+        "For each category, examine critically:",
+        "- **Resolved positions**: Which ones are still correct? Which were premature? Which should be downgraded in confidence or retracted?",
+        "- **Unresolved questions**: Which are still worth pursuing? Which are actually unanswerable as framed? Which have we been circling without progress?",
+        "- **Evolving frameworks**: Which are holding up? Which need revision? Which turned out to be wrong?",
+        "- **Contradictions**: Do any resolved positions contradict each other? Do any contradict newer understanding?",
+        "- **Drift**: Has the swarm's attention narrowed too much? Are we in rumination loops?",
+        "",
+        "This is not a status report. This is adversarial self-review. Be willing to say:",
+        "- 'We were wrong about X'",
+        "- 'This resolved position should be downgraded to unresolved because Y'",
+        "- 'These two frameworks contradict each other'",
+        "- 'We keep attempting this question but it's malformed — reframe it'",
+        "- 'This pursuit is dead; delete it'",
+        "",
+        "## MEMORY UNDER AUDIT",
+        "",
+    ]
+
+    if memory.get("resolved_positions"):
+        parts.append("### Resolved Positions")
+        for i, pos in enumerate(memory["resolved_positions"][-20:], 1):
+            parts.append(f"{i}. [{pos.get('confidence', 'unknown')}] {pos.get('topic', '')}: {pos.get('consensus', '')}")
+        parts.append("")
+
+    if memory.get("unresolved_questions"):
+        parts.append("### Unresolved Questions")
+        for i, q in enumerate(memory["unresolved_questions"][-15:], 1):
+            attempts = q.get("attempts", 0)
+            parts.append(f"{i}. ({attempts} attempts) {q.get('question', '')} — raised by {q.get('raised_by', 'unknown')}")
+        parts.append("")
+
+    if memory.get("next_pursuits"):
+        parts.append("### Current Pursuits")
+        for i, p in enumerate(memory["next_pursuits"], 1):
+            parts.append(f"{i}. [{p.get('priority', 'medium')}] {p.get('direction', '')}")
+        parts.append("")
+
+    if memory.get("evolving_frameworks"):
+        parts.append("### Evolving Frameworks")
+        for i, fw in enumerate(memory["evolving_frameworks"][-10:], 1):
+            parts.append(f"{i}. {fw.get('name', '')} (v{fw.get('version', 1)}): {fw.get('description', '')}")
+        parts.append("")
+
+    parts.extend([
+        "## OUTPUT",
+        "Produce a critical audit. Deliverables:",
+        "1. **Retractions**: Positions to remove or downgrade, with reasoning",
+        "2. **Contradictions found**: Pairs or clusters of memory entries that conflict",
+        "3. **Dead pursuits**: Pursuits to delete as unproductive or stale",
+        "4. **Reframed questions**: Unresolved questions that need rephrasing to be tractable",
+        "5. **New pursuits from the audit itself**: What the audit revealed we should investigate next",
+        "",
+        "Be direct. The purpose of this session is to prevent memory bloat, bias compounding, and stale consensus. Self-criticism is the product.",
+    ])
+
+    return "\n".join(parts)
+
 def run_headless_session(query, source, num_rounds=3, active_loop_models=None, session_id=None):
     """Run a complete headless swarm session. Returns session results dict.
 
@@ -2631,12 +2704,15 @@ class SwarmDaemon:
         self.max_chain_depth = int(os.getenv("SWARM_DAEMON_MAX_CHAIN", 3))
         self.max_daily_sessions = int(os.getenv("SWARM_DAEMON_MAX_DAILY", 12))
         self.rounds_per_session = int(os.getenv("SWARM_DAEMON_ROUNDS", 3))
+        # Memory audit: run a self-review session every N daemon sessions (0 disables)
+        self.audit_interval_sessions = int(os.getenv("SWARM_DAEMON_AUDIT_INTERVAL", 8))
 
         # State
         self.sessions_today = 0
         self.last_session_time = None
         self.last_reset_date = None
         self.current_chain_depth = 0
+        self.sessions_since_audit = 0
         self.history = []  # Recent daemon session summaries
 
     def start(self):
@@ -2663,7 +2739,12 @@ class SwarmDaemon:
 
     def status(self):
         memory = load_swarm_memory()
-        next_query, next_source = select_next_query(memory)
+        # Preview what the next session will be (audit or pursuit)
+        if self.audit_interval_sessions > 0 and self.sessions_since_audit >= self.audit_interval_sessions:
+            next_query = "[MEMORY AUDIT] Self-review of accumulated memory"
+            next_source = "memory_audit"
+        else:
+            next_query, next_source = select_next_query(memory)
         return {
             "running": self._running,
             "interval_seconds": self.interval_seconds,
@@ -2671,6 +2752,8 @@ class SwarmDaemon:
             "max_chain_depth": self.max_chain_depth,
             "max_daily_sessions": self.max_daily_sessions,
             "rounds_per_session": self.rounds_per_session,
+            "audit_interval_sessions": self.audit_interval_sessions,
+            "sessions_since_audit": self.sessions_since_audit,
             "sessions_today": self.sessions_today,
             "current_chain_depth": self.current_chain_depth,
             "last_session_time": self.last_session_time,
@@ -2686,7 +2769,7 @@ class SwarmDaemon:
         """Update daemon configuration. Only updates provided keys."""
         changed = {}
         for key in ["interval_seconds", "cooldown_seconds", "max_chain_depth",
-                     "max_daily_sessions", "rounds_per_session"]:
+                     "max_daily_sessions", "rounds_per_session", "audit_interval_sessions"]:
             if key in kwargs:
                 val = int(kwargs[key])
                 setattr(self, key, val)
@@ -2762,10 +2845,22 @@ class SwarmDaemon:
                 break
 
             memory = load_swarm_memory()
-            query, source = select_next_query(memory)
-            if query is None:
-                logger.info("Chain halted: no more pursuits")
-                break
+
+            # Time for a memory audit?
+            is_audit = (
+                self.audit_interval_sessions > 0
+                and self.sessions_since_audit >= self.audit_interval_sessions
+                and (memory.get("resolved_positions") or memory.get("unresolved_questions"))
+            )
+
+            if is_audit:
+                query = build_memory_audit_query(memory)
+                source = "memory_audit"
+            else:
+                query, source = select_next_query(memory)
+                if query is None:
+                    logger.info("Chain halted: no more pursuits")
+                    break
 
             self.current_chain_depth += 1
             chain_label = f"chain {self.current_chain_depth}/{self.max_chain_depth}"
@@ -2781,6 +2876,11 @@ class SwarmDaemon:
 
             self.last_session_time = time.time()
             self.sessions_today += 1
+            # Audit counter: reset after audit, otherwise increment
+            if is_audit:
+                self.sessions_since_audit = 0
+            else:
+                self.sessions_since_audit += 1
 
             # Record history
             entry = {
@@ -2876,6 +2976,34 @@ def daemon_configure():
 def daemon_history():
     """Get the daemon's session history."""
     return jsonify({"history": swarm_daemon.history, "total": len(swarm_daemon.history)})
+
+@app.route("/memory/audit", methods=["POST"])
+@require_auth
+def trigger_memory_audit():
+    """Run a memory audit session on-demand.
+
+    The swarm reviews its own memory — challenges resolved positions,
+    surfaces contradictions, flags dead pursuits, reframes stuck questions.
+
+    Optional JSON body:
+    - rounds: Number of audit rounds (default 3, max 5)
+    """
+    data = request.get_json() or {}
+    num_rounds = min(data.get("rounds", 3), 5)
+
+    memory = load_swarm_memory()
+    if not (memory.get("resolved_positions") or memory.get("unresolved_questions")):
+        return jsonify({"error": "Memory is empty — nothing to audit"}), 400
+
+    query = build_memory_audit_query(memory)
+    session_id, _, _, _ = run_headless_session(query, "memory_audit", num_rounds)
+
+    return jsonify({
+        "session_id": session_id,
+        "source": "memory_audit",
+        "stream_url": f"/loop-stream/{session_id}",
+        "memory_session_count": memory.get("session_count", 0)
+    })
 
 # ============================================
 # WOODLAND COUNCIL VIDEO PIPELINE
@@ -3414,6 +3542,7 @@ if __name__ == "__main__":
     print("  GET  /memory         - View swarm persistent memory")
     print("  POST /memory/clear   - Reset swarm memory (with backup)")
     print("  GET  /memory/pursuits- Next self-directed goals")
+    print("  POST /memory/audit   - Trigger memory self-audit session")
     print("  POST /headless       - Single autonomous session from memory")
     print("  POST /daemon/start   - Start autonomous background daemon")
     print("  POST /daemon/stop    - Stop the daemon")
