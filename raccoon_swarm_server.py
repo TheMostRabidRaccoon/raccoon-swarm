@@ -399,16 +399,29 @@ def update_swarm_memory(query, delta):
         memory["next_pursuits"] = new_pursuits
 
     # Evolving frameworks: update version if name matches, else add
-    existing_fw = {fw.get("name", "").lower(): fw for fw in memory["evolving_frameworks"]}
+    # Normalize names by stripping version suffixes like "(v1)" for matching
+    def _normalize_fw_name(name):
+        import re
+        return re.sub(r'\s*\(v\d+\)\s*', '', name).strip().lower()
+
+    existing_fw = {}
+    for fw in memory["evolving_frameworks"]:
+        nkey = _normalize_fw_name(fw.get("name", ""))
+        if nkey not in existing_fw:
+            existing_fw[nkey] = fw
+
     for fw in delta.get("evolving_frameworks", []):
-        key = fw.get("name", "").lower()
+        key = _normalize_fw_name(fw.get("name", ""))
         if key in existing_fw:
             existing_fw[key]["version"] = existing_fw[key].get("version", 1) + 1
             existing_fw[key]["description"] = fw.get("description", existing_fw[key].get("description", ""))
         else:
             fw["version"] = 1
             fw["session"] = ts
-            memory["evolving_frameworks"].append(fw)
+            existing_fw[key] = fw
+
+    # Rebuild frameworks list from deduplicated map
+    memory["evolving_frameworks"] = list(existing_fw.values())
 
     # Mark resolved questions as no longer unresolved
     resolved_topics = {pos.get("topic", "").lower() for pos in delta.get("resolved_positions", [])}
@@ -432,7 +445,178 @@ def update_swarm_memory(query, delta):
                 f"+{len(delta.get('resolved_positions', []))} resolved, "
                 f"+{len(delta.get('unresolved_questions', []))} unresolved, "
                 f"{len(delta.get('next_pursuits', []))} pursuits")
+
+    # Run escalation check after every memory update
+    check_escalation(memory, query, delta)
+
     return memory
+
+# ============================================
+# ESCALATION TIERS — Push notifications for human-blocked findings
+# ============================================
+# Tier 1: Flag in memory (pull-only, already exists)
+# Tier 2: Write blocker_summary.md to disk after each session
+# Tier 3: Email notification via SMTP for urgent blockers
+# Tier 4: SMS via Twilio for critical (future)
+
+ESCALATION_FILE = (STORAGE_DIR if os.getenv("RAILWAY_ENVIRONMENT") or os.getenv("RRI_STORAGE_DIR") else Path(".")) / "blocker_summary.md"
+
+def check_escalation(memory, query, delta):
+    """After every memory update, check if escalation is needed.
+
+    Tier 1: Always runs — flags in memory (existing behavior).
+    Tier 2: Always runs — writes blocker_summary.md with current state.
+    Tier 3: If SMTP configured and urgent blockers detected, sends email.
+    """
+    # ---- Tier 2: Write blocker summary to disk ----
+    write_blocker_summary(memory, query, delta)
+
+    # ---- Tier 3: Email if configured and urgent ----
+    urgent_signals = detect_urgent_blockers(memory, delta)
+    if urgent_signals and os.getenv("RRI_SMTP_TO"):
+        send_escalation_email(urgent_signals, memory)
+
+def detect_urgent_blockers(memory, delta):
+    """Detect conditions that warrant push notification."""
+    signals = []
+
+    # Signal: High-priority pursuit mentions "Kyra" or "Conductor" with words like
+    # "blocked", "waiting", "no response", "halting"
+    blocker_words = {"blocked", "waiting", "no response", "halt", "dormant", "stale", "non-response"}
+    for p in memory.get("next_pursuits", []):
+        direction = p.get("direction", "").lower()
+        if p.get("priority") == "high" and any(w in direction for w in blocker_words):
+            signals.append({
+                "type": "human_blocked_pursuit",
+                "severity": "high",
+                "detail": p.get("direction", "")[:200]
+            })
+
+    # Signal: Unresolved questions with 3+ attempts (persistent failure)
+    for q in memory.get("unresolved_questions", []):
+        if q.get("attempts", 0) >= 3:
+            signals.append({
+                "type": "stuck_question",
+                "severity": "medium",
+                "detail": f"({q['attempts']} attempts) {q.get('question', '')[:150]}"
+            })
+
+    # Signal: Audit session just ran (always worth notifying)
+    if "MEMORY AUDIT" in (delta.get("next_pursuits", [{}])[0].get("direction", "") if delta.get("next_pursuits") else ""):
+        signals.append({
+            "type": "audit_complete",
+            "severity": "info",
+            "detail": "Memory audit completed — review results"
+        })
+
+    return signals
+
+def write_blocker_summary(memory, query, delta):
+    """Tier 2: Write a human-readable summary of current blockers to disk.
+
+    This file gets overwritten after every session. Check it anytime to
+    see the swarm's current state and what it needs from you.
+    """
+    lines = [
+        f"# Swarm Blocker Summary",
+        f"**Updated:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+        f"**Session:** #{memory.get('session_count', 0)}",
+        f"**Last query:** {query[:150]}",
+        "",
+    ]
+
+    # What the swarm needs from you
+    human_blocked = [p for p in memory.get("next_pursuits", [])
+                     if p.get("priority") == "high"]
+    if human_blocked:
+        lines.append("## What the swarm needs from you RIGHT NOW")
+        for p in human_blocked:
+            lines.append(f"- {p.get('direction', '')}")
+        lines.append("")
+
+    # Stuck questions
+    stuck = [q for q in memory.get("unresolved_questions", [])
+             if q.get("attempts", 0) >= 2]
+    if stuck:
+        lines.append("## Stuck questions (2+ attempts, no progress)")
+        for q in sorted(stuck, key=lambda x: x.get("attempts", 0), reverse=True):
+            lines.append(f"- ({q['attempts']} attempts) {q.get('question', '')}")
+        lines.append("")
+
+    # Quick stats
+    lines.extend([
+        "## Status",
+        f"- Resolved positions: {len(memory.get('resolved_positions', []))}",
+        f"- Unresolved questions: {len(memory.get('unresolved_questions', []))}",
+        f"- Active pursuits: {len(memory.get('next_pursuits', []))}",
+        f"- Frameworks: {len(memory.get('evolving_frameworks', []))}",
+        "",
+        "---",
+        "*Generated by the Swarm Daemon. This file is overwritten after every session.*",
+    ])
+
+    try:
+        ESCALATION_FILE.parent.mkdir(parents=True, exist_ok=True)
+        ESCALATION_FILE.write_text("\n".join(lines))
+    except Exception as e:
+        logger.error(f"Failed to write blocker summary: {e}")
+
+def send_escalation_email(signals, memory):
+    """Tier 3: Send email notification for urgent blockers.
+
+    Requires env vars:
+    - RRI_SMTP_HOST: SMTP server (e.g., smtp.gmail.com)
+    - RRI_SMTP_PORT: SMTP port (default 587)
+    - RRI_SMTP_USER: SMTP username
+    - RRI_SMTP_PASS: SMTP password (app password for Gmail)
+    - RRI_SMTP_TO: Recipient email address
+    """
+    import smtplib
+    from email.mime.text import MIMEText
+
+    host = os.getenv("RRI_SMTP_HOST")
+    port = int(os.getenv("RRI_SMTP_PORT", 587))
+    user = os.getenv("RRI_SMTP_USER")
+    password = os.getenv("RRI_SMTP_PASS")
+    to_addr = os.getenv("RRI_SMTP_TO")
+
+    if not all([host, user, password, to_addr]):
+        return
+
+    # Build email
+    high_signals = [s for s in signals if s.get("severity") == "high"]
+    subject = f"Swarm Alert: {len(high_signals)} urgent blocker(s) — Session #{memory.get('session_count', '?')}"
+
+    body_lines = [
+        f"Swarm Session #{memory.get('session_count', '?')} completed.",
+        f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+        "",
+        "URGENT BLOCKERS:",
+        ""
+    ]
+    for s in signals:
+        body_lines.append(f"[{s['severity'].upper()}] {s['type']}: {s['detail']}")
+
+    body_lines.extend([
+        "",
+        "---",
+        "Check the swarm: curl http://your-server:5000/memory/pursuits",
+        "Or read: blocker_summary.md on the server",
+    ])
+
+    msg = MIMEText("\n".join(body_lines))
+    msg["Subject"] = subject
+    msg["From"] = user
+    msg["To"] = to_addr
+
+    try:
+        with smtplib.SMTP(host, port) as server:
+            server.starttls()
+            server.login(user, password)
+            server.send_message(msg)
+        logger.info(f"Escalation email sent to {to_addr}: {subject}")
+    except Exception as e:
+        logger.error(f"Escalation email failed: {e}")
 
 # ============================================
 # FILE UPLOAD CONSTANTS
@@ -2976,6 +3160,22 @@ def daemon_configure():
 def daemon_history():
     """Get the daemon's session history."""
     return jsonify({"history": swarm_daemon.history, "total": len(swarm_daemon.history)})
+
+@app.route("/memory/blockers", methods=["GET"])
+@require_auth
+def get_blockers():
+    """Get the current blocker summary — what does the swarm need from you?"""
+    memory = load_swarm_memory()
+    human_blocked = [p for p in memory.get("next_pursuits", [])
+                     if p.get("priority") == "high"]
+    stuck = [q for q in memory.get("unresolved_questions", [])
+             if q.get("attempts", 0) >= 2]
+    return jsonify({
+        "urgent_blockers": human_blocked,
+        "stuck_questions": stuck,
+        "session_count": memory.get("session_count", 0),
+        "blocker_file": str(ESCALATION_FILE) if ESCALATION_FILE.exists() else None
+    })
 
 @app.route("/memory/audit", methods=["POST"])
 @require_auth

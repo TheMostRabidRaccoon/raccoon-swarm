@@ -16,6 +16,7 @@ venv/
 ideas.json
 swarm_memory.json
 swarm_memory.backup.json
+blocker_summary.md
 vault/
 raccoon_memory/
 
