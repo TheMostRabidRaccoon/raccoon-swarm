@@ -2197,6 +2197,7 @@ def start_loop():
         _sovereignty_mode = request.form.get("sovereignty", "false").lower() == "true"
         human_in_loop = request.form.get("human_in_loop", "false").lower() == "true"
         human_persona = request.form.get("human_persona", "The Conductor").strip() or "The Conductor"
+        human_timeout = int(request.form.get("human_timeout", 900))  # default 15 min
     else:
         data = request.get_json() or {}
         query = data.get("query", "")
@@ -2207,6 +2208,7 @@ def start_loop():
         _sovereignty_mode = data.get("sovereignty", False)
         human_in_loop = data.get("human_in_loop", False)
         human_persona = (data.get("human_persona", "The Conductor") or "The Conductor").strip()
+        human_timeout = data.get("human_timeout", 900)  # default 15 min
 
     if not query:
         return jsonify({"error": "No query"}), 400
@@ -2278,28 +2280,40 @@ def start_loop():
                 q.put(("round_complete", {"round": round_num, "responses": round_results}))
 
                 # Human-in-the-loop: wait for human input after AI round
+                # Supports: configurable timeout (default 15min), keepalive ("...typing"),
+                # and unlimited mode (human_timeout=0)
                 if human_in_loop:
-                    human_timeout = 300  # 5 minutes
+                    effective_timeout = human_timeout if human_timeout > 0 else None
                     q.put(("human_input_requested", {
                         "round": round_num, "total": num_rounds,
-                        "timeout_seconds": human_timeout
+                        "timeout_seconds": human_timeout,
+                        "hint": "Send {\"text\": \"...typing\"} to reset timer. Send empty to skip. Set human_timeout=0 for unlimited."
                     }))
                     human_q = human_response_queues.get(session_id)
                     if human_q:
-                        try:
-                            human_text = human_q.get(timeout=human_timeout)
-                            if human_text and human_text.strip():
-                                round_results[human_persona] = human_text.strip()
-                                all_rounds[-1] = round_results
-                                q.put(("human_response_received", {
-                                    "round": round_num, "persona": human_persona,
-                                    "response": human_text.strip()
-                                }))
-                            else:
-                                logger.info(f"Human skipped round {round_num}")
-                        except queue.Empty:
-                            q.put(("human_timeout", {"round": round_num}))
-                            logger.info(f"Human timed out on round {round_num}")
+                        # Loop to support keepalive — "...typing" resets the timer
+                        got_response = False
+                        while not got_response:
+                            try:
+                                human_text = human_q.get(timeout=effective_timeout)
+                                if human_text and human_text.strip() == "...typing":
+                                    q.put(("human_typing", {"round": round_num}))
+                                    logger.info(f"Human keepalive on round {round_num}")
+                                    continue
+                                elif human_text and human_text.strip():
+                                    round_results[human_persona] = human_text.strip()
+                                    all_rounds[-1] = round_results
+                                    q.put(("human_response_received", {
+                                        "round": round_num, "persona": human_persona,
+                                        "response": human_text.strip()
+                                    }))
+                                else:
+                                    logger.info(f"Human skipped round {round_num}")
+                                got_response = True
+                            except queue.Empty:
+                                q.put(("human_timeout", {"round": round_num}))
+                                logger.info(f"Human timed out on round {round_num}")
+                                got_response = True
 
             q.put(("synthesis_start", {}))
             synthesis = run_synthesis(query, all_rounds)
