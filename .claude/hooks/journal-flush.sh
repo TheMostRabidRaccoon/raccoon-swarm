@@ -48,7 +48,15 @@ mkdir -p "$JOURNALS_DIR"
 
 for draft in "${drafts[@]}"; do
   name=$(basename "$draft" .md)
-  pipeline="${name#journal-draft-}"
+  raw_pipeline="${name#journal-draft-}"
+  # Pipeline names are canonically lowercase. On case-insensitive
+  # filesystems (macOS default) a capitalized variant like "Personal"
+  # would resolve to the same file as "personal" but bypass the
+  # case-sensitive pipeline lookup below. Normalize + warn.
+  pipeline=$(echo "$raw_pipeline" | tr '[:upper:]' '[:lower:]')
+  if [[ "$pipeline" != "$raw_pipeline" ]]; then
+    log "WARN draft filename has uppercase ('$raw_pipeline') — treating as '$pipeline'"
+  fi
 
   if [[ ! -s "$draft" ]]; then
     log "draft for '$pipeline' is empty — skipping"
@@ -92,6 +100,13 @@ for draft in "${drafts[@]}"; do
 
   if [[ "$local_only" != "true" && -n "$doc_id" ]]; then
     marker="$STATE_DIR/pending-drive-sync-$pipeline.md"
+    # First line is a self-describing header — a future Claude (or
+    # human) reading .claude/state/ knows what this file is for. When
+    # draining, Claude strips this line before appending to the Doc.
+    # See SKILL.md "Draining pending drive-syncs at session start".
+    if [[ ! -s "$marker" ]]; then
+      echo "<!-- work-journal drive-sync marker for $pipeline — strip this line before appending to Doc $doc_id — see .claude/skills/work-journal/SKILL.md — DO NOT EDIT -->" > "$marker"
+    fi
     cat "$draft" >> "$marker"
     log "emitted drive-sync marker: $marker"
   fi

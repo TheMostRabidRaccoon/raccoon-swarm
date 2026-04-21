@@ -36,7 +36,20 @@ If ambiguous → ask the user once: "Should I journal this?"
 
 ## Routing — which pipeline?
 
-If the pipeline is obvious from the working directory or stated task (e.g. `raccoon-swarm` repo → `swarm_ops`), use it. If ambiguous, ask once. Never guess across the work/personal boundary — if unsure whether something is personal, ask.
+Pipeline names are **lowercase-only** — never `Personal`, `Paper6`, etc. On macOS's case-insensitive filesystem a capitalized variant would silently collide with the canonical filename and bypass the privacy checks. If you ever see an uppercase draft or marker in `.claude/state/`, treat it as a bug and surface it.
+
+Decide by cue, in this order:
+
+1. **If the user names the pipeline explicitly** ("journal this to paper6") — use it.
+2. **If the pipeline is obvious from context** — use it. Cues:
+   - Working directory is `raccoon-swarm` → `swarm_ops`
+   - Conversation about a paper/manuscript draft → `paper6`
+   - Conversation about a job application, interview, take-home, or recruiter → `applications`
+   - Conversation about a blog post, video, essay, tweet, public writing → `content`
+   - Conversation about a named paying client / contract / proposal → `consulting`
+   - Anything non-work: health, family, relationships, venting, a personal project with no commercial intent → `personal`
+3. **If cues conflict** (e.g. Paper 6 research inside the swarm repo — they overlap) — ask once: "This feels like both `paper6` and `swarm_ops`. Which do you want it indexed under?"
+4. **If you can't tell whether it's work or personal** — always ask. Never guess across that boundary. A false-work entry leaks; a false-personal entry just means the Doc is missing it, which is recoverable.
 
 ## Entry format
 
@@ -59,8 +72,9 @@ Keep entries short. The log's value is in signal, not volume.
 
 1. Load `pipelines.json` to resolve pipeline → `local_only` flag + Doc ID + local path.
 2. **Privacy gate:** if `local_only: true`, never call any Google Docs / Drive MCP tool for this entry. Local append only.
-3. Append entry to `.claude/state/journal-draft-<pipeline>.md`.
-4. The `SessionEnd` hook (`.claude/hooks/journal-flush.sh`) will flush drafts to their final destinations at session end.
+3. **Content-level privacy pre-check** (work pipelines only): before appending to a work-pipeline draft, re-read the entry you just drafted. Ask yourself: *is there anything in this entry that reads as personal — venting about a named person, medical/health detail, family content, anything the user wouldn't want in a Google Doc?* If yes, surface it once: "This `<pipeline>` entry mentions \<thing\>. Route to `personal` instead, or keep as `<pipeline>`?" Do not flush to the work pipeline by default when in doubt. Pipeline routing is enforced by the hook; content classification is on you.
+4. Append entry to `.claude/state/journal-draft-<pipeline>.md` (lowercase pipeline name — see Routing).
+5. The `SessionEnd` hook (`.claude/hooks/journal-flush.sh`) will flush drafts to their final destinations at session end.
 
 Writing to the draft file is the Skill's job. Flushing is the hook's job. Claude does not call the hook directly.
 
@@ -91,7 +105,8 @@ When you see that banner:
 1. **Check MCP availability first.** If no Google Docs append tool is available, tell the user once ("Google Docs MCP not detected — markers left for next session") and **stop**. Do not delete any markers.
 2. **For each pending pipeline in the banner:**
    - Read the marker file (the banner lists the full path).
-   - Append its content to the Google Doc (Doc ID listed in the banner) using the MCP append tool.
+   - **Strip the first line** — every marker begins with a self-describing HTML comment header (`<!-- work-journal drive-sync marker for <pipeline> — … -->`). Do not include it in the Doc append; it's metadata for humans and future Claudes, not part of the entry.
+   - Append the remaining content to the Google Doc (Doc ID listed in the banner) using the MCP append tool.
    - **Only after the MCP call succeeds**, delete the marker with `rm`.
    - If the MCP call fails, leave the marker in place and report the error to the user — do not retry blindly.
 3. **Never drain a `personal` marker.** The hook exits non-zero if one exists; if you somehow see a `pending-drive-sync-personal.md`, surface it to the user, do not push it to any MCP, and let the user inspect it before deletion.
