@@ -52,6 +52,17 @@ if [[ ${#drafts[@]} -gt 0 ]]; then
   done < <(find "$STATE_DIR" -maxdepth 1 -name 'journal-draft-*.md' -type f -mtime +1 -print0 2>/dev/null)
 fi
 
+# Stale markers = drive-sync markers that haven't been drained in >7 days.
+# Causes: MCP was unavailable for weeks, user never returned to that
+# pipeline, or the drain flow is silently broken. Threshold is looser
+# than for drafts because markers are normal to sit a few days.
+stale_markers=()
+if [[ ${#markers[@]} -gt 0 ]]; then
+  while IFS= read -r -d '' f; do
+    stale_markers+=("$f")
+  done < <(find "$STATE_DIR" -maxdepth 1 -name 'pending-drive-sync-*.md' -type f -mtime +7 -print0 2>/dev/null)
+fi
+
 # Nothing to report
 if [[ ${#markers[@]} -eq 0 && ${#stale_drafts[@]} -eq 0 ]]; then
   exit 0
@@ -122,6 +133,18 @@ if [[ ${#stale_drafts[@]} -gt 0 ]]; then
   say ""
   for d in "${stale_drafts[@]}"; do say "  - $d"; done
   say "=============================================="
+fi
+
+# --- Stale markers (drain has been blocked for >7 days) ---
+if [[ ${#stale_markers[@]} -gt 0 ]]; then
+  say "=== work-journal: stale drive-sync markers (>7 days old) ==="
+  say "These markers should have been drained to Google Docs but haven't."
+  say "Causes: MCP unavailable for weeks, drain flow silently failing,"
+  say "or you haven't had a session since they were written."
+  say "Investigate before draining — something is likely wrong."
+  say ""
+  for m in "${stale_markers[@]}"; do say "  - $m"; done
+  say "============================================================"
 fi
 
 # --- Normal path: list pending syncs with doc_ids for Claude to process ---

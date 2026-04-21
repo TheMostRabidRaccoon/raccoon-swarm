@@ -106,5 +106,53 @@ for p in "${pipelines[@]}"; do
 done
 pass "all ${#pipelines[@]} pipelines processed"
 
+# ---------- Assertion 5: real flush emits a self-describing marker header ----------
+# Re-run the flush WITHOUT DRY_RUN to inspect actual marker contents. Pick a
+# work pipeline that has a doc_id set.
+work_pipeline=""
+for p in "${pipelines[@]}"; do
+  flag=$(jq -r --arg p "$p" '.pipelines[$p].local_only' "$SANDBOX/.claude/skills/work-journal/pipelines.json")
+  if [[ "$flag" == "false" ]]; then work_pipeline="$p"; break; fi
+done
+[[ -n "$work_pipeline" ]] || fail "no work pipeline available to test marker header"
+
+# Re-seed the draft (the previous DRY_RUN didn't delete, but let's be explicit).
+printf '## 2026-04-19 00:00 — header test\n\n**Kind:** discovered\n**Pipeline:** %s\n\nSeed.\n\n---\n' \
+  "$work_pipeline" > "$SANDBOX/.claude/state/journal-draft-$work_pipeline.md"
+
+CLAUDE_PROJECT_DIR="$SANDBOX" bash "$SANDBOX/.claude/hooks/journal-flush.sh" >/dev/null 2>&1
+
+marker="$SANDBOX/.claude/state/pending-drive-sync-$work_pipeline.md"
+[[ -f "$marker" ]] || fail "real flush did not emit marker for $work_pipeline"
+
+first_line=$(head -n 1 "$marker")
+if ! echo "$first_line" | grep -E '^<!-- work-journal drive-sync marker for .+ -->$' >/dev/null; then
+  fail "marker first line is not a self-describing header: $first_line"
+fi
+pass "marker emitted with self-describing header: $first_line"
+
+# ---------- Assertion 6: pipeline names are case-normalized at flush time ----------
+# A draft with uppercase in the filename should be treated as the lowercase
+# pipeline (belt-and-suspenders for macOS's case-insensitive filesystem).
+# Seed an uppercase draft for an existing work pipeline and verify the hook
+# normalizes it, instead of treating it as unknown.
+case_test_pipeline="$work_pipeline"
+uppercased=$(echo "$case_test_pipeline" | tr '[:lower:]' '[:upper:]')
+# Skip if filesystem is case-insensitive and already has a lowercase draft
+# (can't distinguish the two files). Otherwise seed + flush.
+if [[ "$uppercased" != "$case_test_pipeline" ]]; then
+  rm -f "$SANDBOX/.claude/state/journal-draft-$case_test_pipeline.md"
+  printf '## case test\n\n**Kind:** discovered\n**Pipeline:** %s\n\nContent.\n\n---\n' \
+    "$case_test_pipeline" > "$SANDBOX/.claude/state/journal-draft-$uppercased.md" 2>/dev/null || true
+  if [[ -f "$SANDBOX/.claude/state/journal-draft-$uppercased.md" ]]; then
+    case_output=$(CLAUDE_PROJECT_DIR="$SANDBOX" DRY_RUN=1 bash "$SANDBOX/.claude/hooks/journal-flush.sh" 2>&1 || true)
+    if ! echo "$case_output" | grep -E "WARN draft filename has uppercase.*treating as '$case_test_pipeline'" >/dev/null; then
+      fail "hook did not normalize uppercase pipeline name '$uppercased' to '$case_test_pipeline'"
+    fi
+    pass "uppercase pipeline name '$uppercased' normalized to '$case_test_pipeline'"
+    rm -f "$SANDBOX/.claude/state/journal-draft-$uppercased.md"
+  fi
+fi
+
 echo
 echo "ALL PRIVACY CHECKS PASSED"
