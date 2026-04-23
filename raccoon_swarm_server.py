@@ -444,9 +444,9 @@ ALLOWED_TEXT_EXTENSIONS = {
 }
 ALLOWED_IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.gif', '.webp'}
 ALLOWED_PDF_EXTENSIONS = {'.pdf'}
-MAX_TEXT_FILE_SIZE = 500_000       # 500KB per text/PDF file
-MAX_IMAGE_FILE_SIZE = 5_000_000    # 5MB per image file
-MAX_UPLOAD_FILES = 10
+MAX_TEXT_FILE_SIZE = 10_000_000    # 10MB per text/PDF file
+MAX_IMAGE_FILE_SIZE = 20_000_000   # 20MB per image file
+MAX_UPLOAD_FILES = 20
 
 def process_uploaded_files(files):
     """Process uploaded files into text content and image payloads.
@@ -469,7 +469,7 @@ def process_uploaded_files(files):
                 text_parts.append(f"[FILE: {filename} — empty file]")
                 continue
             if len(data) > MAX_TEXT_FILE_SIZE:
-                text_parts.append(f"[FILE: {filename} — SKIPPED: exceeds {MAX_TEXT_FILE_SIZE // 1000}KB limit]")
+                text_parts.append(f"[FILE: {filename} — SKIPPED: exceeds {MAX_TEXT_FILE_SIZE // 1_000_000}MB limit]")
                 continue
             try:
                 text = data.decode('utf-8', errors='replace')
@@ -483,7 +483,7 @@ def process_uploaded_files(files):
                 text_parts.append(f"[FILE: {filename} — empty file]")
                 continue
             if len(data) > MAX_TEXT_FILE_SIZE:
-                text_parts.append(f"[FILE: {filename} — SKIPPED: exceeds {MAX_TEXT_FILE_SIZE // 1000}KB limit]")
+                text_parts.append(f"[FILE: {filename} — SKIPPED: exceeds {MAX_TEXT_FILE_SIZE // 1_000_000}MB limit]")
                 continue
             if not FITZ_AVAILABLE:
                 text_parts.append(f"[FILE: {filename} — PDF processing requires PyMuPDF: pip install PyMuPDF]")
