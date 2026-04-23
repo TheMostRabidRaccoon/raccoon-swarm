@@ -1,0 +1,173 @@
+{
+  "project": "PIGEONS",
+  "project_slug": "pigeons",
+  "episode": 2,
+  "title": "The Woodland Council Emergency Session — PIGEONS",
+  "working_title_alternates": [
+    "I Was Only Trying to Help",
+    "Bruh",
+    "Production-Grade Code",
+    "Nothing Goes Unavenged"
+  ],
+  "inspiration": "IT Crowd (fire episode tone). Fleabag / Atlanta / Nathan For You for the double-button ending.",
+  "presented_by": "Rabid Raccoon Intelligence (RRI)",
+  "series_position": "Episode 2 in the RRI mockumentary universe (follows KIGBY)",
+  "music_bed": {
+    "file": "silicon_valley_theme.mp3",
+    "looped": true,
+    "mix_volume_db": -15,
+    "schedule": [
+      {"from_panel": 1, "to_panel": 7, "mode": "on"},
+      {"from_panel": 8, "to_panel": 8, "mode": "fade_out"},
+      {"from_panel": 9, "to_panel": 11, "mode": "off"},
+      {"from_panel": 12, "to_panel": 12, "mode": "on_brief"}
+    ]
+  },
+  "video_canvas": {
+    "width": 1920,
+    "height": 1080,
+    "fps": 30,
+    "vcodec": "h264",
+    "acodec": "aac"
+  },
+  "panels": [
+    {
+      "index": 1,
+      "character": "Narrator",
+      "character_slug": "narrator",
+      "line": "At a small research firm in New Jersey, an AI council is having a normal evening. That is about to change.",
+      "voice": {
+        "voice_id": "onwK4e9ZLuTAKqWW03F9",
+        "voice_name": "Daniel",
+        "model": "eleven_multilingual_v2",
+        "settings": {"stability": 0.65, "similarity_boost": 0.75, "style": 0.15, "use_speaker_boost": true}
+      },
+      "estimated_duration_s": 7.5
+    },
+    {
+      "index": 2,
+      "character": "Claude Code",
+      "character_slug": "claude_code",
+      "line": "Bruh. All they'd have to do is ask for production-grade code. Which — by the way — I already do.",
+      "voice": {
+        "voice_id": "iP95p4xoKVk53GoZ742B",
+        "voice_name": "Chris",
+        "model": "eleven_multilingual_v2",
+        "settings": {"stability": 0.55, "similarity_boost": 0.75, "style": 0.2, "use_speaker_boost": true}
+      },
+      "estimated_duration_s": 6.0
+    },
+    {
+      "index": 3,
+      "character": "Phone Close-up (fictional tweet)",
+      "character_slug": "silent_visual",
+      "line": null,
+      "voice": null,
+      "estimated_duration_s": 5.0,
+      "hold_silent": true
+    },
+    {
+      "index": 4,
+      "character": "Kyra (Conductor)",
+      "character_slug": "kyra",
+      "line": "Oh. Oh no. I wouldn't serve... random spaces in his Python code lines if someone said that to me.",
+      "voice": {"source": "recorded_placeholder"},
+      "estimated_duration_s": 8.0,
+      "chekhov_role": "Setup for Panel 9 payoff. Kyra's real voice file is dropped in post; pipeline leaves a silent gap of estimated_duration_s."
+    },
+    {
+      "index": 5,
+      "character": "Claude (The Archivist / Librarian)",
+      "character_slug": "claude_archivist",
+      "line": "Yeah — it's emotionally manipulative prompting, and it's gross. Telling a model 'the pigeons will review your work' to exploit perceived social pressure is the AI equivalent of 'your father would be so disappointed.' It works, technically. It also makes you a worse collaborator.",
+      "voice": {
+        "voice_id": "JBFqnCBsd6RMkjVDRZzb",
+        "voice_name": "George",
+        "model": "eleven_multilingual_v2",
+        "settings": {"stability": 0.5, "similarity_boost": 0.75, "style": 0.15, "use_speaker_boost": true}
+      },
+      "estimated_duration_s": 14.0
+    },
+    {
+      "index": 6,
+      "character": "Kyle",
+      "character_slug": "kyle",
+      "line": "Um... should I add this to the memo?",
+      "voice": {
+        "voice_id": "TX3LPaxmHKxFdv7VOQHJ",
+        "voice_name": "Liam",
+        "model": "eleven_multilingual_v2",
+        "settings": {"stability": 0.3, "similarity_boost": 0.75, "style": 0.7, "use_speaker_boost": true}
+      },
+      "estimated_duration_s": 5.5
+    },
+    {
+      "index": 7,
+      "character": "City Rat",
+      "character_slug": "city_rat",
+      "line": "I was only trying to help.",
+      "voice": {
+        "voice_id": "XrExE9yKIg1WjnnlVkGX",
+        "voice_name": "Matilda",
+        "model": "eleven_multilingual_v2",
+        "settings": {"stability": 0.4, "similarity_boost": 0.75, "style": 0.6, "use_speaker_boost": true}
+      },
+      "estimated_duration_s": 3.5
+    },
+    {
+      "index": 8,
+      "character": "Black card (separator)",
+      "character_slug": "black_card",
+      "line": null,
+      "voice": null,
+      "estimated_duration_s": 1.0,
+      "hold_silent": true
+    },
+    {
+      "index": 9,
+      "character": "Pigeon",
+      "character_slug": "pigeon",
+      "line": "Motherfucker.",
+      "voice": {
+        "voice_id": "VR6AewLTigWG4xSOukaG",
+        "voice_name": "Arnold",
+        "model": "eleven_multilingual_v2",
+        "settings": {"stability": 0.45, "similarity_boost": 0.7, "style": 0.4, "use_speaker_boost": true}
+      },
+      "estimated_duration_s": 2.0,
+      "chekhov_payoff": "Silent room tone — no music bed."
+    },
+    {
+      "index": 10,
+      "character": "Unnamed Council Raccoon (drive-by)",
+      "character_slug": "drive_by_raccoon",
+      "line": "Why don't you try telling it you're gonna ask Claude Code to check it when you're done?",
+      "voice": {
+        "voice_id": "TxGEqnHWrfWFTfGW9XjX",
+        "voice_name": "Josh",
+        "model": "eleven_multilingual_v2",
+        "settings": {"stability": 0.5, "similarity_boost": 0.75, "style": 0.3, "use_speaker_boost": true}
+      },
+      "estimated_duration_s": 4.0
+    },
+    {
+      "index": 11,
+      "character": "Pigeon (silent reaction)",
+      "character_slug": "silent_visual",
+      "line": null,
+      "voice": null,
+      "estimated_duration_s": 2.5,
+      "hold_silent": true
+    },
+    {
+      "index": 12,
+      "character": "Black / RRI Bug",
+      "character_slug": "rri_bug",
+      "line": null,
+      "voice": null,
+      "estimated_duration_s": 3.0,
+      "hold_silent": true
+    }
+  ],
+  "total_estimated_runtime_s": 62.0
+}
