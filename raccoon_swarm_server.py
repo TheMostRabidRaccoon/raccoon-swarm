@@ -3470,9 +3470,29 @@ def _find_panel_frame(project_slug, panel_index):
 
 
 def _panel_placeholder_card(panel, out_path):
-    """Fallback card when art frame missing. Shows panel index + character + line preview."""
+    """Fallback card when art frame missing. Shows panel index + character + line preview.
+
+    Special-cases: `black_card` renders true black; `rri_bug` renders black
+    with a centered RRI text mark. These are intentional design frames, not
+    missing-art warnings.
+    """
     if not PIL_AVAILABLE:
         return None
+    slug = panel.get("character_slug") or ""
+    if slug == "black_card":
+        Image.new("RGB", (VIDEO_WIDTH, VIDEO_HEIGHT), (0, 0, 0)).save(out_path)
+        return out_path
+    if slug == "rri_bug":
+        img = Image.new("RGB", (VIDEO_WIDTH, VIDEO_HEIGHT), (0, 0, 0))
+        draw = ImageDraw.Draw(img)
+        try:
+            bug_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 72)
+        except (OSError, IOError):
+            bug_font = ImageFont.load_default()
+        draw.text((VIDEO_WIDTH // 2, VIDEO_HEIGHT // 2), "RRI",
+                  fill=(196, 101, 74), font=bug_font, anchor="mm")
+        img.save(out_path)
+        return out_path
     img = Image.new("RGB", (VIDEO_WIDTH, VIDEO_HEIGHT), (12, 12, 14))
     draw = ImageDraw.Draw(img)
     try:
