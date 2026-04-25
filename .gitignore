@@ -35,6 +35,14 @@ journals/*
 # Output files (generated at runtime)
 *.docx
 
+# Scripted-episode assets: hand-dropped art frames and music beds are large
+# binaries, not source of truth. Keep directory layout via .gitkeep.
+art_frames/**
+!art_frames/.gitkeep
+!art_frames/**/.gitkeep
+music/**
+!music/.gitkeep
+
 # IDE
 .idea/
 .vscode/

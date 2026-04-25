@@ -3374,6 +3374,314 @@ def woodland_council():
     })
 
 # ============================================
+# SCRIPTED EPISODE PIPELINE
+# ============================================
+# Drives a pre-authored panel-based script (e.g. PIGEONS) through:
+#   per-panel TTS (ElevenLabs, per-panel voice config)
+#   per-panel frame lookup (human-supplied Gemini art in art_frames/<project>/)
+#   ffmpeg scene assembly → concatenated MP4
+# Music-bed mixing is intentionally out of scope — overlay in post.
+
+SCRIPTS_DIR = Path(__file__).parent / "scripts"
+ART_FRAMES_DIRS = [
+    Path(__file__).parent / "art_frames",
+    (STORAGE_DIR / "art_frames") if (os.getenv("RAILWAY_ENVIRONMENT") or os.getenv("RRI_STORAGE_DIR")) else None,
+]
+ART_FRAMES_DIRS = [p for p in ART_FRAMES_DIRS if p]
+
+# Per-character voice registry for scripted episodes.
+# Separate from VOICE_CAST (which keys on swarm model names).
+CHARACTER_VOICES = {
+    "narrator":         {"voice_id": "onwK4e9ZLuTAKqWW03F9", "name": "Daniel",  "model": "eleven_multilingual_v2",
+                         "settings": {"stability": 0.65, "similarity_boost": 0.75, "style": 0.15, "use_speaker_boost": True}},
+    "claude_code":      {"voice_id": "iP95p4xoKVk53GoZ742B", "name": "Chris",   "model": "eleven_multilingual_v2",
+                         "settings": {"stability": 0.55, "similarity_boost": 0.75, "style": 0.20, "use_speaker_boost": True}},
+    "claude_archivist": {"voice_id": "JBFqnCBsd6RMkjVDRZzb", "name": "George",  "model": "eleven_multilingual_v2",
+                         "settings": {"stability": 0.50, "similarity_boost": 0.75, "style": 0.15, "use_speaker_boost": True}},
+    "kyle":             {"voice_id": "TX3LPaxmHKxFdv7VOQHJ", "name": "Liam",    "model": "eleven_multilingual_v2",
+                         "settings": {"stability": 0.30, "similarity_boost": 0.75, "style": 0.70, "use_speaker_boost": True}},
+    "city_rat":         {"voice_id": "XrExE9yKIg1WjnnlVkGX", "name": "Matilda", "model": "eleven_multilingual_v2",
+                         "settings": {"stability": 0.40, "similarity_boost": 0.75, "style": 0.60, "use_speaker_boost": True}},
+    "pigeon":           {"voice_id": "VR6AewLTigWG4xSOukaG", "name": "Arnold",  "model": "eleven_multilingual_v2",
+                         "settings": {"stability": 0.45, "similarity_boost": 0.70, "style": 0.40, "use_speaker_boost": True}},
+    "drive_by_raccoon": {"voice_id": "TxGEqnHWrfWFTfGW9XjX", "name": "Josh",    "model": "eleven_multilingual_v2",
+                         "settings": {"stability": 0.50, "similarity_boost": 0.75, "style": 0.30, "use_speaker_boost": True}},
+}
+
+
+def _resolve_panel_voice(panel):
+    """Return {voice_id, model, settings} or None (silent/recorded panel)."""
+    v = panel.get("voice")
+    if not v or not isinstance(v, dict):
+        return None
+    # Honor recorded / placeholder panels — pipeline leaves a silent gap.
+    if v.get("source", "").startswith("recorded"):
+        return None
+    vid = v.get("voice_id") or ""
+    if vid and not str(vid).startswith("TBD"):
+        return {
+            "voice_id": vid,
+            "model": v.get("model") or ELEVENLABS_MODEL,
+            "settings": v.get("settings") if isinstance(v.get("settings"), dict) else {"stability": 0.5, "similarity_boost": 0.75},
+        }
+    slug = panel.get("character_slug") or ""
+    cv = CHARACTER_VOICES.get(slug)
+    if cv:
+        return {"voice_id": cv["voice_id"], "model": cv["model"], "settings": cv["settings"]}
+    return None
+
+
+def _tts_panel(text, voice_cfg):
+    if not ELEVENLABS_API_KEY or not text or not voice_cfg:
+        return None
+    vid = voice_cfg["voice_id"]
+    model_id = voice_cfg["model"]
+    settings = voice_cfg["settings"]
+    key = hashlib.md5(f"{vid}|{model_id}|{json.dumps(settings, sort_keys=True)}|{text[:500]}".encode()).hexdigest()
+    cache_path = os.path.join(AUDIO_CACHE_DIR, f"panel_{key}.mp3")
+    if os.path.exists(cache_path):
+        return cache_path
+    try:
+        resp = http_requests.post(
+            f"https://api.elevenlabs.io/v1/text-to-speech/{vid}",
+            headers={"xi-api-key": ELEVENLABS_API_KEY, "Content-Type": "application/json"},
+            json={"text": text[:2000], "model_id": model_id, "voice_settings": settings},
+            timeout=60,
+        )
+        if resp.status_code == 200:
+            with open(cache_path, "wb") as f:
+                f.write(resp.content)
+            return cache_path
+        logger.error(f"Panel TTS error: {resp.status_code} — {resp.text[:200]}")
+        return None
+    except Exception as e:
+        logger.error(f"Panel TTS exception: {e}")
+        return None
+
+
+def _find_panel_frame(project_slug, panel_index):
+    """Look for art_frames/<project>/panel_NN.(png|jpg) in configured dirs."""
+    for base in ART_FRAMES_DIRS:
+        for ext in ("png", "jpg", "jpeg", "webp"):
+            p = base / project_slug / f"panel_{panel_index:02d}.{ext}"
+            if p.exists():
+                return str(p)
+    return None
+
+
+def _panel_placeholder_card(panel, out_path):
+    """Fallback card when art frame missing. Shows panel index + character + line preview.
+
+    Special-cases: `black_card` renders true black; `rri_bug` renders black
+    with a centered RRI text mark. These are intentional design frames, not
+    missing-art warnings.
+    """
+    if not PIL_AVAILABLE:
+        return None
+    slug = panel.get("character_slug") or ""
+    if slug == "black_card":
+        Image.new("RGB", (VIDEO_WIDTH, VIDEO_HEIGHT), (0, 0, 0)).save(out_path)
+        return out_path
+    if slug == "rri_bug":
+        img = Image.new("RGB", (VIDEO_WIDTH, VIDEO_HEIGHT), (0, 0, 0))
+        draw = ImageDraw.Draw(img)
+        try:
+            bug_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 72)
+        except (OSError, IOError):
+            bug_font = ImageFont.load_default()
+        draw.text((VIDEO_WIDTH // 2, VIDEO_HEIGHT // 2), "RRI",
+                  fill=(196, 101, 74), font=bug_font, anchor="mm")
+        img.save(out_path)
+        return out_path
+    img = Image.new("RGB", (VIDEO_WIDTH, VIDEO_HEIGHT), (12, 12, 14))
+    draw = ImageDraw.Draw(img)
+    try:
+        tf = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 52)
+        bf = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 32)
+    except (OSError, IOError):
+        tf = ImageFont.load_default(); bf = tf
+    draw.rectangle([0, 0, VIDEO_WIDTH, 6], fill=(196, 101, 74))
+    draw.text((80, 120), f"PANEL {panel.get('index', '?'):02d}", fill=(196, 101, 74), font=tf)
+    draw.text((80, 200), panel.get("character", ""), fill=(220, 220, 220), font=bf)
+    line = panel.get("line") or "[silent hold]"
+    words = line.split(); y = 320; row = ""
+    for w in words:
+        test = f"{row} {w}".strip()
+        if len(test) > 60:
+            draw.text((80, y), row, fill=(180, 180, 180), font=bf); y += 42; row = w
+            if y > VIDEO_HEIGHT - 120: break
+        else:
+            row = test
+    if row:
+        draw.text((80, y), row, fill=(180, 180, 180), font=bf)
+    draw.text((80, VIDEO_HEIGHT - 60), "art_frames/<project>/panel_NN.png — frame not yet supplied",
+              fill=(90, 90, 90), font=bf)
+    img.save(out_path)
+    return out_path
+
+
+def _silent_audio(duration_s, out_path):
+    """Make a silent WAV of the requested duration via ffmpeg."""
+    try:
+        subprocess.run(
+            ["ffmpeg", "-y", "-f", "lavfi", "-i", f"anullsrc=channel_layout=stereo:sample_rate=44100",
+             "-t", str(duration_s), "-q:a", "9", "-acodec", "libmp3lame", out_path],
+            capture_output=True, timeout=30, check=True,
+        )
+        return out_path
+    except Exception as e:
+        logger.error(f"Silent audio gen failed: {e}")
+        return None
+
+
+def run_scripted_episode_pipeline(script, project_slug=None):
+    """Render a scripted episode. Returns dict with pipeline_id, stages, errors, video path."""
+    project_slug = project_slug or script.get("project_slug") or script.get("project", "ep").lower()
+    pipeline_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+    work_dir = os.path.join(tempfile.gettempdir(), f"rri_ep_{project_slug}_{pipeline_id}")
+    os.makedirs(work_dir, exist_ok=True)
+
+    result = {"pipeline_id": pipeline_id, "project": project_slug, "work_dir": work_dir,
+              "stages": {}, "errors": [], "panel_report": []}
+
+    ffmpeg_ok = subprocess.run(["which", "ffmpeg"], capture_output=True).returncode == 0
+    if not ffmpeg_ok:
+        result["errors"].append("ffmpeg not available — cannot assemble video")
+        return result
+
+    panels = script.get("panels", [])
+    segments = []
+
+    for panel in panels:
+        idx = panel.get("index")
+        report = {"index": idx, "character": panel.get("character"), "audio": None,
+                  "frame": None, "segment": None, "duration_s": None}
+
+        # Audio
+        voice_cfg = _resolve_panel_voice(panel)
+        line = panel.get("line") or ""
+        if voice_cfg and line:
+            audio_path = _tts_panel(line, voice_cfg)
+            report["audio"] = "tts" if audio_path else "tts_failed"
+        else:
+            audio_path = None
+            report["audio"] = "silent"
+
+        # Silent gap if no TTS — use estimated_duration_s
+        if not audio_path:
+            dur = float(panel.get("estimated_duration_s") or 2.0)
+            audio_path = os.path.join(work_dir, f"silence_{idx:02d}.mp3")
+            if not _silent_audio(dur, audio_path):
+                result["errors"].append(f"Panel {idx}: silent audio gen failed")
+                report["segment"] = "failed_silence"
+                result["panel_report"].append(report)
+                continue
+
+        # Frame
+        frame_path = _find_panel_frame(project_slug, idx)
+        if not frame_path:
+            frame_path = os.path.join(work_dir, f"card_{idx:02d}.png")
+            _panel_placeholder_card(panel, frame_path)
+            report["frame"] = "placeholder_card"
+        else:
+            report["frame"] = os.path.basename(frame_path)
+
+        # Assemble panel segment
+        seg_path = os.path.join(work_dir, f"seg_{idx:02d}.mp4")
+        min_dur = float(panel.get("estimated_duration_s") or 2.0)
+        if create_scene_video(frame_path, audio_path, seg_path, min_duration=min_dur):
+            segments.append(seg_path)
+            report["segment"] = os.path.basename(seg_path)
+        else:
+            result["errors"].append(f"Panel {idx}: scene assembly failed")
+            report["segment"] = "failed"
+
+        result["panel_report"].append(report)
+
+    if not segments:
+        result["errors"].append("No panel segments produced")
+        return result
+
+    OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
+    final_path = str(OUTPUTS_DIR / f"{project_slug}_ep_{pipeline_id}.mp4")
+    final_video = concatenate_videos(segments, final_path)
+    if final_video:
+        result["stages"]["video"] = {"status": "complete", "path": final_video,
+                                     "segments": len(segments),
+                                     "filename": os.path.basename(final_video)}
+    else:
+        result["errors"].append("Final concatenation failed")
+        result["stages"]["video"] = {"status": "failed"}
+    return result
+
+
+@app.route("/scripted-episode", methods=["POST"])
+@require_auth
+def scripted_episode():
+    """Render a pre-authored panel script into an episode MP4.
+
+    JSON body (either form):
+      {"project": "pigeons"}                 — load scripts/pigeons_ep2.json by convention
+      {"script_path": "scripts/foo.json"}    — load a specific script file
+      {"script": { ...inline script json... }} — pass the whole script
+
+    Returns session_id for SSE; pipeline runs in a worker thread.
+    Final MP4 saved to outputs/<project>_ep_<timestamp>.mp4.
+    """
+    data = request.get_json() or {}
+    script = data.get("script")
+    project_hint = data.get("project")
+
+    if not script:
+        sp = data.get("script_path")
+        if not sp and project_hint:
+            # Convention: scripts/<project>_ep2.json or scripts/<project>.json
+            for candidate in (f"{project_hint}_ep2.json", f"{project_hint}.json", f"{project_hint}_ep1.json"):
+                if (SCRIPTS_DIR / candidate).exists():
+                    sp = str(SCRIPTS_DIR / candidate); break
+        if not sp:
+            return jsonify({"error": "Provide script, script_path, or a project with a scripts/<project>*.json file"}), 400
+        try:
+            with open(sp, "r") as f:
+                script = json.load(f)
+        except Exception as e:
+            return jsonify({"error": f"Could not load script: {e}"}), 400
+
+    project_slug = script.get("project_slug") or project_hint or script.get("project", "ep").lower()
+    pipeline_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+    q = queue.Queue()
+    session_id = f"episode_{project_slug}_{pipeline_id}"
+    loop_sessions[session_id] = q
+
+    def worker():
+        try:
+            q.put(("episode_start", {"project": project_slug, "title": script.get("title", ""),
+                                     "panels": len(script.get("panels", []))}))
+            res = run_scripted_episode_pipeline(script, project_slug=project_slug)
+            q.put(("episode_complete", {
+                "pipeline_id": res["pipeline_id"],
+                "stages": res["stages"],
+                "errors": res["errors"],
+                "panel_report": res["panel_report"],
+                "video_download": f"/download/{res['stages'].get('video', {}).get('filename', '')}"
+                    if res["stages"].get("video", {}).get("status") == "complete" else None,
+            }))
+        except Exception as e:
+            logger.error(f"Scripted-episode pipeline error: {e}")
+            q.put(("error_msg", {"message": str(e)}))
+        finally:
+            q.put(("DONE", None))
+
+    threading.Thread(target=worker, daemon=True).start()
+    return jsonify({
+        "session_id": session_id,
+        "pipeline_id": pipeline_id,
+        "project": project_slug,
+        "stream_url": f"/loop-stream/{session_id}",
+        "title": script.get("title", ""),
+    })
+
+# ============================================
 # MAIN
 # ============================================
 if __name__ == "__main__":
@@ -3407,6 +3715,7 @@ if __name__ == "__main__":
     print("  POST /daemon/configure - Update daemon settings live")
     print("  GET  /daemon/history - Daemon session history")
     print("  POST /woodland-council - Full video pipeline (session→TTS→art→video)")
+    print("  POST /scripted-episode - Render a pre-authored panel script into an MP4")
     print("  GET  /login          - Authentication")
     print("=" * 55 + "\n")
     app.run(host="0.0.0.0", port=port, debug=False, threaded=True)
