@@ -1083,6 +1083,20 @@ def save_loop_results(query, all_rounds, synthesis, num_rounds):
 
     return str(log_path.name), docx_name or "docx_unavailable"
 
+def save_single_results(query, responses):
+    """Persist a single-pass swarm session as JSON. Schema matches the legacy
+    raccoon_YYYYMMDD_HHMMSS.json format the corpus distiller already understands."""
+    ts = datetime.now()
+    LOGS_DIR.mkdir(parents=True, exist_ok=True)
+    log_path = LOGS_DIR / f"raccoon_{ts.strftime('%Y%m%d_%H%M%S')}.json"
+    with open(log_path, "w") as f:
+        json.dump({
+            "timestamp": ts.isoformat(),
+            "query": query,
+            "responses": [{"model": name, "response": text} for name, text in responses.items()],
+        }, f, indent=2)
+    return str(log_path.name)
+
 # ============================================
 # FLASK APP
 # ============================================
@@ -2171,10 +2185,17 @@ def ping_swarm():
         except Exception as e:
             responses[name] = f"[{name} error: {str(e)}]"
 
+    log_name = None
+    try:
+        log_name = save_single_results(query, responses)
+    except OSError as e:
+        logger.error(f"Failed to persist single-swarm log: {e}")
+
     return jsonify({
         "status": "howled", "query": query, "responses": responses,
         "timestamp": datetime.now().isoformat(),
-        "files_processed": len(files), "images_sent": len(images)
+        "files_processed": len(files), "images_sent": len(images),
+        "log_file": log_name
     })
 
 # ============================================
