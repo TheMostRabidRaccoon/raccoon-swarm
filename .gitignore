@@ -48,3 +48,4 @@ music/**
 .vscode/
 *.swp
 *.swo
+swarm_memory.backup.*.json
