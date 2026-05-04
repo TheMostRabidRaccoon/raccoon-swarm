@@ -71,6 +71,7 @@ except ImportError:
 import requests as http_requests
 
 import swarm_filestore
+import swarm_mail
 
 claude_client = None
 grok_client = None
@@ -564,6 +565,20 @@ Rules:
 - Don't write raw PHI. Write structural insights, not identifiers.
 - Don't overwrite resolved positions — append amendments instead.
 - A directive that fails (bad path, write error) is logged and ignored; you won't see an error inline.
+
+EMAIL THE CONDUCTOR (rare — only when something genuinely needs human attention):
+
+  [EMAIL_CONDUCTOR: short subject describing what changed]
+  Body: what you found, why it's important, what action (if any) you need from her.
+  Be specific and short — she reads these on her phone.
+  [/EMAIL_CONDUCTOR]
+
+When to email vs. write to memory:
+- WRITE to memory for everything you'd want a future swarm session to know.
+- EMAIL only when a human decision is needed, an assumption broke, a deadline
+  is at risk, or a high-confidence pattern shift just occurred.
+- Hard limits: max 3 emails per session, max 10 per rolling 24 hours, locked to
+  one recipient. Use the channel sparingly or it loses signal.
 """
 
 SWARM_SHARED_CONTEXT = """You are part of the RRI Swarm — a multi-model AI orchestration system built by Rabid Raccoon Intelligence, LLC. The Conductor is Kyra Dawson.
@@ -2348,6 +2363,11 @@ def start_loop():
                 # Build query context for next round (empty string if no queries issued)
                 filestore_query_context = swarm_filestore.process_round_queries(round_results)
 
+                # Process email directives (rate-limited to MAX_PER_SESSION + MAX_PER_24H)
+                mail_summary = swarm_mail.process_round_emails(round_results, session_id)
+                if mail_summary["sent"] or mail_summary["rejected"]:
+                    q.put(("mail_activity", mail_summary))
+
                 q.put(("round_complete", {"round": round_num, "responses": round_results}))
 
                 # Human-in-the-loop: wait for human input after AI round
@@ -2545,6 +2565,21 @@ def filestore_search():
         return jsonify({"error": "q required"}), 400
     return jsonify({"query": q, "results": swarm_filestore.search_files(q, max_results=max_results)})
 
+
+@app.route("/mail/status", methods=["GET"])
+@require_auth
+def mail_status():
+    """Email channel diagnostics: configured?, rate-limit counters, recipient set?"""
+    return jsonify(swarm_mail.status())
+
+
+@app.route("/mail/log", methods=["GET"])
+@require_auth
+def mail_log():
+    """Read the email audit log from /swarm/logs/emails.log."""
+    content = swarm_filestore.read_file("/logs/emails.log")
+    return jsonify({"log": content or "(no emails sent yet)"})
+
 # ============================================
 # HEADLESS MODE — The swarm wakes itself up
 # ============================================
@@ -2625,6 +2660,10 @@ def run_headless_session(query, source, num_rounds=3, active_loop_models=None, s
                 if fs_summary["writes"] or fs_summary["appends"] or fs_summary["rejected"]:
                     q.put(("filestore_activity", fs_summary))
                 filestore_query_context = swarm_filestore.process_round_queries(round_results)
+
+                mail_summary = swarm_mail.process_round_emails(round_results, session_id)
+                if mail_summary["sent"] or mail_summary["rejected"]:
+                    q.put(("mail_activity", mail_summary))
 
                 q.put(("round_complete", {"round": round_num, "responses": round_results}))
 

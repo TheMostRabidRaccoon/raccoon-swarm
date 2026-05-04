@@ -72,7 +72,7 @@ write the structural insight, not the identifiers.
 # Path safety
 # ============================================================
 
-_SAFE_PATH_RE = re.compile(r"^/?(positions|questions|pursuits|frameworks|artifacts|logs)/[A-Za-z0-9_\-./]+\.(md|json|txt)$")
+_SAFE_PATH_RE = re.compile(r"^/?(positions|questions|pursuits|frameworks|artifacts|logs)/[A-Za-z0-9_\-./]+\.(md|json|txt|log)$")
 
 
 def _resolve_safe(rel_path: str) -> Path | None:
@@ -151,7 +151,7 @@ def list_files(rel_dir: str = "") -> list[str]:
         target = root
     out = []
     for p in sorted(target.rglob("*")):
-        if p.is_file() and not p.name.startswith("_") and p.suffix in (".md", ".json", ".txt"):
+        if p.is_file() and not p.name.startswith("_") and p.suffix in (".md", ".json", ".txt", ".log"):
             out.append(str(p.relative_to(root)))
     return out
 
@@ -174,7 +174,7 @@ def search_files(query: str, max_results: int = 5) -> list[dict]:
     for path in sorted(root.rglob("*")):
         if not path.is_file() or path.name.startswith("_"):
             continue
-        if path.suffix not in (".md", ".json", ".txt"):
+        if path.suffix not in (".md", ".json", ".txt", ".log"):
             continue
         try:
             content = path.read_text()
@@ -331,7 +331,7 @@ def recent_files_context(max_per_dir: int = 3) -> str:
         if not target.exists():
             continue
         files = sorted(
-            (p for p in target.rglob("*") if p.is_file() and not p.name.startswith("_") and p.suffix in (".md", ".json", ".txt")),
+            (p for p in target.rglob("*") if p.is_file() and not p.name.startswith("_") and p.suffix in (".md", ".json", ".txt", ".log")),
             key=lambda p: p.stat().st_mtime,
             reverse=True,
         )[:max_per_dir]
