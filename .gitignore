@@ -49,3 +49,6 @@ music/**
 *.swp
 *.swo
 swarm_memory.backup.*.json
+
+# Persistent swarm filestore — populated per-instance at runtime
+swarm/
