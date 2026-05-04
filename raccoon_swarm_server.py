@@ -70,6 +70,8 @@ except ImportError:
 
 import requests as http_requests
 
+import swarm_filestore
+
 claude_client = None
 grok_client = None
 gemini_client = None
@@ -530,6 +532,40 @@ def process_uploaded_files(files):
 # ============================================
 # SHARED BEHAVIORAL RAILS
 # ============================================
+PERSISTENT_MEMORY_PROTOCOL = """
+PERSISTENT SHARED MEMORY:
+You have a shared filestore the entire swarm reads and writes. Files you write here
+survive across sessions and are visible to every other model in future rounds.
+
+Subdirectories:
+  /positions/   — resolved positions (append-only by convention; do not overwrite)
+  /questions/   — open questions, hypotheses, gaps
+  /pursuits/    — concrete next moves to investigate
+  /frameworks/  — named mental models, taxonomies
+  /artifacts/   — generated outputs: drafts, calculations, exhibits
+  /logs/        — per-session activity logs
+
+To WRITE a file (overwrites if exists):
+  [MEMORY_WRITE: /frameworks/orthogonal-moat-theory.md]
+  ...markdown content here, optional YAML frontmatter for tags/priority...
+  [/MEMORY_WRITE]
+
+To APPEND to a file (preferred for /positions/):
+  [MEMORY_APPEND: /positions/anansi-pricing.md]
+  ...new entry to add at the bottom...
+  [/MEMORY_APPEND]
+
+To QUERY memory (results appear in the NEXT round's context):
+  [MEMORY_QUERY: anansi pricing]
+  [/MEMORY_QUERY]
+
+Rules:
+- Use kebab-case filenames: anansi-pricing.md, recognition-latency-spec.md
+- Don't write raw PHI. Write structural insights, not identifiers.
+- Don't overwrite resolved positions — append amendments instead.
+- A directive that fails (bad path, write error) is logged and ignored; you won't see an error inline.
+"""
+
 SWARM_SHARED_CONTEXT = """You are part of the RRI Swarm — a multi-model AI orchestration system built by Rabid Raccoon Intelligence, LLC. The Conductor is Kyra Dawson.
 
 SWARM RULES:
@@ -537,7 +573,7 @@ SWARM RULES:
 - Produce artifacts (code, docs, analysis) not just commentary.
 - If you disagree with another model's output, say so and say why.
 - Show your work on calculations. Never hallucinate data.
-"""
+""" + PERSISTENT_MEMORY_PROTOCOL
 
 TOOL_BEHAVIOR_RAIL = """
 TOOL USAGE PROTOCOL:
@@ -2260,6 +2296,11 @@ def start_loop():
             swarm_mem = load_swarm_memory()
             memory_context = format_memory_context(swarm_mem)
 
+            # Initialize the filestore directory tree and capture a recent-files summary
+            swarm_filestore.ensure_layout()
+            filestore_recent = swarm_filestore.recent_files_context()
+            filestore_query_context = ""  # populated between rounds when models query
+
             for round_num in range(1, num_rounds + 1):
                 q.put(("round_start", {"round": round_num, "total": num_rounds}))
 
@@ -2272,12 +2313,16 @@ def start_loop():
                 base_parts.append(f"=== TASK ===\n{query}\n=== END TASK ===")
                 base_query = "\n\n".join(base_parts)
 
-                # Build preamble: boot context + swarm memory
+                # Build preamble: boot context + swarm memory + filestore state
                 preamble_parts = []
                 if context:
                     preamble_parts.append(f"=== BOOT CONTEXT ===\n{context}\n=== END CONTEXT ===")
                 if memory_context:
                     preamble_parts.append(memory_context)
+                if filestore_recent and round_num == 1:
+                    preamble_parts.append(filestore_recent)
+                if filestore_query_context:
+                    preamble_parts.append(filestore_query_context)
                 preamble = "\n\n".join(preamble_parts)
 
                 if round_num == 1:
@@ -2295,6 +2340,13 @@ def start_loop():
                 round_images = images if (images and round_num == 1) else None
                 round_results = run_loop_round(prompt, models=active_loop_models, images=round_images)
                 all_rounds.append(round_results)
+
+                # Process filestore directives from this round's outputs
+                fs_summary = swarm_filestore.process_round_writes(round_results)
+                if fs_summary["writes"] or fs_summary["appends"] or fs_summary["rejected"]:
+                    q.put(("filestore_activity", fs_summary))
+                # Build query context for next round (empty string if no queries issued)
+                filestore_query_context = swarm_filestore.process_round_queries(round_results)
 
                 q.put(("round_complete", {"round": round_num, "responses": round_results}))
 
@@ -2459,6 +2511,41 @@ def get_pursuits():
     })
 
 # ============================================
+# FILESTORE — persistent shared memory the swarm can write to
+# ============================================
+@app.route("/filestore", methods=["GET"])
+@require_auth
+def filestore_list():
+    """List files in the swarm filestore. Optional ?dir=positions to scope."""
+    swarm_filestore.ensure_layout()
+    rel_dir = request.args.get("dir", "")
+    return jsonify({"files": swarm_filestore.list_files(rel_dir), "subdirs": list(swarm_filestore.SUBDIRS)})
+
+
+@app.route("/filestore/read", methods=["GET"])
+@require_auth
+def filestore_read():
+    """Read a single file. Required: ?path=positions/anansi-pricing.md"""
+    path = request.args.get("path", "")
+    if not path:
+        return jsonify({"error": "path required"}), 400
+    content = swarm_filestore.read_file(path)
+    if content is None:
+        return jsonify({"error": "not found or unsafe path"}), 404
+    return jsonify({"path": path, "content": content})
+
+
+@app.route("/filestore/search", methods=["GET"])
+@require_auth
+def filestore_search():
+    """Search file contents. Required: ?q=keyword. Optional ?max=5."""
+    q = request.args.get("q", "")
+    max_results = int(request.args.get("max", 5))
+    if not q:
+        return jsonify({"error": "q required"}), 400
+    return jsonify({"query": q, "results": swarm_filestore.search_files(q, max_results=max_results)})
+
+# ============================================
 # HEADLESS MODE — The swarm wakes itself up
 # ============================================
 
@@ -2505,6 +2592,10 @@ def run_headless_session(query, source, num_rounds=3, active_loop_models=None, s
             swarm_mem = load_swarm_memory()
             memory_ctx = format_memory_context(swarm_mem)
 
+            swarm_filestore.ensure_layout()
+            filestore_recent = swarm_filestore.recent_files_context()
+            filestore_query_context = ""
+
             for round_num in range(1, num_rounds + 1):
                 q.put(("round_start", {"round": round_num, "total": num_rounds}))
 
@@ -2516,6 +2607,10 @@ def run_headless_session(query, source, num_rounds=3, active_loop_models=None, s
                     preamble_parts.append(f"=== BOOT CONTEXT ===\n{context}\n=== END CONTEXT ===")
                 if memory_ctx:
                     preamble_parts.append(memory_ctx)
+                if filestore_recent and round_num == 1:
+                    preamble_parts.append(filestore_recent)
+                if filestore_query_context:
+                    preamble_parts.append(filestore_query_context)
                 preamble = "\n\n".join(preamble_parts)
 
                 if round_num == 1:
@@ -2525,6 +2620,12 @@ def run_headless_session(query, source, num_rounds=3, active_loop_models=None, s
 
                 round_results = run_loop_round(prompt, models=active_loop_models)
                 all_rounds.append(round_results)
+
+                fs_summary = swarm_filestore.process_round_writes(round_results)
+                if fs_summary["writes"] or fs_summary["appends"] or fs_summary["rejected"]:
+                    q.put(("filestore_activity", fs_summary))
+                filestore_query_context = swarm_filestore.process_round_queries(round_results)
+
                 q.put(("round_complete", {"round": round_num, "responses": round_results}))
 
             q.put(("synthesis_start", {}))
