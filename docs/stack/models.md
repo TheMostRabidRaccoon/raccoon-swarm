@@ -14,7 +14,7 @@ casting via ElevenLabs.
 | Model      | SDK / Transport                          | Env var             | Role                             | Voice (ElevenLabs) |
 |------------|------------------------------------------|---------------------|----------------------------------|--------------------|
 | Claude     | `anthropic` (official)                   | `ANTHROPIC_API_KEY` | Backbone — The Snooty Librarian  | George             |
-| GPT        | `openai` (official)                      | `OPENAI_API_KEY`    | Integrator — Under Supervision   | Eric               |
+| GPT        | `openai` (official)                      | `OPENAI_API_KEY`    | Integrator — Full Council Member | Eric               |
 | Gemini     | `google-genai` (`from google import genai`) | `GOOGLE_API_KEY` | Visual + Research — Court Bard   | Adam               |
 | Grok       | `openai` client with `base_url=https://api.x.ai/v1` | `XAI_API_KEY` (fallback `GROK_API_KEY`) | Chaos Processor — Flame-Bearer | Callum |
 | Perplexity | `openai` client with `base_url=https://api.perplexity.ai` | `PERPLEXITY_API_KEY` | Research — The Oracle | Daniel |
@@ -58,7 +58,7 @@ Defined in the `VOICES` dict (`raccoon_swarm_server.py:~120`):
 | Claude     | (George)                   | George       | (narrator)       |
 | Grok       | `N2lVS1w4EtoT3dr4eOWO`     | Callum       | Flame-Bearer     |
 | Gemini     | (Adam)                     | Adam         | Court Bard       |
-| GPT        | (Eric)                     | Eric         | Under Supervision|
+| GPT        | (Eric)                     | Eric         | Integrator       |
 | Perplexity | `onwK4e9ZLuTAKqWW03F9`     | Daniel       | The Oracle       |
 
 Playback is optional (UI toggle) and uses ElevenLabs REST:
