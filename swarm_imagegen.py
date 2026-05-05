@@ -1,0 +1,274 @@
+"""Swarm image generation — Gemini Imagen + Grok Imagine backends.
+
+Lets the swarm produce publication-quality figures and visual artifacts
+directly from inside a session, without needing to hand specs out to
+external image tools. Outputs persist under /artifacts/images/.
+
+Backends:
+  gemini  — Google Imagen via the google-genai SDK. Requires GOOGLE_API_KEY.
+  grok    — xAI's grok-2-image model via OpenAI-compatible endpoint.
+            Requires XAI_API_KEY (or GROK_API_KEY fallback).
+
+Daily cap (configurable via IMAGE_GEN_DAILY_CAP env var, default 50) is
+enforced across both backends combined. The swarm shares one counter
+just like the email channel.
+"""
+from __future__ import annotations
+
+import base64
+import logging
+import os
+import re
+import threading
+from collections import deque
+from datetime import datetime, timedelta
+from pathlib import Path
+
+import swarm_filestore
+
+logger = logging.getLogger("SwarmVault")
+
+DEFAULT_DAILY_CAP = 50
+ARTIFACTS_SUBDIR = "artifacts"
+IMAGES_PREFIX = "images"
+
+VALID_BACKENDS = ("gemini", "grok")
+VALID_SIZES = ("1024x1024", "1536x1024", "1024x1536")
+
+_recent_generations: deque = deque()
+_lock = threading.Lock()
+
+
+# ============================================================
+# Rate limiting
+# ============================================================
+
+def _daily_cap() -> int:
+    try:
+        return int(os.getenv("IMAGE_GEN_DAILY_CAP", str(DEFAULT_DAILY_CAP)))
+    except ValueError:
+        return DEFAULT_DAILY_CAP
+
+
+def _check_daily_cap() -> tuple[bool, int]:
+    """Returns (allowed, current_count_in_24h)."""
+    cap = _daily_cap()
+    with _lock:
+        cutoff = datetime.now() - timedelta(hours=24)
+        while _recent_generations and _recent_generations[0] < cutoff:
+            _recent_generations.popleft()
+        count = len(_recent_generations)
+    return count < cap, count
+
+
+def _record_generation() -> None:
+    with _lock:
+        _recent_generations.append(datetime.now())
+
+
+# ============================================================
+# Path + naming helpers
+# ============================================================
+
+_SLUG_RE = re.compile(r"[^a-z0-9]+")
+
+
+def _slug(text: str, max_len: int = 40) -> str:
+    s = _SLUG_RE.sub("-", text.lower()).strip("-")
+    return s[:max_len] or "image"
+
+
+def _output_path(prompt: str, model_name: str, save_to: str | None) -> Path:
+    """Resolve the destination path under the filestore artifacts dir.
+
+    If save_to is provided, it must start with "artifacts/images/" or just
+    a filename — the latter is auto-prefixed.
+    """
+    swarm_filestore.ensure_layout()
+    root = swarm_filestore._storage_root()
+    images_dir = root / ARTIFACTS_SUBDIR / IMAGES_PREFIX
+    images_dir.mkdir(parents=True, exist_ok=True)
+
+    if save_to:
+        # Strip any leading "artifacts/images/" or "/" the model included
+        clean = save_to.lstrip("/").removeprefix(f"{ARTIFACTS_SUBDIR}/{IMAGES_PREFIX}/")
+        # Disallow path traversal
+        if ".." in clean or clean.startswith("/"):
+            clean = _slug(prompt) + ".png"
+        if not clean.endswith(".png"):
+            clean = clean + ".png"
+        return images_dir / clean
+
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+    return images_dir / f"{timestamp}_{model_name}_{_slug(prompt)}.png"
+
+
+# ============================================================
+# Backends
+# ============================================================
+
+def _generate_gemini(prompt: str, size: str) -> bytes:
+    """Call Gemini Imagen 3 and return PNG bytes."""
+    try:
+        from google import genai
+        from google.genai import types as genai_types
+    except ImportError as e:
+        raise RuntimeError(f"google-genai not installed: {e}")
+
+    api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
+    if not api_key:
+        raise RuntimeError("GOOGLE_API_KEY (or GEMINI_API_KEY) not set")
+
+    client = genai.Client(api_key=api_key)
+    aspect = {"1024x1024": "1:1", "1536x1024": "3:2", "1024x1536": "2:3"}.get(size, "1:1")
+    resp = client.models.generate_images(
+        model="imagen-3.0-generate-002",
+        prompt=prompt,
+        config=genai_types.GenerateImagesConfig(
+            number_of_images=1,
+            aspect_ratio=aspect,
+        ),
+    )
+    if not resp.generated_images:
+        raise RuntimeError("Gemini returned no images (likely policy refusal)")
+    img = resp.generated_images[0].image
+    if hasattr(img, "image_bytes") and img.image_bytes:
+        return img.image_bytes
+    if hasattr(img, "_image_bytes") and img._image_bytes:
+        return img._image_bytes
+    raise RuntimeError("Gemini response missing image_bytes")
+
+
+def _generate_grok(prompt: str, size: str) -> bytes:
+    """Call xAI Grok Imagine and return PNG bytes."""
+    import openai
+
+    api_key = os.getenv("XAI_API_KEY") or os.getenv("GROK_API_KEY")
+    if not api_key:
+        raise RuntimeError("XAI_API_KEY (or GROK_API_KEY) not set")
+
+    client = openai.OpenAI(api_key=api_key, base_url="https://api.x.ai/v1")
+    resp = client.images.generate(
+        model="grok-2-image-1212",
+        prompt=prompt,
+        n=1,
+        response_format="b64_json",
+    )
+    if not resp.data:
+        raise RuntimeError("Grok returned no image data")
+    item = resp.data[0]
+    b64 = getattr(item, "b64_json", None)
+    if not b64:
+        raise RuntimeError("Grok response missing b64_json (size param may be unsupported)")
+    return base64.b64decode(b64)
+
+
+_BACKENDS = {
+    "gemini": _generate_gemini,
+    "grok": _generate_grok,
+}
+
+
+# ============================================================
+# Public entrypoint
+# ============================================================
+
+def generate_image(
+    prompt: str,
+    backend: str = "gemini",
+    size: str = "1024x1024",
+    style: str = "natural",
+    save_to: str | None = None,
+    model_name: str = "unknown",
+) -> dict:
+    """Generate an image and save it under /artifacts/images/.
+
+    Returns a dict with: image_path (filestore-relative), prompt_used,
+    backend_used, dimensions, file_size_bytes, ok, daily_count.
+    On failure: ok=False with an error reason; no file written.
+    """
+    if backend not in VALID_BACKENDS:
+        return {"ok": False, "error": f"unknown backend '{backend}'. Allowed: {list(VALID_BACKENDS)}"}
+    if size not in VALID_SIZES:
+        return {"ok": False, "error": f"unsupported size '{size}'. Allowed: {list(VALID_SIZES)}"}
+    if not prompt or len(prompt) < 4:
+        return {"ok": False, "error": "prompt too short (min 4 chars)"}
+
+    allowed, current = _check_daily_cap()
+    if not allowed:
+        return {"ok": False, "error": f"daily image cap ({_daily_cap()}) reached", "daily_count": current}
+
+    # Style is appended to the prompt as a hint — Imagen and Grok both honor
+    # style guidance better when it's woven into the prompt than as a separate flag.
+    style_suffix = {
+        "natural": "",
+        "diagram": ", clean diagram, technical illustration, high contrast, vector look",
+        "technical": ", technical illustration, blueprint aesthetic, precise lines",
+        "illustration": ", detailed illustration, rich colors",
+        "photo-realistic": ", photo-realistic, sharp focus, natural lighting",
+    }.get(style, "")
+    full_prompt = f"{prompt}{style_suffix}".strip()
+
+    try:
+        png_bytes = _BACKENDS[backend](full_prompt, size)
+    except RuntimeError as e:
+        logger.error(f"swarm_imagegen {backend} failed: {e}")
+        return {"ok": False, "error": f"{backend} error: {e}"}
+    except Exception as e:
+        logger.error(f"swarm_imagegen {backend} unexpected: {type(e).__name__}: {e}")
+        return {"ok": False, "error": f"{backend} unexpected: {type(e).__name__}"}
+
+    out_path = _output_path(prompt, model_name, save_to)
+    try:
+        out_path.write_bytes(png_bytes)
+    except OSError as e:
+        return {"ok": False, "error": f"write failed: {e}"}
+
+    _record_generation()
+    rel_path = str(out_path.relative_to(swarm_filestore._storage_root()))
+
+    # Append a one-line audit entry to /logs/image-generations.log
+    try:
+        audit = (
+            f"{datetime.now().isoformat()} | model={model_name} | backend={backend} | "
+            f"size={size} | style={style} | bytes={len(png_bytes)} | path={rel_path}\n"
+            f"  prompt: {prompt[:300]}{'...' if len(prompt) > 300 else ''}\n"
+        )
+        swarm_filestore.append_file("/logs/image-generations.log", audit)
+    except Exception as e:
+        logger.error(f"swarm_imagegen audit log failed (image still saved): {e}")
+
+    logger.info(f"swarm_imagegen produced {rel_path} ({len(png_bytes)} bytes) via {backend}")
+    return {
+        "ok": True,
+        "image_path": rel_path,
+        "prompt_used": full_prompt,
+        "backend_used": backend,
+        "dimensions": size,
+        "file_size_bytes": len(png_bytes),
+        "daily_count": current + 1,
+    }
+
+
+# ============================================================
+# Diagnostics
+# ============================================================
+
+def status() -> dict:
+    cap = _daily_cap()
+    with _lock:
+        cutoff = datetime.now() - timedelta(hours=24)
+        while _recent_generations and _recent_generations[0] < cutoff:
+            _recent_generations.popleft()
+        count = len(_recent_generations)
+    return {
+        "daily_cap": cap,
+        "generated_in_last_24h": count,
+        "remaining": max(0, cap - count),
+        "backends_configured": {
+            "gemini": bool(os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")),
+            "grok": bool(os.getenv("XAI_API_KEY") or os.getenv("GROK_API_KEY")),
+        },
+        "valid_sizes": list(VALID_SIZES),
+        "valid_styles": ["natural", "diagram", "technical", "illustration", "photo-realistic"],
+    }
