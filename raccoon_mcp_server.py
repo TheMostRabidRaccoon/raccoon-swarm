@@ -28,6 +28,7 @@ load_dotenv(os.path.expanduser("~/.env"), override=True)
 load_dotenv(override=True)
 
 import swarm_filestore
+import swarm_codeexec
 
 try:
     from mcp.server.fastmcp import FastMCP
@@ -60,6 +61,11 @@ mcp = FastMCP(
         "a known path, filestore_list to enumerate a subdirectory, and "
         "filestore_write / filestore_append to persist new content. "
         "Don't overwrite resolved positions — append amendments instead.\n"
+        "\n"
+        "code_exec runs Python in a sandboxed subprocess (60s timeout default, "
+        "1GB memory cap, network disabled by default). Use it to verify "
+        "quantitative claims, run calculations, or generate analysis files. "
+        "Outputs auto-persist to /artifacts/code-runs/.\n"
     ),
 )
 
@@ -198,6 +204,71 @@ def filestore_append(path: str, content: str) -> dict:
     if not ok:
         return {"path": path, "ok": False, "error": "append rejected (unsafe path or I/O error)"}
     return {"path": path, "ok": True, "appended_size": len(content)}
+
+
+# ============================================================
+# Code execution
+# ============================================================
+
+@mcp.tool()
+def code_exec(
+    code: str,
+    description: str = "",
+    timeout: int = 60,
+    allow_network: bool = False,
+    model: str = "unknown",
+) -> dict:
+    """Execute Python code in a sandboxed subprocess and capture results.
+
+    The runner has numpy, pandas, matplotlib, scipy preinstalled (assuming the
+    swarm's venv). Network access is blocked by default via Linux namespaces
+    (best-effort — single-user homelab threat model). Memory is capped at 1GB.
+    Timeout default 60s, hard max 120s.
+
+    Outputs (stdout, stderr, generated files) are persisted to
+    /artifacts/code-runs/{run_id}/ and survive across sessions. Inline
+    stdout/stderr returned here are truncated to 100KB; the artifact has
+    the full content.
+
+    Args:
+        code: Python source to execute. The script runs from a fresh tempdir;
+              any files it creates get copied into the artifact directory.
+        description: brief description of what this run does (for the audit
+                     manifest). Strongly recommended.
+        timeout: max execution time in seconds (default 60, max 120).
+        allow_network: opt-in network access. Default False — keep it False
+                       unless you have an explicit reason and the Conductor
+                       knows.
+        model: optional name of the model running this code (for audit log).
+
+    Returns:
+        {
+          "stdout": str (possibly truncated),
+          "stderr": str (possibly truncated),
+          "exit_code": int (-9 = timed out, 0 = success),
+          "timed_out": bool,
+          "execution_time_ms": int,
+          "generated_files": [paths under /artifacts/code-runs/...],
+          "artifact_path": "artifacts/code-runs/{run_id}/manifest.json",
+          "truncated": bool,
+          "run_id": str,
+        }
+    """
+    return swarm_codeexec.run_code(
+        code=code,
+        description=description,
+        timeout=timeout,
+        allow_network=allow_network,
+        model=model,
+        persist=True,
+    )
+
+
+@mcp.tool()
+def code_exec_status() -> dict:
+    """Diagnostic info about the code-execution sandbox: timeout caps,
+    memory caps, network isolation strength."""
+    return swarm_codeexec.status()
 
 
 # ============================================================
