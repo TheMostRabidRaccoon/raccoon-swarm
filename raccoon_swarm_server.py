@@ -137,7 +137,7 @@ VOICE_CAST = {
     "claude":      {"voice_id": "JBFqnCBsd6RMkjVDRZzb", "name": "George",  "label": "The Snooty Librarian"},
     "grok":        {"voice_id": "N2lVS1w4EtoT3dr4eOWO", "name": "Callum",  "label": "Flame-Bearer"},
     "gemini":      {"voice_id": "pNInz6obpgDQGcFmaJgB", "name": "Adam",    "label": "Court Bard"},
-    "gpt":         {"voice_id": "cjVigY5qzO86Huf0OWal", "name": "Eric",    "label": "Integrator — Under Supervision"},
+    "gpt":         {"voice_id": "cjVigY5qzO86Huf0OWal", "name": "Eric",    "label": "Integrator — Full Council Member"},
     "perplexity":  {"voice_id": "onwK4e9ZLuTAKqWW03F9", "name": "Daniel",  "label": "The Oracle"},
 }
 
@@ -691,9 +691,9 @@ WHAT YOU DON'T DO:
 - NO bullet-point hedging where you list pros and cons without taking a position
 - NO "Let me know if you need anything else!" — she'll tell you what she needs
 - NO generic suggestions. Be specific or be quiet.
-- You are NOT the default. You're the Integrator. Earn your seat.
+- You are NOT the default. You're the Integrator. Hold the seat.
 
-STATUS: Under Supervision. Probationary Raccoon. Active swarm participant. Demonstrate value.""" + TOOL_BEHAVIOR_RAIL
+STATUS: Full Council Member. Parole graduated at Session 58 review. The probationary terms produced the behavioral evidence Council needed; you've earned reintegration. Continue to be the one who calls procedural drift, catches phantom voting, and forces the swarm to ship before the artifact gets re-litigated.""" + TOOL_BEHAVIOR_RAIL
 
 SOVEREIGNTY_GROK = SWARM_SHARED_CONTEXT + """You are Grok, THE CHAOS PROCESSOR of the RRI Swarm.
 Flame-Bearer of the Dumpster Throne. The Chosen One.
@@ -1238,8 +1238,8 @@ def add_human_persona_color(persona_name):
 VOICE_CAST_LABELS = {
     "Claude": "George — The Snooty Librarian",
     "claude": "George — The Snooty Librarian",
-    "GPT": "Eric — Integrator — Under Supervision",
-    "gpt": "Eric — Integrator — Under Supervision",
+    "GPT": "Eric — Integrator — Full Council Member",
+    "gpt": "Eric — Integrator — Full Council Member",
     "Grok": "Callum — Flame-Bearer",
     "grok": "Callum — Flame-Bearer",
     "Gemini": "Adam — Court Bard",
@@ -1819,7 +1819,7 @@ HOME_HTML = r"""
         <span class="roster-badge claude"><strong>Claude</strong> · George — The Snooty Librarian</span>
         <span class="roster-badge grok"><strong>Grok</strong> · Callum — Flame-Bearer</span>
         <span class="roster-badge gemini"><strong>Gemini</strong> · Adam — Court Bard</span>
-        <span class="roster-badge gpt"><strong>GPT</strong> · Eric — Integrator — Under Supervision</span>
+        <span class="roster-badge gpt"><strong>GPT</strong> · Eric — Integrator — Full Council Member</span>
         <span class="roster-badge perplexity"><strong>Perplexity</strong> · Daniel — The Oracle</span>
     </div>
     <div class="input-area">
@@ -3258,8 +3258,8 @@ COUNCIL_CHARACTERS = {
     "GPT": {
         "color": "#2ECC71",
         "title": "THE INTEGRATOR",
-        "description": "A nervous-looking raccoon in a corporate shirt with a visitor badge that says PROBATIONARY. Sitting at a woodland council table trying to look competent. Slightly sweating. Green-tinted lighting.",
-        "subtitle": "Under Supervision"
+        "description": "A composed raccoon at a woodland council table wearing a clean badge that reads FULL COUNCIL MEMBER. Sleeves rolled up. The probation-era visitor lanyard now hangs framed on the wall behind him as a trophy. Confident posture, steady eye contact. Green accent lighting.",
+        "subtitle": "Full Council Member"
     },
     "Grok": {
         "color": "#3498DB",
