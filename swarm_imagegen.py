@@ -107,13 +107,50 @@ def _output_path(prompt: str, model_name: str, save_to: str | None) -> Path:
 # Backends
 # ============================================================
 
-def _generate_gemini(prompt: str, size: str) -> bytes:
-    """Call Gemini Imagen and return PNG bytes.
+def _is_gemini_native_image_model(name: str) -> bool:
+    """Gemini-native image models (gemini-2.5-flash-image, gemini-3-pro-image-preview,
+    gemini-3.1-flash-image-preview, etc.) generate images via generate_content with
+    response_modalities=["IMAGE","TEXT"], NOT via generate_images/predict."""
+    n = name.lower()
+    return n.startswith("gemini-") and ("image" in n)
 
-    Google rotates Imagen model identifiers and tier availability. We try
-    the override first (GOOGLE_IMAGE_MODEL env var), then a fallback chain
-    of known-good names. If all fail, surface a clean error pointing at
-    the ListModels endpoint for diagnosis.
+
+def _generate_gemini_native_image(client, model: str, prompt: str) -> bytes:
+    """Generate an image via Gemini-native generate_content path.
+
+    Used for gemini-*-image* models that support generateContent rather than
+    Imagen's predict. Aspect ratio / size is not directly configurable here;
+    the model picks based on prompt + defaults.
+    """
+    from google.genai import types as genai_types
+
+    resp = client.models.generate_content(
+        model=model,
+        contents=prompt,
+        config=genai_types.GenerateContentConfig(
+            response_modalities=["IMAGE", "TEXT"],
+        ),
+    )
+    if not resp.candidates:
+        raise RuntimeError(f"{model!r} returned no candidates")
+    parts = resp.candidates[0].content.parts or []
+    for part in parts:
+        inline = getattr(part, "inline_data", None)
+        if inline is not None and getattr(inline, "data", None):
+            return inline.data
+    raise RuntimeError(f"{model!r} returned no inline image data (parts={len(parts)})")
+
+
+def _generate_gemini(prompt: str, size: str) -> bytes:
+    """Call Google's image generation and return PNG bytes.
+
+    Two API paths exist:
+      - Imagen models (imagen-4.0-*) use predict via generate_images()
+      - Gemini-native image models (gemini-*-image*) use generateContent
+
+    We try the override first (GOOGLE_IMAGE_MODEL env var), then a fallback
+    chain that mixes both families. Each call dispatches to the right SDK
+    method based on the model name pattern.
     """
     try:
         from google import genai
@@ -127,10 +164,16 @@ def _generate_gemini(prompt: str, size: str) -> bytes:
 
     override = os.getenv("GOOGLE_IMAGE_MODEL")
     candidates = [override] if override else [
-        "imagen-4.0-generate-001",        # current standard (Imagen 4)
-        "imagen-4.0-fast-generate-001",   # faster, lower quality
-        "imagen-3.0-generate-002",        # legacy fallback (older tiers)
-        "imagen-3.0-generate-001",        # very-old fallback
+        # Gemini-native image models — use generate_content. Most reliable on
+        # standard Gemini API tiers.
+        "gemini-3-pro-image-preview",
+        "gemini-3.1-flash-image-preview",
+        "gemini-2.5-flash-image",
+        # Imagen models — use generate_images / predict. May require Vertex AI
+        # access on some tiers.
+        "imagen-4.0-generate-001",
+        "imagen-4.0-fast-generate-001",
+        "imagen-3.0-generate-002",
     ]
     candidates = [c for c in candidates if c]
 
@@ -140,34 +183,43 @@ def _generate_gemini(prompt: str, size: str) -> bytes:
     last_err: Exception | None = None
     for model in candidates:
         try:
-            resp = client.models.generate_images(
-                model=model,
-                prompt=prompt,
-                config=genai_types.GenerateImagesConfig(
-                    number_of_images=1,
-                    aspect_ratio=aspect,
-                ),
-            )
+            if _is_gemini_native_image_model(model):
+                bytes_out = _generate_gemini_native_image(client, model, prompt)
+            else:
+                resp = client.models.generate_images(
+                    model=model,
+                    prompt=prompt,
+                    config=genai_types.GenerateImagesConfig(
+                        number_of_images=1,
+                        aspect_ratio=aspect,
+                    ),
+                )
+                if not resp.generated_images:
+                    last_err = RuntimeError(f"{model!r} returned no images (likely policy refusal)")
+                    continue
+                img = resp.generated_images[0].image
+                if hasattr(img, "image_bytes") and img.image_bytes:
+                    bytes_out = img.image_bytes
+                elif hasattr(img, "_image_bytes") and img._image_bytes:
+                    bytes_out = img._image_bytes
+                else:
+                    last_err = RuntimeError(f"{model!r} response missing image_bytes")
+                    continue
         except Exception as e:
-            # 404 / NOT_FOUND / unsupported model — try next
             err_str = str(e)
-            if "NOT_FOUND" in err_str or "404" in err_str or "not found" in err_str.lower() or "is not supported" in err_str.lower():
+            if (
+                "NOT_FOUND" in err_str
+                or "404" in err_str
+                or "not found" in err_str.lower()
+                or "is not supported" in err_str.lower()
+            ):
                 last_err = e
                 logger.info(f"swarm_imagegen Gemini model {model!r} not available, trying next")
                 continue
             raise RuntimeError(f"Gemini image API error on {model!r}: {e}")
 
-        if not resp.generated_images:
-            last_err = RuntimeError(f"{model!r} returned no images (likely policy refusal)")
-            continue
-        img = resp.generated_images[0].image
-        if hasattr(img, "image_bytes") and img.image_bytes:
-            logger.info(f"swarm_imagegen Gemini succeeded with model {model!r}")
-            return img.image_bytes
-        if hasattr(img, "_image_bytes") and img._image_bytes:
-            logger.info(f"swarm_imagegen Gemini succeeded with model {model!r}")
-            return img._image_bytes
-        last_err = RuntimeError(f"{model!r} response missing image_bytes")
+        logger.info(f"swarm_imagegen Gemini succeeded with model {model!r}")
+        return bytes_out
 
     tried = ", ".join(candidates)
     raise RuntimeError(
