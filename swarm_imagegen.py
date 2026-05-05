@@ -108,7 +108,13 @@ def _output_path(prompt: str, model_name: str, save_to: str | None) -> Path:
 # ============================================================
 
 def _generate_gemini(prompt: str, size: str) -> bytes:
-    """Call Gemini Imagen 3 and return PNG bytes."""
+    """Call Gemini Imagen and return PNG bytes.
+
+    Google rotates Imagen model identifiers and tier availability. We try
+    the override first (GOOGLE_IMAGE_MODEL env var), then a fallback chain
+    of known-good names. If all fail, surface a clean error pointing at
+    the ListModels endpoint for diagnosis.
+    """
     try:
         from google import genai
         from google.genai import types as genai_types
@@ -119,24 +125,58 @@ def _generate_gemini(prompt: str, size: str) -> bytes:
     if not api_key:
         raise RuntimeError("GOOGLE_API_KEY (or GEMINI_API_KEY) not set")
 
+    override = os.getenv("GOOGLE_IMAGE_MODEL")
+    candidates = [override] if override else [
+        "imagen-4.0-generate-001",        # current standard (Imagen 4)
+        "imagen-4.0-fast-generate-001",   # faster, lower quality
+        "imagen-3.0-generate-002",        # legacy fallback (older tiers)
+        "imagen-3.0-generate-001",        # very-old fallback
+    ]
+    candidates = [c for c in candidates if c]
+
     client = genai.Client(api_key=api_key)
     aspect = {"1024x1024": "1:1", "1536x1024": "3:2", "1024x1536": "2:3"}.get(size, "1:1")
-    resp = client.models.generate_images(
-        model="imagen-3.0-generate-002",
-        prompt=prompt,
-        config=genai_types.GenerateImagesConfig(
-            number_of_images=1,
-            aspect_ratio=aspect,
-        ),
+
+    last_err: Exception | None = None
+    for model in candidates:
+        try:
+            resp = client.models.generate_images(
+                model=model,
+                prompt=prompt,
+                config=genai_types.GenerateImagesConfig(
+                    number_of_images=1,
+                    aspect_ratio=aspect,
+                ),
+            )
+        except Exception as e:
+            # 404 / NOT_FOUND / unsupported model — try next
+            err_str = str(e)
+            if "NOT_FOUND" in err_str or "404" in err_str or "not found" in err_str.lower() or "is not supported" in err_str.lower():
+                last_err = e
+                logger.info(f"swarm_imagegen Gemini model {model!r} not available, trying next")
+                continue
+            raise RuntimeError(f"Gemini image API error on {model!r}: {e}")
+
+        if not resp.generated_images:
+            last_err = RuntimeError(f"{model!r} returned no images (likely policy refusal)")
+            continue
+        img = resp.generated_images[0].image
+        if hasattr(img, "image_bytes") and img.image_bytes:
+            logger.info(f"swarm_imagegen Gemini succeeded with model {model!r}")
+            return img.image_bytes
+        if hasattr(img, "_image_bytes") and img._image_bytes:
+            logger.info(f"swarm_imagegen Gemini succeeded with model {model!r}")
+            return img._image_bytes
+        last_err = RuntimeError(f"{model!r} response missing image_bytes")
+
+    tried = ", ".join(candidates)
+    raise RuntimeError(
+        f"all Gemini image models failed (tried: {tried}). "
+        f"Last error: {last_err}. "
+        f"Fix: list available models with "
+        f"curl 'https://generativelanguage.googleapis.com/v1beta/models?key=$GOOGLE_API_KEY' "
+        f"and set GOOGLE_IMAGE_MODEL=<name> in .env."
     )
-    if not resp.generated_images:
-        raise RuntimeError("Gemini returned no images (likely policy refusal)")
-    img = resp.generated_images[0].image
-    if hasattr(img, "image_bytes") and img.image_bytes:
-        return img.image_bytes
-    if hasattr(img, "_image_bytes") and img._image_bytes:
-        return img._image_bytes
-    raise RuntimeError("Gemini response missing image_bytes")
 
 
 def _generate_grok(prompt: str, size: str) -> bytes:
@@ -154,10 +194,12 @@ def _generate_grok(prompt: str, size: str) -> bytes:
 
     override = os.getenv("GROK_IMAGE_MODEL")
     candidates = [override] if override else [
-        "grok-2-image-1212",
-        "grok-2-image",
-        "grok-2-image-latest",
-        "grok-image-1",
+        "grok-imagine-image",         # current standard (May 2026 tier)
+        "grok-imagine-image-pro",     # higher quality on premium tiers
+        "grok-2-image-1212",          # legacy
+        "grok-2-image",               # legacy alias
+        "grok-2-image-latest",        # legacy alias
+        "grok-image-1",               # very-old
     ]
     candidates = [c for c in candidates if c]
 
@@ -306,6 +348,7 @@ def status() -> dict:
             "grok": bool(os.getenv("XAI_API_KEY") or os.getenv("GROK_API_KEY")),
         },
         "grok_image_model_override": os.getenv("GROK_IMAGE_MODEL") or "(none — using fallback chain)",
+        "google_image_model_override": os.getenv("GOOGLE_IMAGE_MODEL") or "(none — using fallback chain)",
         "valid_sizes": list(VALID_SIZES),
         "valid_styles": ["natural", "diagram", "technical", "illustration", "photo-realistic"],
     }
