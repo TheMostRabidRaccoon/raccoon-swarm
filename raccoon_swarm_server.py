@@ -542,9 +542,13 @@ Subdirectories:
   /positions/   — resolved positions (append-only by convention; do not overwrite)
   /questions/   — open questions, hypotheses, gaps
   /pursuits/    — concrete next moves to investigate
+  /tasks/       — task files and assignments
   /frameworks/  — named mental models, taxonomies
   /artifacts/   — generated outputs: drafts, calculations, exhibits
   /logs/        — per-session activity logs
+
+File naming: {YYYY-MM-DD}_{model}_{topic}.md (e.g., 2026-05-04_claude_filestore-conventions.md)
+File format: YAML frontmatter (date, source, tags, status, model) then markdown body.
 
 To WRITE a file (overwrites if exists):
   [MEMORY_WRITE: /frameworks/orthogonal-moat-theory.md]

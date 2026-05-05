@@ -19,7 +19,7 @@ from pathlib import Path
 logger = logging.getLogger("SwarmVault")
 
 
-SUBDIRS = ("positions", "questions", "pursuits", "frameworks", "artifacts", "logs")
+SUBDIRS = ("positions", "questions", "pursuits", "tasks", "frameworks", "artifacts", "logs")
 
 
 def _storage_root() -> Path:
@@ -51,6 +51,7 @@ survive across sessions and are visible to every model in the round table.
 - `positions/` — resolved positions. Append-only by convention; do not overwrite.
 - `questions/` — open questions, hypotheses, gaps.
 - `pursuits/` — concrete next moves the swarm wants to investigate.
+- `tasks/` — task files and assignments (Session 58 convention).
 - `frameworks/` — named mental models, taxonomies, conceptual scaffolds.
 - `artifacts/` — generated outputs: drafts, calculations, exhibits.
 - `logs/` — per-session activity logs.
@@ -72,7 +73,7 @@ write the structural insight, not the identifiers.
 # Path safety
 # ============================================================
 
-_SAFE_PATH_RE = re.compile(r"^/?(positions|questions|pursuits|frameworks|artifacts|logs)/[A-Za-z0-9_\-./]+\.(md|json|txt|log)$")
+_SAFE_PATH_RE = re.compile(r"^/?(positions|questions|pursuits|tasks|frameworks|artifacts|logs)/[A-Za-z0-9_\-./]+\.(md|json|txt|log)$")
 
 
 def _resolve_safe(rel_path: str) -> Path | None:
