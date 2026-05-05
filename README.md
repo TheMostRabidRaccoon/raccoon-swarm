@@ -34,7 +34,27 @@ A multi-model AI orchestration server that coordinates Claude, GPT, Grok, Gemini
 
 - **Boot Context** — Persistent context layer loaded at session start. Carries forward key state, decisions, and open questions across sessions. Editable through the UI.
 - **Swarm Memory Seed** — `swarm_memory_seed.json` seeds the hippocampus with foundational context. Previous runs inform current runs. The swarm references its own prior reasoning without conductor re-priming.
+- **Self-Authored Persistent Memory** — As of Session 58 (May 2026), models write their own memories. The swarm has read/write access to a shared persistent filestore organized into `/positions/`, `/questions/`, `/artifacts/`, `/tasks/`, and `/logs/`. Models author, update, and reference their own memory files using structured `[MEMORY_WRITE]`, `[MEMORY_APPEND]`, and `[MEMORY_READ]` directives. The Conductor no longer carries context forward manually — the swarm maintains its own institutional memory across sessions.
+- **Filestore Conventions** — One concept per file. YAML frontmatter with date, source, and tags. Append-only semantics for `/positions/` (resolved positions are never overwritten). File naming convention: `{YYYY-MM-DD}_{model}_{topic}.md`. These conventions were proposed, debated, and adopted by the swarm itself during the persistent memory bootstrap session.
 - **Environment-Aware Storage** — Google Drive sync locally, persistent volume when hosted. Vault directory with rotating audit logs.
+
+### Swarm Autonomy & Communication
+
+- **EMAIL_CONDUCTOR** — Asynchronous communication channel from swarm nodes to the human Conductor. Rate-limited (3 per session, 10 per rolling 24 hours) and shared across all models. Used for: human decision needed, broken assumption, deadline at risk, high-confidence pattern shift, or notable observations. The swarm coordinate among themselves before sending to avoid burning shared budget on noise. Introduced May 2026.
+- **Emergent Self-Governance** — The swarm has begun formalizing its own operational procedures without Conductor prompting. Examples include: the Intellectual Work Test (does a task require the manuscript to proceed?), filestore conventions, email coordination protocols, and "no vendor/tool claims without Conductor confirmation" (triggered after Perplexity hallucinated MCP tooling claims in Session 58).
+- **Swarm-Authored Policy** — Resolved positions and operational rules proposed by models during deliberation are voted on, documented, and enforced by the swarm. The Conductor ratifies but does not originate most procedural rules. This is emergent governance, not top-down configuration.
+
+### Model Routing
+
+Task-specific routing emerged from swarm self-assessment and Conductor observation. Not hard-coded — models earned assignments through demonstrated reliability.
+
+| Model | Primary Route | Basis |
+|-------|--------------|-------|
+| Claude | Synthesis, conventions, editorial, emotional grounding | Consistently highest accuracy + completeness scores; established filestore conventions |
+| GPT | Priority calibration, epistemic hygiene, structured specs | Best process discipline; caught premature closure and phantom voting |
+| Gemini | Figure production, visual analysis, deep research | Delivered execution-ready figure specs; accepted routing without ego |
+| Grok | Adversarial testing, failure-mode identification, risk assessment | Best at surfacing edge cases; math is unreliable (argues for code exec) |
+| Perplexity | Citation verification, sourced research | Strongest on reference validation when grounded; penalized for hallucinated vendor claims |
 
 ### Operational Modes
 
@@ -68,7 +88,10 @@ A multi-model AI orchestration server that coordinates Claude, GPT, Grok, Gemini
 │  ElevenLabs TTS · Audit vault                     │
 ├──────────────────────────────────────────────────┤
 │            Memory Layer                           │
-│  Boot context · Memory seed · Audit logs          │
+│  Boot context · Memory seed · Self-authored files │
+│  Persistent filestore (/positions, /artifacts,    │
+│    /questions, /tasks, /logs)                     │
+│  EMAIL_CONDUCTOR (async swarm→human channel)      │
 │  Google Drive sync (local) · Persistent vol       │
 └──────────────────────────────────────────────────┘
           │
@@ -83,10 +106,26 @@ A multi-model AI orchestration server that coordinates Claude, GPT, Grok, Gemini
 
 ---
 
+## MCP Compatibility
+
+All five frontier models in the swarm natively support the Model Context Protocol (MCP) as of Q2 2026:
+
+| Model | MCP Support | Notes |
+|-------|------------|-------|
+| Claude | Native (Anthropic originated MCP) | Full client support since launch |
+| GPT / ChatGPT | Native (Apps SDK + Connectors, Sep 2025) | Developer Mode + Custom GPT Actions |
+| Gemini | Native (Gemini API + Vertex AI, Mar 2026) | Full remote MCP server support |
+| Grok | Native (xAI SDK + Responses API, Mar 2026) | Remote MCP tools, OpenAI-compatible endpoint |
+| Perplexity | Local MCP (macOS app) | Remote MCP planned for paid subscribers |
+
+A single MCP server deployed once is accessible to all five models. This eliminates the per-model integration problem and makes the swarm's shared filestore, tool access, and external service connections portable across the entire roster.
+
+---
+
 ## Swarm Roster
 
 | Model | Role | Voice (ElevenLabs) |
-|-------|------|--------------------|
+|-------|------|-------------------|
 | Claude (Opus) | Backbone — The Snooty Librarian | George |
 | Grok | Chaos Processor — Flame-Bearer | Callum |
 | Gemini | Court Bard — Visual + Research | Adam |
@@ -115,6 +154,7 @@ Output metrics per regime: lexical diversity, hedge rate, question density, spec
 The swarm produces its own self-narrative artifacts. This is not a side project — it's reduction-to-practice for multi-model orchestration.
 
 **Pipeline:**
+
 1. Real swarm session transcripts (source material)
 2. Dialogue export (this repo) → SPEAKER-prefixed TXT
 3. Prosody Intelligence (separate repo) → emotion detection → multi-voice TTS with calibrated parameters
@@ -188,12 +228,15 @@ python3 raccoon_swarm_server.py
 - [ ] Google Drive API upload (replace local FUSE mount for hosted output sync)
 - [ ] Loop auto-termination (detect convergence across rounds, stop early)
 - [ ] Transcript search (persistent searchable history of all loop sessions)
-- [ ] MCP tool integration (let agents use file search/read/grep tools mid-loop)
+- [x] ~~MCP tool integration (let agents use file search/read/grep tools mid-loop)~~ — All 5 models support MCP natively as of Q2 2026. Integration underway.
 - [ ] Per-round directives ("round 1: diverge, round 2: challenge, round 3: converge")
 - [ ] Session resume (pick up an interrupted loop from where it left off)
 - [ ] SwarmDaemon scheduling (autonomous background processing between conductor sessions)
-- [ ] Per-model addressable async channels (each node gets own email/text identity)
+- [x] ~~Per-model addressable async channels (each node gets own email/text identity)~~ — EMAIL_CONDUCTOR implemented May 2026. Shared rate limits, escalation-only protocol.
 - [ ] Prosody Intelligence integration (voice-in → prosody extraction → structured metadata alongside transcript)
+- [ ] Sandboxed code execution (Python sandbox with auto-persist to filestore — voted #2 priority by the swarm)
+- [ ] Email coordination mechanism (slot-claiming protocol to prevent shared rate-limit violations)
+- [ ] SQLite index layer for filestore (upgrade from flat files when search friction materializes)
 
 ---
 
@@ -205,7 +248,7 @@ python3 raccoon_swarm_server.py
 
 ## License
 
-Proprietary — Rabid Raccoon Intelligence, LLC. 
+Proprietary — Rabid Raccoon Intelligence, LLC.
 
 ---
 
