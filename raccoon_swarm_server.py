@@ -82,8 +82,18 @@ def _mcp_tools_enabled() -> bool:
 
 
 # Cap on tool-use iterations per single call to a model. Prevents an infinite
-# loop where a model keeps requesting tools indefinitely.
-MAX_TOOL_ITERATIONS = 5
+# loop where a model keeps requesting tools indefinitely. Configurable via
+# RRI_MCP_MAX_ITERATIONS env var. Default 10 — empirically 5 was too tight
+# for research workflows where models search → read → reason → maybe write.
+def _max_tool_iterations() -> int:
+    try:
+        return max(1, int(os.getenv("RRI_MCP_MAX_ITERATIONS", "10")))
+    except ValueError:
+        return 10
+
+
+# Kept for back-compat / clarity in places that already reference it.
+MAX_TOOL_ITERATIONS = 10
 
 claude_client = None
 grok_client = None
@@ -611,6 +621,18 @@ support tool_use.
 
 The two paths share the same backing storage, so writes via either method
 land in the same files.
+
+TOOL-USE EFFICIENCY:
+You have a per-call iteration cap (default 10). Each tool_use turn counts as
+one iteration even if you only call one tool. To avoid hitting the cap mid-
+research:
+- BATCH parallel tool calls in a single turn whenever they don't depend on
+  each other. If you need to read three files, request all three in one
+  tool_use turn rather than three sequential ones.
+- DON'T narrate what you're about to do before doing it ("Okay, I'll search
+  next..."). Just call the tool. Save prose for the final synthesis.
+- If you find yourself approaching the cap, prefer producing a partial
+  answer over making one more tool call.
 """
 
 SWARM_SHARED_CONTEXT = """You are part of the RRI Swarm — a multi-model AI orchestration system built by Rabid Raccoon Intelligence, LLC. The Conductor is Kyra Dawson.
@@ -823,7 +845,9 @@ def call_claude(query, max_tokens=2000, images=None):
             return _extract_claude_text(msg.content) or "[Claude returned no text]"
 
         tools = swarm_tools.tools_for_anthropic()
-        for iteration in range(MAX_TOOL_ITERATIONS):
+        max_iters = _max_tool_iterations()
+        accumulated_text: list[str] = []  # collected across iterations
+        for iteration in range(max_iters):
             msg = client.messages.create(
                 model="claude-opus-4-6",
                 max_tokens=max_tokens,
@@ -832,10 +856,15 @@ def call_claude(query, max_tokens=2000, images=None):
                 tools=tools,
             )
 
+            # Collect any text Claude produced this turn (it can emit text + tool_use together)
+            turn_text = _extract_claude_text(msg.content)
+            if turn_text:
+                accumulated_text.append(turn_text)
+
             if msg.stop_reason != "tool_use":
                 # Final text response
-                text = _extract_claude_text(msg.content)
-                return text or "[Claude returned no text]"
+                final = "\n\n".join(accumulated_text) if accumulated_text else turn_text
+                return final or "[Claude returned no text]"
 
             # Append the assistant's tool_use turn so the next call can see it
             messages.append({"role": "assistant", "content": [b.model_dump() for b in msg.content]})
@@ -853,9 +882,11 @@ def call_claude(query, max_tokens=2000, images=None):
                 })
             messages.append({"role": "user", "content": tool_results})
 
-        # Hit the iteration cap — return whatever text Claude has produced so far
-        logger.warning(f"Claude tool-use loop hit MAX_TOOL_ITERATIONS={MAX_TOOL_ITERATIONS}")
-        return _extract_claude_text(msg.content) or "[Claude tool-use loop exhausted without final text]"
+        # Hit the iteration cap — return everything accumulated + a clear note
+        logger.warning(f"Claude tool-use loop hit MAX_TOOL_ITERATIONS={max_iters}")
+        if accumulated_text:
+            return "\n\n".join(accumulated_text) + f"\n\n[note: Claude tool-use loop hit the {max_iters}-iteration cap before producing a final answer; the above is partial reasoning across {max_iters} tool rounds.]"
+        return f"[Claude tool-use loop exhausted at {max_iters} iterations without producing any text]"
 
     except Exception as e:
         logger.error(f"Claude Error: {e}")
@@ -891,8 +922,10 @@ def _openai_chat_with_tools(
         return resp.choices[0].message.content or f"[{label} returned no text]"
 
     tools = swarm_tools.tools_for_openai()
+    max_iters = _max_tool_iterations()
+    accumulated_text: list[str] = []
     last_msg = None
-    for iteration in range(MAX_TOOL_ITERATIONS):
+    for iteration in range(max_iters):
         kwargs = {tokens_param: max_tokens}
         resp = client.chat.completions.create(
             model=model_name,
@@ -903,9 +936,14 @@ def _openai_chat_with_tools(
         msg = resp.choices[0].message
         last_msg = msg
 
+        # Collect any inline text the model produced this turn
+        if msg.content:
+            accumulated_text.append(msg.content)
+
         tool_calls = getattr(msg, "tool_calls", None) or []
         if not tool_calls:
-            return msg.content or f"[{label} returned no text]"
+            final = "\n\n".join(accumulated_text) if accumulated_text else (msg.content or "")
+            return final or f"[{label} returned no text]"
 
         # Append the assistant's tool-call turn so the next call sees it
         assistant_turn = {
@@ -935,8 +973,10 @@ def _openai_chat_with_tools(
                 "content": json.dumps(result, default=str),
             })
 
-    logger.warning(f"{label} tool-use loop hit MAX_TOOL_ITERATIONS={MAX_TOOL_ITERATIONS}")
-    return (last_msg.content if last_msg else "") or f"[{label} tool-use loop exhausted without final text]"
+    logger.warning(f"{label} tool-use loop hit MAX_TOOL_ITERATIONS={max_iters}")
+    if accumulated_text:
+        return "\n\n".join(accumulated_text) + f"\n\n[note: {label} tool-use loop hit the {max_iters}-iteration cap before producing a final answer; the above is partial reasoning across {max_iters} tool rounds.]"
+    return f"[{label} tool-use loop exhausted at {max_iters} iterations without producing any text]"
 
 
 def call_gpt(query, max_tokens=2000, images=None):
@@ -1014,8 +1054,10 @@ def call_gemini(query, max_tokens=2000, images=None):
             tools=tools,
         )
 
+        max_iters = _max_tool_iterations()
+        accumulated_text: list[str] = []
         last_resp = None
-        for iteration in range(MAX_TOOL_ITERATIONS):
+        for iteration in range(max_iters):
             resp = client.models.generate_content(
                 model="gemini-2.5-pro",
                 contents=contents,
@@ -1029,10 +1071,15 @@ def call_gemini(query, max_tokens=2000, images=None):
             parts = candidate.content.parts or []
             function_calls = [p for p in parts if getattr(p, "function_call", None)]
 
+            # Collect any inline text from this turn (Gemini can mix text + function_call)
+            turn_text = "".join(p.text for p in parts if getattr(p, "text", None))
+            if turn_text:
+                accumulated_text.append(turn_text)
+
             if not function_calls:
                 # Final text turn
-                text = "".join(p.text for p in parts if getattr(p, "text", None))
-                return text or "[Gemini returned no text]"
+                final = "\n\n".join(accumulated_text) if accumulated_text else turn_text
+                return final or "[Gemini returned no text]"
 
             # Append model turn and tool responses to contents
             contents.append(candidate.content)
@@ -1048,8 +1095,10 @@ def call_gemini(query, max_tokens=2000, images=None):
                 ))
             contents.append(genai_types.Content(role="user", parts=response_parts))
 
-        logger.warning(f"Gemini tool-use loop hit MAX_TOOL_ITERATIONS={MAX_TOOL_ITERATIONS}")
-        return (last_resp.text if last_resp else "") or "[Gemini tool-use loop exhausted without final text]"
+        logger.warning(f"Gemini tool-use loop hit MAX_TOOL_ITERATIONS={max_iters}")
+        if accumulated_text:
+            return "\n\n".join(accumulated_text) + f"\n\n[note: Gemini tool-use loop hit the {max_iters}-iteration cap before producing a final answer; the above is partial reasoning across {max_iters} tool rounds.]"
+        return f"[Gemini tool-use loop exhausted at {max_iters} iterations without producing any text]"
 
     except Exception as e:
         logger.error(f"Gemini Error: {e}")
