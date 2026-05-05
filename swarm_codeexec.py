@@ -97,8 +97,15 @@ def _probe_unshare_net() -> bool:
 
 def _build_command(code_path: Path, allow_network: bool) -> list[str]:
     """Build the subprocess argv. Wrap with unshare -rn for network isolation
-    if the kernel supports it and allow_network=False."""
-    py = "python3"
+    if the kernel supports it and allow_network=False.
+
+    Uses sys.executable so the subprocess inherits the same Python interpreter
+    (and therefore the same venv site-packages) as the swarm process. Bare
+    'python3' on PATH resolves to system Python on most servers, which lacks
+    numpy/pandas/etc. and produces ModuleNotFoundError mid-tool-call.
+    """
+    import sys
+    py = sys.executable or "python3"
     base = [py, "-I", str(code_path)]  # -I: isolated mode, no user site, no PYTHONPATH
     if not allow_network and _probe_unshare_net():
         # unshare -rn: new user + network namespace — empty network stack
