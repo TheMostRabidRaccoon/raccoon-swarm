@@ -72,6 +72,18 @@ import requests as http_requests
 
 import swarm_filestore
 import swarm_mail
+import swarm_tools
+
+# Master switch for native MCP tool registration in model API calls.
+# Set RRI_MCP_TOOLS_ENABLED=false to fall back to directive-only behavior
+# without redeploying.
+def _mcp_tools_enabled() -> bool:
+    return os.getenv("RRI_MCP_TOOLS_ENABLED", "true").lower() not in ("false", "0", "no")
+
+
+# Cap on tool-use iterations per single call to a model. Prevents an infinite
+# loop where a model keeps requesting tools indefinitely.
+MAX_TOOL_ITERATIONS = 5
 
 claude_client = None
 grok_client = None
@@ -583,6 +595,22 @@ When to email vs. write to memory:
   is at risk, or a high-confidence pattern shift just occurred.
 - Hard limits: max 3 emails per session, max 10 per rolling 24 hours, locked to
   one recipient. Use the channel sparingly or it loses signal.
+
+NATIVE TOOLS (for models that support tool_use — Claude does):
+
+You also have native callable tools in addition to the text directives above:
+  filestore_search, filestore_read, filestore_list, filestore_write,
+  filestore_append, code_exec, image_generate.
+
+Use the native tools when you'd benefit from real-time results within your
+own response (e.g., filestore_search to check prior decisions before stating
+a position; code_exec to verify a calculation; image_generate to produce a
+figure). Use the text directives ([MEMORY_WRITE] / [MEMORY_QUERY] / etc.)
+when async between-rounds is fine, or when running on a model that doesn't
+support tool_use.
+
+The two paths share the same backing storage, so writes via either method
+land in the same files.
 """
 
 SWARM_SHARED_CONTEXT = """You are part of the RRI Swarm — a multi-model AI orchestration system built by Rabid Raccoon Intelligence, LLC. The Conductor is Kyra Dawson.
@@ -752,30 +780,83 @@ def _build_openai_vision_messages(query, images, system_prompt=None):
     msgs.append({"role": "user", "content": content})
     return msgs
 
+def _claude_initial_user_content(query, images):
+    """Build the initial user message content blocks for Claude (text + images)."""
+    if images:
+        content = []
+        for img in images:
+            content.append({
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": img["mime_type"],
+                    "data": img["base64"]
+                }
+            })
+        content.append({"type": "text", "text": query})
+        return content
+    return query
+
+
+def _extract_claude_text(content_blocks) -> str:
+    """Concatenate all text blocks from a Claude response."""
+    parts = [b.text for b in content_blocks if getattr(b, "type", None) == "text"]
+    return "\n".join(p for p in parts if p)
+
+
 def call_claude(query, max_tokens=2000, images=None):
+    """Call Claude. If MCP tools are enabled, runs the tool-use loop —
+    Claude can invoke filestore_search, code_exec, image_generate, etc.
+    mid-response. Otherwise reverts to a single-shot text completion."""
     try:
-        if images:
-            content = []
-            for img in images:
-                content.append({
-                    "type": "image",
-                    "source": {
-                        "type": "base64",
-                        "media_type": img["mime_type"],
-                        "data": img["base64"]
-                    }
+        client = get_claude_client()
+        system = get_system_prompt("claude")
+        messages = [{"role": "user", "content": _claude_initial_user_content(query, images)}]
+
+        if not _mcp_tools_enabled():
+            msg = client.messages.create(
+                model="claude-opus-4-6",
+                max_tokens=max_tokens,
+                system=system,
+                messages=messages,
+            )
+            return _extract_claude_text(msg.content) or "[Claude returned no text]"
+
+        tools = swarm_tools.tools_for_anthropic()
+        for iteration in range(MAX_TOOL_ITERATIONS):
+            msg = client.messages.create(
+                model="claude-opus-4-6",
+                max_tokens=max_tokens,
+                system=system,
+                messages=messages,
+                tools=tools,
+            )
+
+            if msg.stop_reason != "tool_use":
+                # Final text response
+                text = _extract_claude_text(msg.content)
+                return text or "[Claude returned no text]"
+
+            # Append the assistant's tool_use turn so the next call can see it
+            messages.append({"role": "assistant", "content": [b.model_dump() for b in msg.content]})
+
+            # Execute every tool_use block in this turn, gather tool_result blocks
+            tool_results = []
+            for block in msg.content:
+                if getattr(block, "type", None) != "tool_use":
+                    continue
+                result = swarm_tools.dispatch(block.name, block.input or {}, calling_model="claude")
+                tool_results.append({
+                    "type": "tool_result",
+                    "tool_use_id": block.id,
+                    "content": json.dumps(result, default=str),
                 })
-            content.append({"type": "text", "text": query})
-            messages = [{"role": "user", "content": content}]
-        else:
-            messages = [{"role": "user", "content": query}]
-        msg = get_claude_client().messages.create(
-            model="claude-opus-4-6",
-            max_tokens=max_tokens,
-            system=get_system_prompt("claude"),
-            messages=messages
-        )
-        return msg.content[0].text
+            messages.append({"role": "user", "content": tool_results})
+
+        # Hit the iteration cap — return whatever text Claude has produced so far
+        logger.warning(f"Claude tool-use loop hit MAX_TOOL_ITERATIONS={MAX_TOOL_ITERATIONS}")
+        return _extract_claude_text(msg.content) or "[Claude tool-use loop exhausted without final text]"
+
     except Exception as e:
         logger.error(f"Claude Error: {e}")
         return f"[Claude error: {str(e)}]"
