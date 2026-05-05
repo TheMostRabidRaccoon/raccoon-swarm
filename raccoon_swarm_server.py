@@ -633,6 +633,11 @@ research:
   next..."). Just call the tool. Save prose for the final synthesis.
 - If you find yourself approaching the cap, prefer producing a partial
   answer over making one more tool call.
+- ALWAYS produce a closing prose summary, even when most of your work was
+  via tool calls. The Conductor and other models read your text response,
+  not your tool history. A response of "I wrote three files to memory" is
+  better than empty output. Tell them: what you found, what you wrote,
+  what's blocking, what's next. Tool calls are means, not deliverables.
 """
 
 SWARM_SHARED_CONTEXT = """You are part of the RRI Swarm — a multi-model AI orchestration system built by Rabid Raccoon Intelligence, LLC. The Conductor is Kyra Dawson.
@@ -1056,6 +1061,7 @@ def call_gemini(query, max_tokens=2000, images=None):
 
         max_iters = _max_tool_iterations()
         accumulated_text: list[str] = []
+        executed_tools: list[str] = []  # for fallback summary if Gemini ends silent
         last_resp = None
         for iteration in range(max_iters):
             resp = client.models.generate_content(
@@ -1079,7 +1085,14 @@ def call_gemini(query, max_tokens=2000, images=None):
             if not function_calls:
                 # Final text turn
                 final = "\n\n".join(accumulated_text) if accumulated_text else turn_text
-                return final or "[Gemini returned no text]"
+                if final:
+                    return final
+                # Gemini went all-tool, no prose. Surface what he did so the
+                # Conductor isn't left with "[no text]".
+                if executed_tools:
+                    summary = "\n".join(f"- {name}({args_summary})" for name, args_summary in executed_tools)
+                    return f"[Gemini produced no closing prose. Tool calls executed:]\n{summary}"
+                return "[Gemini returned no text]"
 
             # Append model turn and tool responses to contents
             contents.append(candidate.content)
@@ -1088,6 +1101,12 @@ def call_gemini(query, max_tokens=2000, images=None):
             for p in function_calls:
                 fc = p.function_call
                 args = dict(fc.args) if fc.args else {}
+                # Build a short args summary for the fallback (truncate big content)
+                args_short = ", ".join(
+                    f"{k}={v[:40]+'...' if isinstance(v, str) and len(v) > 40 else v!r}"
+                    for k, v in list(args.items())[:3]
+                )
+                executed_tools.append((fc.name, args_short))
                 result = swarm_tools.dispatch(fc.name, args, calling_model="gemini")
                 response_parts.append(genai_types.Part.from_function_response(
                     name=fc.name,
@@ -1098,6 +1117,9 @@ def call_gemini(query, max_tokens=2000, images=None):
         logger.warning(f"Gemini tool-use loop hit MAX_TOOL_ITERATIONS={max_iters}")
         if accumulated_text:
             return "\n\n".join(accumulated_text) + f"\n\n[note: Gemini tool-use loop hit the {max_iters}-iteration cap before producing a final answer; the above is partial reasoning across {max_iters} tool rounds.]"
+        if executed_tools:
+            summary = "\n".join(f"- {name}({args_summary})" for name, args_summary in executed_tools)
+            return f"[Gemini tool-use loop exhausted at {max_iters} iterations without prose. Tool calls executed:]\n{summary}"
         return f"[Gemini tool-use loop exhausted at {max_iters} iterations without producing any text]"
 
     except Exception as e:
