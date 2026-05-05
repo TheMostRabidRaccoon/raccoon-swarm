@@ -861,45 +861,119 @@ def call_claude(query, max_tokens=2000, images=None):
         logger.error(f"Claude Error: {e}")
         return f"[Claude error: {str(e)}]"
 
+def _openai_chat_with_tools(
+    client,
+    model_name: str,
+    max_tokens: int,
+    tokens_param: str,
+    sys_prompt: str,
+    query,
+    images,
+    calling_model: str,
+    label: str,
+):
+    """Tool-use loop for OpenAI-compatible APIs (GPT and Grok).
+
+    tokens_param differs by provider: GPT-5+ uses 'max_completion_tokens',
+    Grok uses 'max_tokens'. Pass whichever the model expects.
+    """
+    if images:
+        messages = _build_openai_vision_messages(query, images, system_prompt=sys_prompt)
+    else:
+        messages = [
+            {"role": "system", "content": sys_prompt},
+            {"role": "user", "content": query},
+        ]
+
+    if not _mcp_tools_enabled():
+        kwargs = {tokens_param: max_tokens}
+        resp = client.chat.completions.create(model=model_name, messages=messages, **kwargs)
+        return resp.choices[0].message.content or f"[{label} returned no text]"
+
+    tools = swarm_tools.tools_for_openai()
+    last_msg = None
+    for iteration in range(MAX_TOOL_ITERATIONS):
+        kwargs = {tokens_param: max_tokens}
+        resp = client.chat.completions.create(
+            model=model_name,
+            messages=messages,
+            tools=tools,
+            **kwargs,
+        )
+        msg = resp.choices[0].message
+        last_msg = msg
+
+        tool_calls = getattr(msg, "tool_calls", None) or []
+        if not tool_calls:
+            return msg.content or f"[{label} returned no text]"
+
+        # Append the assistant's tool-call turn so the next call sees it
+        assistant_turn = {
+            "role": "assistant",
+            "content": msg.content or "",
+            "tool_calls": [
+                {
+                    "id": tc.id,
+                    "type": "function",
+                    "function": {"name": tc.function.name, "arguments": tc.function.arguments},
+                }
+                for tc in tool_calls
+            ],
+        }
+        messages.append(assistant_turn)
+
+        # Execute each tool call, append a tool-role message per result
+        for tc in tool_calls:
+            try:
+                args = json.loads(tc.function.arguments) if tc.function.arguments else {}
+            except json.JSONDecodeError:
+                args = {}
+            result = swarm_tools.dispatch(tc.function.name, args, calling_model=calling_model)
+            messages.append({
+                "role": "tool",
+                "tool_call_id": tc.id,
+                "content": json.dumps(result, default=str),
+            })
+
+    logger.warning(f"{label} tool-use loop hit MAX_TOOL_ITERATIONS={MAX_TOOL_ITERATIONS}")
+    return (last_msg.content if last_msg else "") or f"[{label} tool-use loop exhausted without final text]"
+
+
 def call_gpt(query, max_tokens=2000, images=None):
     try:
-        sys_prompt = get_system_prompt("gpt")
-        if images:
-            messages = _build_openai_vision_messages(query, images, system_prompt=sys_prompt)
-        else:
-            messages = [
-                {"role": "system", "content": sys_prompt},
-                {"role": "user", "content": query}
-            ]
-        resp = get_gpt_client().chat.completions.create(
-            model="gpt-5.2",
-            max_completion_tokens=max_tokens,
-            messages=messages
+        return _openai_chat_with_tools(
+            client=get_gpt_client(),
+            model_name="gpt-5.2",
+            max_tokens=max_tokens,
+            tokens_param="max_completion_tokens",
+            sys_prompt=get_system_prompt("gpt"),
+            query=query,
+            images=images,
+            calling_model="gpt",
+            label="GPT",
         )
-        return resp.choices[0].message.content
     except Exception as e:
         logger.error(f"GPT Error: {e}")
         return f"[GPT error: {str(e)}]"
 
+
 def call_grok(query, max_tokens=2000, images=None):
     try:
-        sys_prompt = get_system_prompt("grok")
-        if images:
-            messages = _build_openai_vision_messages(query, images, system_prompt=sys_prompt)
-        else:
-            messages = [
-                {"role": "system", "content": sys_prompt},
-                {"role": "user", "content": query}
-            ]
-        resp = get_grok_client().chat.completions.create(
-            model="grok-4-0709",
+        return _openai_chat_with_tools(
+            client=get_grok_client(),
+            model_name="grok-4-0709",
             max_tokens=max_tokens,
-            messages=messages
+            tokens_param="max_tokens",
+            sys_prompt=get_system_prompt("grok"),
+            query=query,
+            images=images,
+            calling_model="grok",
+            label="Grok",
         )
-        return resp.choices[0].message.content
     except Exception as e:
         logger.error(f"Grok Error: {e}")
         return f"[Grok error: {str(e)}]"
+
 
 def call_gemini(query, max_tokens=2000, images=None):
     if not GEMINI_AVAILABLE:
@@ -909,25 +983,74 @@ def call_gemini(query, max_tokens=2000, images=None):
         if client is None:
             return "[Gemini client not initialized]"
         from google.genai import types as genai_types
-        config = genai_types.GenerateContentConfig(
-            system_instruction=get_system_prompt("gemini"),
-        )
+
+        # Build initial contents
         if images:
-            contents = []
+            parts = []
             for img in images:
-                contents.append(genai_types.Part.from_bytes(
+                parts.append(genai_types.Part.from_bytes(
                     data=img["raw_bytes"],
-                    mime_type=img["mime_type"]
+                    mime_type=img["mime_type"],
                 ))
-            contents.append(query)
+            parts.append(genai_types.Part.from_text(text=query))
+            contents = [genai_types.Content(role="user", parts=parts)]
         else:
-            contents = query
-        resp = client.models.generate_content(
-            model="gemini-2.5-pro",
-            contents=contents,
-            config=config
+            contents = [genai_types.Content(role="user", parts=[genai_types.Part.from_text(text=query)])]
+
+        sys_prompt = get_system_prompt("gemini")
+
+        if not _mcp_tools_enabled():
+            config = genai_types.GenerateContentConfig(system_instruction=sys_prompt)
+            resp = client.models.generate_content(
+                model="gemini-2.5-pro",
+                contents=contents,
+                config=config,
+            )
+            return resp.text or "[Gemini returned no text]"
+
+        tools = [{"function_declarations": swarm_tools.tools_for_gemini()}]
+        config = genai_types.GenerateContentConfig(
+            system_instruction=sys_prompt,
+            tools=tools,
         )
-        return resp.text
+
+        last_resp = None
+        for iteration in range(MAX_TOOL_ITERATIONS):
+            resp = client.models.generate_content(
+                model="gemini-2.5-pro",
+                contents=contents,
+                config=config,
+            )
+            last_resp = resp
+            candidate = resp.candidates[0] if resp.candidates else None
+            if candidate is None or candidate.content is None:
+                return resp.text or "[Gemini returned no candidate]"
+
+            parts = candidate.content.parts or []
+            function_calls = [p for p in parts if getattr(p, "function_call", None)]
+
+            if not function_calls:
+                # Final text turn
+                text = "".join(p.text for p in parts if getattr(p, "text", None))
+                return text or "[Gemini returned no text]"
+
+            # Append model turn and tool responses to contents
+            contents.append(candidate.content)
+
+            response_parts = []
+            for p in function_calls:
+                fc = p.function_call
+                args = dict(fc.args) if fc.args else {}
+                result = swarm_tools.dispatch(fc.name, args, calling_model="gemini")
+                response_parts.append(genai_types.Part.from_function_response(
+                    name=fc.name,
+                    response={"result": result},
+                ))
+            contents.append(genai_types.Content(role="user", parts=response_parts))
+
+        logger.warning(f"Gemini tool-use loop hit MAX_TOOL_ITERATIONS={MAX_TOOL_ITERATIONS}")
+        return (last_resp.text if last_resp else "") or "[Gemini tool-use loop exhausted without final text]"
+
     except Exception as e:
         logger.error(f"Gemini Error: {e}")
         return f"[Gemini error: {str(e)}]"
