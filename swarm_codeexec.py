@@ -48,12 +48,59 @@ def _has_unshare() -> bool:
     return shutil.which("unshare") is not None
 
 
+# Tri-state result of probing whether `unshare -rn` actually works on this
+# kernel. Unprivileged user namespaces can be disabled (kernel.unprivileged_userns_clone=0
+# on some distros), in which case unshare exists but fails at runtime. We
+# probe once at module load and cache the result.
+#   None = not yet probed
+#   True = unshare -rn works; we'll use it for network isolation
+#   False = unshare -rn fails on this kernel; fall back to no-namespace mode
+_UNSHARE_NET_OK: bool | None = None
+
+
+def _probe_unshare_net() -> bool:
+    """One-time probe: does `unshare -rn` actually work? Cached after first call."""
+    global _UNSHARE_NET_OK
+    if _UNSHARE_NET_OK is not None:
+        return _UNSHARE_NET_OK
+    if not _has_unshare():
+        _UNSHARE_NET_OK = False
+        logger.warning(
+            "swarm_codeexec: `unshare` binary not found. Network isolation disabled. "
+            "code_exec will run without a network namespace; the venv's lack of network "
+            "libs is the only barrier to outbound calls."
+        )
+        return False
+    try:
+        proc = subprocess.run(
+            ["unshare", "-rn", "--", "true"],
+            capture_output=True,
+            timeout=5,
+        )
+        ok = proc.returncode == 0
+    except (subprocess.SubprocessError, OSError) as e:
+        ok = False
+        logger.warning(f"swarm_codeexec: unshare probe raised {type(e).__name__}: {e}")
+    _UNSHARE_NET_OK = ok
+    if ok:
+        logger.info("swarm_codeexec: unshare -rn probe OK; network isolation active.")
+    else:
+        logger.warning(
+            "swarm_codeexec: unshare -rn probe FAILED (likely unprivileged user "
+            "namespaces disabled on this kernel). Network isolation will not be "
+            "applied. To enable: sudo sysctl -w kernel.unprivileged_userns_clone=1 "
+            "(and persist via /etc/sysctl.d/). Sandbox still enforces timeout, memory, "
+            "tempdir, and env-var restrictions."
+        )
+    return ok
+
+
 def _build_command(code_path: Path, allow_network: bool) -> list[str]:
     """Build the subprocess argv. Wrap with unshare -rn for network isolation
-    if available and allow_network=False."""
+    if the kernel supports it and allow_network=False."""
     py = "python3"
     base = [py, "-I", str(code_path)]  # -I: isolated mode, no user site, no PYTHONPATH
-    if not allow_network and _has_unshare():
+    if not allow_network and _probe_unshare_net():
         # unshare -rn: new user + network namespace — empty network stack
         return ["unshare", "-rn", "--"] + base
     return base
@@ -248,11 +295,19 @@ def _persist_run(
 
 def status() -> dict:
     """Snapshot of sandbox capabilities for /codeexec/status."""
+    unshare_present = _has_unshare()
+    unshare_works = _probe_unshare_net() if unshare_present else False
+    if unshare_works:
+        net_iso = "unshare -rn (linux namespaces) — active"
+    elif unshare_present:
+        net_iso = "unshare present but probe failed (kernel.unprivileged_userns_clone=0?) — DISABLED"
+    else:
+        net_iso = "unshare not installed — DISABLED"
     return {
         "max_timeout_seconds": MAX_TIMEOUT,
         "default_timeout_seconds": DEFAULT_TIMEOUT,
         "default_memory_mb": DEFAULT_MEMORY_MB,
-        "network_isolation": "unshare -rn (linux namespaces)" if _has_unshare() else "BEST-EFFORT (no unshare; relies on libs not installed)",
+        "network_isolation": net_iso,
         "python": shutil.which("python3"),
         "isolation_strength": "homelab-grade — do not expose publicly without docker/firejail",
     }

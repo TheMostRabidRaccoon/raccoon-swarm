@@ -140,27 +140,63 @@ def _generate_gemini(prompt: str, size: str) -> bytes:
 
 
 def _generate_grok(prompt: str, size: str) -> bytes:
-    """Call xAI Grok Imagine and return PNG bytes."""
+    """Call xAI Grok Imagine and return PNG bytes.
+
+    xAI rotates image-model identifiers periodically. We try a sequence of
+    known model names and return the first that succeeds. Override via
+    GROK_IMAGE_MODEL env var to force a specific name.
+    """
     import openai
 
     api_key = os.getenv("XAI_API_KEY") or os.getenv("GROK_API_KEY")
     if not api_key:
         raise RuntimeError("XAI_API_KEY (or GROK_API_KEY) not set")
 
+    override = os.getenv("GROK_IMAGE_MODEL")
+    candidates = [override] if override else [
+        "grok-2-image-1212",
+        "grok-2-image",
+        "grok-2-image-latest",
+        "grok-image-1",
+    ]
+    candidates = [c for c in candidates if c]
+
     client = openai.OpenAI(api_key=api_key, base_url="https://api.x.ai/v1")
-    resp = client.images.generate(
-        model="grok-2-image-1212",
-        prompt=prompt,
-        n=1,
-        response_format="b64_json",
+    last_err: Exception | None = None
+    for model in candidates:
+        try:
+            resp = client.images.generate(
+                model=model,
+                prompt=prompt,
+                n=1,
+                response_format="b64_json",
+            )
+        except openai.NotFoundError as e:
+            last_err = e
+            logger.info(f"swarm_imagegen Grok model {model!r} not found, trying next")
+            continue
+        except openai.OpenAIError as e:
+            # Other errors are not "wrong model name" — surface immediately
+            raise RuntimeError(f"Grok image API error on {model!r}: {e}")
+
+        if not resp.data:
+            last_err = RuntimeError(f"{model!r} returned no image data")
+            continue
+        item = resp.data[0]
+        b64 = getattr(item, "b64_json", None)
+        if not b64:
+            last_err = RuntimeError(f"{model!r} response missing b64_json")
+            continue
+        logger.info(f"swarm_imagegen Grok succeeded with model {model!r}")
+        return base64.b64decode(b64)
+
+    tried = ", ".join(candidates)
+    raise RuntimeError(
+        f"all Grok image models failed (tried: {tried}). "
+        f"Last error: {last_err}. "
+        f"Fix: hit https://api.x.ai/v1/models to find the current image model "
+        f"name and set GROK_IMAGE_MODEL=<name> in .env."
     )
-    if not resp.data:
-        raise RuntimeError("Grok returned no image data")
-    item = resp.data[0]
-    b64 = getattr(item, "b64_json", None)
-    if not b64:
-        raise RuntimeError("Grok response missing b64_json (size param may be unsupported)")
-    return base64.b64decode(b64)
 
 
 _BACKENDS = {
@@ -269,6 +305,7 @@ def status() -> dict:
             "gemini": bool(os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")),
             "grok": bool(os.getenv("XAI_API_KEY") or os.getenv("GROK_API_KEY")),
         },
+        "grok_image_model_override": os.getenv("GROK_IMAGE_MODEL") or "(none — using fallback chain)",
         "valid_sizes": list(VALID_SIZES),
         "valid_styles": ["natural", "diagram", "technical", "illustration", "photo-realistic"],
     }
