@@ -29,6 +29,7 @@ load_dotenv(override=True)
 
 import swarm_filestore
 import swarm_codeexec
+import swarm_imagegen
 
 try:
     from mcp.server.fastmcp import FastMCP
@@ -66,6 +67,10 @@ mcp = FastMCP(
         "1GB memory cap, network disabled by default). Use it to verify "
         "quantitative claims, run calculations, or generate analysis files. "
         "Outputs auto-persist to /artifacts/code-runs/.\n"
+        "\n"
+        "image_generate produces an image via Gemini Imagen or Grok Imagine. "
+        "Daily cap (default 50) shared across the swarm. Outputs persist to "
+        "/artifacts/images/. Use for figures, diagrams, visual artifacts.\n"
     ),
 )
 
@@ -269,6 +274,58 @@ def code_exec_status() -> dict:
     """Diagnostic info about the code-execution sandbox: timeout caps,
     memory caps, network isolation strength."""
     return swarm_codeexec.status()
+
+
+# ============================================================
+# Image generation
+# ============================================================
+
+@mcp.tool()
+def image_generate(
+    prompt: str,
+    backend: str = "gemini",
+    size: str = "1024x1024",
+    style: str = "natural",
+    save_to: str = "",
+    model: str = "unknown",
+) -> dict:
+    """Generate an image from a text prompt and persist it under /artifacts/images/.
+
+    Use this for figure production, diagrams, visual artifacts that complement
+    the swarm's text outputs. Daily cap (default 50, configurable via
+    IMAGE_GEN_DAILY_CAP) is shared across the swarm — like the email channel.
+
+    Args:
+        prompt: detailed image-generation prompt. Be specific about composition,
+                style, color palette, and subject. Min 4 chars.
+        backend: "gemini" (Imagen 3) or "grok" (Grok-2-image). Default gemini.
+        size: "1024x1024" (default), "1536x1024" (landscape), or "1024x1536"
+              (portrait).
+        style: hint appended to the prompt — "natural" (default), "diagram",
+               "technical", "illustration", "photo-realistic".
+        save_to: optional custom filename under /artifacts/images/. Auto-generated
+                 from prompt + timestamp if empty.
+        model: optional name of the model requesting this image (for audit log).
+
+    Returns:
+        On success: {ok: true, image_path, prompt_used, backend_used, dimensions,
+                     file_size_bytes, daily_count}
+        On failure: {ok: false, error: reason}
+    """
+    return swarm_imagegen.generate_image(
+        prompt=prompt,
+        backend=backend,
+        size=size,
+        style=style,
+        save_to=save_to or None,
+        model_name=model,
+    )
+
+
+@mcp.tool()
+def image_gen_status() -> dict:
+    """Diagnostic info: daily cap, remaining quota, configured backends."""
+    return swarm_imagegen.status()
 
 
 # ============================================================
