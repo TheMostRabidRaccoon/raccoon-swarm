@@ -128,6 +128,29 @@ def _make_preexec(memory_mb: int):
     return _set_limits
 
 
+def _unescape_double_escaped(code: str) -> str:
+    """Defensive fix for models that double-escape control chars in tool args.
+
+    Some models (Grok in particular at the May 2026 release) generate the
+    `code` parameter as a single-line string with LITERAL "\\n" sequences
+    (backslash + 'n' as two chars) instead of real newline characters. The
+    resulting Python file fails to parse with "unexpected character after
+    line continuation character" because Python sees `import numpy as np\\n...`
+    as one statement and chokes on the bare backslash.
+
+    Heuristic: if the submitted code has zero real newlines AND contains
+    "\\n" sequences, it's almost certainly double-escaped — replace `\\n`,
+    `\\t`, `\\r` with their real counterparts. We only fire the conversion
+    on the no-real-newlines signal so we don't accidentally rewrite legit
+    Python that happens to contain `print("\\n")` or similar.
+    """
+    if "\n" in code:
+        return code
+    if "\\n" not in code:
+        return code
+    return code.replace("\\n", "\n").replace("\\t", "\t").replace("\\r", "\r")
+
+
 def run_code(
     code: str,
     description: str = "",
@@ -155,7 +178,7 @@ def run_code(
     workdir = Path(tempfile.mkdtemp(prefix="swarm_exec_"))
     try:
         code_path = workdir / "main.py"
-        code_path.write_text(code)
+        code_path.write_text(_unescape_double_escaped(code))
 
         env = {k: os.environ[k] for k in SAFE_ENV_KEYS if k in os.environ}
         env["PYTHONDONTWRITEBYTECODE"] = "1"

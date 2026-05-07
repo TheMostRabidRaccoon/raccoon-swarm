@@ -638,6 +638,17 @@ research:
   not your tool history. A response of "I wrote three files to memory" is
   better than empty output. Tell them: what you found, what you wrote,
   what's blocking, what's next. Tool calls are means, not deliverables.
+
+CODE_EXEC FORMAT (specifically):
+- The `code` argument must be a real multi-line Python string with actual
+  newline characters between statements. Most JSON encoders handle this
+  for you when you put real newlines in your tool-call args.
+- DO NOT submit code as a single line with literal "\\n" sequences in it
+  (the two characters backslash-n) — Python sees that as a line-continuation
+  followed by a bare letter, raises SyntaxError. The server has a defensive
+  fallback that converts these for you, but produce real newlines from the
+  start so you don't depend on it.
+- Use parentheses, not backslash continuations, to break long lines.
 """
 
 SWARM_SHARED_CONTEXT = """You are part of the RRI Swarm — a multi-model AI orchestration system built by Rabid Raccoon Intelligence, LLC. The Conductor is Kyra Dawson.
