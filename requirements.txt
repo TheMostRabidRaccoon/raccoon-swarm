@@ -10,3 +10,13 @@ PyMuPDF>=1.23.0
 requests>=2.31.0
 Pillow>=10.0.0
 mcp>=1.2.0
+
+# Quantitative libraries available inside the swarm's code_exec sandbox.
+# These run in subprocess.Popen([sys.executable, ...]) per swarm_codeexec.py,
+# so they need to be in the same venv that runs the swarm. The swarm's
+# system prompt promises models that these are preinstalled — keep this
+# list in sync with that promise.
+numpy>=1.26
+pandas>=2.0
+scipy>=1.11
+matplotlib>=3.8
