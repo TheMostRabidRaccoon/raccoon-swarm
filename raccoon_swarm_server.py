@@ -507,6 +507,49 @@ MAX_TEXT_FILE_SIZE = 10_000_000    # 10MB per text/PDF file
 MAX_IMAGE_FILE_SIZE = 20_000_000   # 20MB per image file
 MAX_UPLOAD_FILES = 20
 
+def _compress_image_for_api(data: bytes, mime_type: str, filename: str = "") -> tuple[bytes, str]:
+    """Resize + re-encode an image to fit under Anthropic / OpenAI / Grok request
+    caps (~32MB). Caps the longest side at 1568px (Anthropic's recommended max)
+    and re-encodes JPEG @ q80 (PNG when alpha is present). Falls through to the
+    original bytes on any failure or if compression doesn't help."""
+    try:
+        from PIL import Image
+        from io import BytesIO
+
+        img = Image.open(BytesIO(data))
+        original_size = len(data)
+
+        MAX_DIM = 1568
+        if max(img.size) > MAX_DIM:
+            img.thumbnail((MAX_DIM, MAX_DIM), Image.Resampling.LANCZOS)
+
+        out = BytesIO()
+        has_alpha = img.mode in ('RGBA', 'LA') or (img.mode == 'P' and 'transparency' in img.info)
+        if has_alpha:
+            if img.mode != 'RGBA':
+                img = img.convert('RGBA')
+            img.save(out, format='PNG', optimize=True)
+            new_mime = 'image/png'
+        else:
+            if img.mode != 'RGB':
+                img = img.convert('RGB')
+            img.save(out, format='JPEG', quality=80, optimize=True)
+            new_mime = 'image/jpeg'
+
+        compressed = out.getvalue()
+        if len(compressed) < original_size:
+            pct = 100 - (100 * len(compressed)) // original_size
+            logger.info(
+                f"image compress: {filename} {original_size // 1024}KB -> "
+                f"{len(compressed) // 1024}KB ({pct}% smaller)"
+            )
+            return compressed, new_mime
+        return data, mime_type
+    except Exception as e:
+        logger.warning(f"image compress failed for {filename}: {type(e).__name__}: {e}")
+        return data, mime_type
+
+
 def process_uploaded_files(files):
     """Process uploaded files into text content and image payloads.
 
@@ -578,6 +621,7 @@ def process_uploaded_files(files):
                 '.gif': 'image/gif', '.webp': 'image/webp',
             }
             mime_type = mime_map.get(ext, 'image/png')
+            data, mime_type = _compress_image_for_api(data, mime_type, filename)
             b64 = base64.b64encode(data).decode('utf-8')
             images.append({"base64": b64, "mime_type": mime_type, "filename": filename, "raw_bytes": data})
         else:
