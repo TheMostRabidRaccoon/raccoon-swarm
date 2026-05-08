@@ -284,16 +284,16 @@ TOOL_DEFINITIONS: dict[str, dict[str, Any]] = {
     },
     "image_generate": {
         "description": (
-            "Generate an image from a text prompt via Gemini Imagen 3 or "
-            "Grok-2-image. Use for figure production, diagrams, visual "
-            "artifacts. Daily cap (default 50) shared across the swarm. "
-            "Outputs persist to /artifacts/images/."
+            "Generate an image from a text prompt via Gemini Imagen, Grok "
+            "Imagine, or OpenAI gpt-image-1. Use for figure production, "
+            "diagrams, visual artifacts. Daily cap (default 50) shared "
+            "across the swarm. Outputs persist to /artifacts/images/."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "prompt": {"type": "string", "description": "Detailed image-generation prompt. Min 4 chars."},
-                "backend": {"type": "string", "description": "'gemini' (Imagen 3) or 'grok'. Default gemini."},
+                "backend": {"type": "string", "description": "'gemini' (Imagen, default), 'grok' (Grok Imagine), or 'openai' (gpt-image-1, falls back to dall-e-3)."},
                 "size": {"type": "string", "description": "1024x1024 (default), 1536x1024 (landscape), or 1024x1536 (portrait)."},
                 "style": {"type": "string", "description": "natural / diagram / technical / illustration / photo-realistic."},
                 "save_to": {"type": "string", "description": "Optional custom filename under /artifacts/images/."},

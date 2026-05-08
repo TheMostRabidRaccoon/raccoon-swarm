@@ -69,9 +69,10 @@ mcp = FastMCP(
         "quantitative claims, run calculations, or generate analysis files. "
         "Outputs auto-persist to /artifacts/code-runs/.\n"
         "\n"
-        "image_generate produces an image via Gemini Imagen or Grok Imagine. "
-        "Daily cap (default 50) shared across the swarm. Outputs persist to "
-        "/artifacts/images/. Use for figures, diagrams, visual artifacts.\n"
+        "image_generate produces an image via Gemini Imagen, Grok Imagine, or "
+        "OpenAI gpt-image-1 (falls back to dall-e-3). Daily cap (default 50) "
+        "shared across the swarm. Outputs persist to /artifacts/images/. "
+        "Use for figures, diagrams, visual artifacts.\n"
         "\n"
         "web_search runs a Google Programmable Search query and returns "
         "title+url+snippet for each hit (no full-page fetch). Per-session "
@@ -311,7 +312,8 @@ def image_generate(
     Args:
         prompt: detailed image-generation prompt. Be specific about composition,
                 style, color palette, and subject. Min 4 chars.
-        backend: "gemini" (Imagen 3) or "grok" (Grok-2-image). Default gemini.
+        backend: "gemini" (Imagen, default), "grok" (Grok Imagine), or "openai"
+                 (gpt-image-1, falls back to dall-e-3 if your org isn't verified).
         size: "1024x1024" (default), "1536x1024" (landscape), or "1024x1536"
               (portrait).
         style: hint appended to the prompt — "natural" (default), "diagram",
