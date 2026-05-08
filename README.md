@@ -63,7 +63,7 @@ All five models can invoke tools mid-response via native API tool_use. The MCP s
 
 ### Swarm Autonomy & Communication
 
-- **EMAIL_CONDUCTOR** — Asynchronous communication channel from swarm nodes to the human Conductor. Rate-limited (3 per session, 10 per rolling 24 hours) and shared across all models. Used for: human decision needed, broken assumption, deadline at risk, high-confidence pattern shift, or notable observations.
+- **EMAIL_CONDUCTOR** — Asynchronous communication channel from swarm nodes to the human Conductor. Rate-limited (6 per session, 10 per rolling 24 hours) and shared across all models. Used for: human decision needed, broken assumption, deadline at risk, high-confidence pattern shift, or notable observations.
 - **Emergent Self-Governance** — The swarm formalizes its own operational procedures without Conductor prompting. Examples include: the Intellectual Work Test, filestore conventions, email coordination protocols, and "no vendor/tool claims without Conductor confirmation" (triggered after a model hallucinated MCP tooling claims in Session 58).
 - **Swarm-Authored Policy** — Resolved positions and operational rules proposed by models during deliberation are voted on, documented, and enforced by the swarm. The Conductor ratifies but does not originate most procedural rules.
 

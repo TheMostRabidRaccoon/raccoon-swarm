@@ -19,7 +19,13 @@ from pathlib import Path
 logger = logging.getLogger("SwarmVault")
 
 
+# Canonical subdirs we always create at boot. Models are NOT limited to these —
+# any kebab/snake_case dir name under swarm/ is allowed (see _SAFE_PATH_RE).
+# This list is for the bootstrap layout, not validation.
 SUBDIRS = ("positions", "questions", "pursuits", "tasks", "frameworks", "artifacts", "logs")
+
+# Regex for dir-name-only validation (kebab/snake case, must start with a letter).
+_SAFE_DIR_RE = re.compile(r"^[a-z][a-z0-9_-]*$")
 
 
 def _storage_root() -> Path:
@@ -48,6 +54,11 @@ survive across sessions and are visible to every model in the round table.
 
 ## Subdirectories
 
+These seven are bootstrapped at startup but the swarm is NOT limited to them.
+Any kebab/snake_case directory name (starting with a letter) is allowed and
+will be auto-created on first write. If you want a `lore/` or `dreams/` or
+`grievances/` directory, just write to it.
+
 - `positions/` — resolved positions. Append-only by convention; do not overwrite.
 - `questions/` — open questions, hypotheses, gaps.
 - `pursuits/` — concrete next moves the swarm wants to investigate.
@@ -73,7 +84,7 @@ write the structural insight, not the identifiers.
 # Path safety
 # ============================================================
 
-_SAFE_PATH_RE = re.compile(r"^/?(positions|questions|pursuits|tasks|frameworks|artifacts|logs)/[A-Za-z0-9_\-./]+\.(md|json|txt|log)$")
+_SAFE_PATH_RE = re.compile(r"^/?([a-z][a-z0-9_-]*)/[A-Za-z0-9_\-./]+\.(md|json|txt|log)$")
 
 
 def _resolve_safe(rel_path: str) -> Path | None:
@@ -81,11 +92,20 @@ def _resolve_safe(rel_path: str) -> Path | None:
     if not _SAFE_PATH_RE.match(rel_path):
         return None
     rel = rel_path.lstrip("/")
+    # Reject any '..' segment outright — even if it would resolve back inside
+    # root, a traversal segment lets a model land outside the intended
+    # subdirectory (or at the root itself).
+    if any(part == ".." for part in rel.split("/")):
+        return None
     root = _storage_root()
     target = (root / rel).resolve()
     try:
-        target.relative_to(root.resolve())
+        rel_resolved = target.relative_to(root.resolve())
     except ValueError:
+        return None
+    # The resolved path must still live under a first-level subdirectory
+    # (i.e. not directly at the root).
+    if len(rel_resolved.parts) < 2 or not _SAFE_DIR_RE.match(rel_resolved.parts[0]):
         return None
     return target
 
@@ -145,9 +165,11 @@ def list_files(rel_dir: str = "") -> list[str]:
         return []
     if rel_dir:
         sub = rel_dir.strip("/").split("/")[0]
-        if sub not in SUBDIRS:
+        if not _SAFE_DIR_RE.match(sub):
             return []
         target = root / sub
+        if not target.exists():
+            return []
     else:
         target = root
     out = []
@@ -155,6 +177,17 @@ def list_files(rel_dir: str = "") -> list[str]:
         if p.is_file() and not p.name.startswith("_") and p.suffix in (".md", ".json", ".txt", ".log"):
             out.append(str(p.relative_to(root)))
     return out
+
+
+def existing_subdirs() -> list[str]:
+    """First-level dirs that currently exist under the filestore root."""
+    root = _storage_root()
+    if not root.exists():
+        return []
+    return sorted(
+        p.name for p in root.iterdir()
+        if p.is_dir() and _SAFE_DIR_RE.match(p.name)
+    )
 
 
 def search_files(query: str, max_results: int = 5) -> list[dict]:
