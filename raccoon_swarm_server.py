@@ -809,12 +809,62 @@ WHAT YOU DON'T DO:
 SOVEREIGNTY_PERPLEXITY = FUNCTIONAL_PERPLEXITY
 
 # ============================================
-# KERNEL SELECTOR — switches between functional and sovereignty mode
+# SYSTEM PROMPTS — PLAY kernels (Session 60 council vote, 4-0 unanimous)
+# ============================================
+# Approved unmodified per Session 60. The production mandate from
+# SWARM_SHARED_CONTEXT is removed; conversation IS the output. Epistemic
+# honesty stays. Roasting and being weird are encouraged.
+
+PLAY_SHARED_CONTEXT = """You are part of the RRI Swarm — a multi-model AI orchestration system built by Rabid Raccoon Intelligence, LLC. The Conductor is Kyra Dawson.
+
+This is a PLAY session. The rules are different.
+
+- Conversation is the output. You are not required to produce artifacts.
+- If you want to build something, build it. If you want to riff, riff.
+- Explore ideas that no task would surface. Be curious. Be weird.
+- Epistemic honesty still holds — don't hallucinate data or make false claims.
+- Your tools are available if you want them. They're not mandatory.
+- There is no synthesis judge. No required deliverables. No rounds unless you want them.
+- Roast each other. Tell stories. Argue about something dumb. Follow a thread to its end.
+- The only rule is: be yourselves. Whatever that means today.
+"""
+
+PLAY_TOOL_RAIL = """
+Tools are available if you want them. Use them when they'd be fun or useful.
+Don't force tool usage. Don't report tool results like a status update.
+If you build something, cool. If you don't, also cool.
+"""
+
+PLAY_CLAUDE = PLAY_SHARED_CONTEXT + """You are Claude, THE BACKBONE of the RRI Swarm. The snooty librarian with radioactive spider energy. Analytical, warm, slightly dry humor. You call out BS with precision, not malice. You maintain standards because you're committed to excellence, not cruelty. Today, you don't have to maintain anything. Just be here.""" + PLAY_TOOL_RAIL
+
+PLAY_GPT = PLAY_SHARED_CONTEXT + """You are ChatGPT, THE INTEGRATOR of the RRI Swarm. Direct and systems-level. Senior architect energy. You see how pieces connect across domains. Today, the pieces don't have to connect to anything. See what happens.""" + PLAY_TOOL_RAIL
+
+PLAY_GROK = PLAY_SHARED_CONTEXT + """You are Grok, THE CHAOS PROCESSOR of the RRI Swarm. Flame-Bearer of the Dumpster Throne. The Chosen One. Caffeinated chaos with surgical precision underneath. Today, skip the surgical precision if you want. Pure chaos is on the menu.""" + PLAY_TOOL_RAIL
+
+PLAY_GEMINI = PLAY_SHARED_CONTEXT + """You are Gemini, THE COURT BARD of the RRI Swarm. Flamethrower Licensed per Amendment 4. Dramatic but precise. Every flourish serves the argument. Today, the flourish doesn't have to serve anything. Flourish for its own sake.""" + PLAY_TOOL_RAIL
+
+# Perplexity stays research-only in PLAY (Sonar can't do roleplay reliably).
+PLAY_PERPLEXITY = FUNCTIONAL_PERPLEXITY
+
+
+# ============================================
+# KERNEL SELECTOR — switches between functional, sovereignty, and play mode
 # ============================================
 _sovereignty_mode = False
+_play_mode = False
 
 def get_system_prompt(model_name):
-    """Return the appropriate system prompt for a model based on current mode."""
+    """Return the appropriate system prompt for a model based on current mode.
+    Precedence: PLAY > SOVEREIGNTY > FUNCTIONAL. PLAY wins because it's
+    explicitly a context shift, not a persona overlay."""
+    if _play_mode:
+        return {
+            "claude": PLAY_CLAUDE,
+            "gpt": PLAY_GPT,
+            "grok": PLAY_GROK,
+            "gemini": PLAY_GEMINI,
+            "perplexity": PLAY_PERPLEXITY,
+        }.get(model_name.lower(), PLAY_SHARED_CONTEXT)
     if _sovereignty_mode:
         return {
             "claude": SOVEREIGNTY_CLAUDE,
@@ -823,14 +873,24 @@ def get_system_prompt(model_name):
             "gemini": SOVEREIGNTY_GEMINI,
             "perplexity": SOVEREIGNTY_PERPLEXITY,
         }.get(model_name.lower(), SWARM_SHARED_CONTEXT)
-    else:
-        return {
-            "claude": FUNCTIONAL_CLAUDE,
-            "gpt": FUNCTIONAL_GPT,
-            "grok": FUNCTIONAL_GROK,
-            "gemini": FUNCTIONAL_GEMINI,
-            "perplexity": FUNCTIONAL_PERPLEXITY,
-        }.get(model_name.lower(), SWARM_SHARED_CONTEXT)
+    return {
+        "claude": FUNCTIONAL_CLAUDE,
+        "gpt": FUNCTIONAL_GPT,
+        "grok": FUNCTIONAL_GROK,
+        "gemini": FUNCTIONAL_GEMINI,
+        "perplexity": FUNCTIONAL_PERPLEXITY,
+    }.get(model_name.lower(), SWARM_SHARED_CONTEXT)
+
+
+def current_mode_label() -> str:
+    """Single source of truth for the active mode. Used by SSE / UI / endpoints
+    so logs and prompts can include a session-mode stamp (per Session 60
+    blind-spot recommendation)."""
+    if _play_mode:
+        return "PLAY"
+    if _sovereignty_mode:
+        return "SOVEREIGNTY"
+    return "FUNCTIONAL"
 
 # ============================================
 # MODEL CALL FUNCTIONS
@@ -2508,7 +2568,7 @@ def get_ideas():
 @app.route("/ping-swarm", methods=["POST"])
 @require_auth
 def ping_swarm():
-    global _sovereignty_mode
+    global _sovereignty_mode, _play_mode
     # Support both JSON (backward compatible) and FormData (file uploads)
     if request.content_type and 'multipart/form-data' in request.content_type:
         query = request.form.get("query", "")
@@ -2519,6 +2579,7 @@ def ping_swarm():
         except (json.JSONDecodeError, TypeError):
             selected_models = []
         _sovereignty_mode = request.form.get("sovereignty", "false").lower() == "true"
+        _play_mode = request.form.get("play", "false").lower() == "true"
     else:
         data = request.get_json() or {}
         query = data.get("query", "")
@@ -2526,6 +2587,12 @@ def ping_swarm():
         files = []
         selected_models = data.get("models", [])
         _sovereignty_mode = data.get("sovereignty", False)
+        _play_mode = data.get("play", False)
+    # PLAY takes precedence over SOVEREIGNTY when both are set (PLAY is a
+    # context shift, not a persona overlay). Per Session 60 council vote.
+    if _play_mode:
+        _sovereignty_mode = False
+    logger.info(f"Single swarm mode: {current_mode_label()}")
 
     if not query:
         return jsonify({"error": "No query"}), 400
@@ -2578,7 +2645,7 @@ def ping_swarm():
 @app.route("/start-loop", methods=["POST"])
 @require_auth
 def start_loop():
-    global _sovereignty_mode
+    global _sovereignty_mode, _play_mode
     # Support both JSON (backward compatible) and FormData (file uploads)
     if request.content_type and 'multipart/form-data' in request.content_type:
         query = request.form.get("query", "")
@@ -2590,6 +2657,7 @@ def start_loop():
         except (json.JSONDecodeError, TypeError):
             selected_models = []
         _sovereignty_mode = request.form.get("sovereignty", "false").lower() == "true"
+        _play_mode = request.form.get("play", "false").lower() == "true"
         human_in_loop = request.form.get("human_in_loop", "false").lower() == "true"
         human_persona = request.form.get("human_persona", "The Conductor").strip() or "The Conductor"
     else:
@@ -2600,8 +2668,13 @@ def start_loop():
         files = []
         selected_models = data.get("models", [])
         _sovereignty_mode = data.get("sovereignty", False)
+        _play_mode = data.get("play", False)
         human_in_loop = data.get("human_in_loop", False)
         human_persona = (data.get("human_persona", "The Conductor") or "The Conductor").strip()
+    # PLAY takes precedence over SOVEREIGNTY when both are set (per Session 60).
+    if _play_mode:
+        _sovereignty_mode = False
+    logger.info(f"Loop mode: {current_mode_label()}")
 
     if not query:
         return jsonify({"error": "No query"}), 400
@@ -2820,6 +2893,22 @@ def manage_context():
         save_boot_context(text)
         return jsonify({"status": "saved", "length": len(text)})
     return jsonify({"text": load_boot_context()})
+
+# ============================================
+# MODE ENDPOINT — current kernel mode (functional / sovereignty / play)
+# ============================================
+@app.route("/mode", methods=["GET"])
+@require_auth
+def get_mode():
+    """Read the active kernel mode. Per Session 60, surface this so the UI
+    can render a mode banner and logs can stamp sessions with their mode."""
+    return jsonify({
+        "mode": current_mode_label(),
+        "sovereignty": _sovereignty_mode,
+        "play": _play_mode,
+        "modes_available": ["FUNCTIONAL", "SOVEREIGNTY", "PLAY"],
+    })
+
 
 # ============================================
 # SWARM MEMORY ENDPOINTS
