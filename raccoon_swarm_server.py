@@ -372,23 +372,56 @@ RULES:
 """
 
 def extract_memory_delta(query, all_rounds, synthesis):
-    """After synthesis, extract what should persist to swarm memory."""
-    transcript = _build_transcript(query, all_rounds)
-    prompt = MEMORY_EXTRACTION_PROMPT.format(transcript=transcript, synthesis=synthesis)
+    """After synthesis, extract what should persist to swarm memory.
 
+    Calls Claude DIRECTLY (bypassing call_claude's tool-use loop and persona
+    system prompt) because:
+      1. We need pure JSON output. Tool-use can produce no text content
+         when Claude decides to investigate via tools first.
+      2. The MEMORY_EXTRACTION_PROMPT is itself a role assignment ("You are
+         the swarm's memory curator..."). Layering it on top of the swarm
+         persona system prompt produces role conflict and degraded output.
+      3. Larger max_tokens (4000) prevents truncated JSON on complex sessions.
+
+    On parse failure, logs the first 500 chars of the raw response so the
+    audit log shows what Claude actually returned — far more diagnostic
+    than a bare "Expecting value: line 1 column 1 (char 0)".
+    """
+    transcript = _build_transcript(query, all_rounds)
+    user_content = MEMORY_EXTRACTION_PROMPT.format(transcript=transcript, synthesis=synthesis)
+
+    raw = ""
     try:
-        raw = call_claude(prompt, max_tokens=2000)
-        # Strip markdown code fences if present
+        msg = get_claude_client().messages.create(
+            model="claude-opus-4-6",
+            max_tokens=4000,
+            system="You extract structured memory from AI swarm transcripts. Your only output is valid JSON matching the schema in the user message. No prose, no preamble, no tool use, no markdown fences.",
+            messages=[{"role": "user", "content": user_content}],
+        )
+        # Concatenate any text blocks (no tools registered, so all blocks are text)
+        raw = "".join(b.text for b in msg.content if getattr(b, "type", None) == "text")
+
         cleaned = raw.strip()
+        # Strip markdown code fences if Claude inserts them anyway
         if cleaned.startswith("```"):
             cleaned = cleaned.split("\n", 1)[1] if "\n" in cleaned else cleaned[3:]
         if cleaned.endswith("```"):
             cleaned = cleaned.rsplit("```", 1)[0]
         cleaned = cleaned.strip()
+
+        if not cleaned:
+            logger.error("Memory extraction returned empty content from Claude")
+            return None
+
         delta = json.loads(cleaned)
         return delta
-    except (json.JSONDecodeError, Exception) as e:
-        logger.error(f"Memory extraction failed: {e}")
+    except json.JSONDecodeError as e:
+        # Log the actual response so the audit log shows what failed to parse
+        preview = raw[:500].replace("\n", " ")
+        logger.error(f"Memory extraction JSON parse failed: {e} | raw preview: {preview!r}")
+        return None
+    except Exception as e:
+        logger.error(f"Memory extraction failed: {type(e).__name__}: {e}")
         return None
 
 def update_swarm_memory(query, delta):
