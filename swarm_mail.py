@@ -3,7 +3,7 @@ genuinely needs human attention.
 
 Hard constraints baked in:
 - Recipient is locked to RRI_CONDUCTOR_EMAIL env var. Models cannot redirect.
-- Rate-limited: max 3 per session, max 10 per rolling 24h.
+- Rate-limited: max 6 per session, max 10 per rolling 24h.
 - Every send is appended to /swarm/logs/emails.log via swarm_filestore.
 - Subject auto-prefixed with [RRI Swarm].
 - Body auto-appended with model + session_id + timestamp.
@@ -29,7 +29,7 @@ import swarm_filestore
 
 logger = logging.getLogger("SwarmVault")
 
-MAX_PER_SESSION = 3
+MAX_PER_SESSION = 6
 MAX_PER_24H = 10
 
 _session_counts: dict[str, int] = {}

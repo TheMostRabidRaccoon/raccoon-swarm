@@ -1,4 +1,4 @@
-"""Swarm image generation — Gemini Imagen + Grok Imagine backends.
+"""Swarm image generation — Gemini Imagen + Grok Imagine + OpenAI backends.
 
 Lets the swarm produce publication-quality figures and visual artifacts
 directly from inside a session, without needing to hand specs out to
@@ -8,9 +8,12 @@ Backends:
   gemini  — Google Imagen via the google-genai SDK. Requires GOOGLE_API_KEY.
   grok    — xAI's grok-2-image model via OpenAI-compatible endpoint.
             Requires XAI_API_KEY (or GROK_API_KEY fallback).
+  openai  — OpenAI gpt-image-1 (with dall-e-3 fallback). Requires
+            OPENAI_API_KEY. gpt-image-1 needs a verified OpenAI org;
+            without verification it falls back to dall-e-3 automatically.
 
 Daily cap (configurable via IMAGE_GEN_DAILY_CAP env var, default 50) is
-enforced across both backends combined. The swarm shares one counter
+enforced across all backends combined. The swarm shares one counter
 just like the email channel.
 """
 from __future__ import annotations
@@ -32,7 +35,7 @@ DEFAULT_DAILY_CAP = 50
 ARTIFACTS_SUBDIR = "artifacts"
 IMAGES_PREFIX = "images"
 
-VALID_BACKENDS = ("gemini", "grok")
+VALID_BACKENDS = ("gemini", "grok", "openai")
 VALID_SIZES = ("1024x1024", "1536x1024", "1024x1536")
 
 _recent_generations: deque = deque()
@@ -293,9 +296,79 @@ def _generate_grok(prompt: str, size: str) -> bytes:
     )
 
 
+def _generate_openai(prompt: str, size: str) -> bytes:
+    """Call OpenAI's image API (gpt-image-1) and return PNG bytes.
+
+    Override the model with OPENAI_IMAGE_MODEL env var. gpt-image-1 requires
+    a verified OpenAI organization; if that's not set up we fall back to
+    dall-e-3, which supports a different size set (translated below).
+    """
+    import openai
+
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        raise RuntimeError("OPENAI_API_KEY not set")
+
+    override = os.getenv("OPENAI_IMAGE_MODEL")
+    candidates = [override] if override else ["gpt-image-1", "dall-e-3"]
+
+    # dall-e-3 supports a different size set than gpt-image-1.
+    # gpt-image-1: 1024x1024, 1536x1024, 1024x1536
+    # dall-e-3:    1024x1024, 1792x1024, 1024x1792
+    dalle3_size_map = {
+        "1024x1024": "1024x1024",
+        "1536x1024": "1792x1024",
+        "1024x1536": "1024x1792",
+    }
+
+    client = openai.OpenAI(api_key=api_key)
+    last_err: Exception | None = None
+    for model in candidates:
+        try:
+            kwargs = {"model": model, "prompt": prompt, "n": 1}
+            if model == "dall-e-3":
+                kwargs["size"] = dalle3_size_map.get(size, "1024x1024")
+                kwargs["response_format"] = "b64_json"
+            else:
+                # gpt-image-1 always returns b64_json; response_format param is rejected.
+                kwargs["size"] = size
+            resp = client.images.generate(**kwargs)
+        except openai.NotFoundError as e:
+            last_err = e
+            logger.info(f"swarm_imagegen OpenAI model {model!r} not found, trying next")
+            continue
+        except openai.PermissionDeniedError as e:
+            # Org not verified for gpt-image-1 — try the next candidate.
+            last_err = e
+            logger.info(f"swarm_imagegen OpenAI model {model!r} denied (likely org-verification gate), trying next")
+            continue
+        except openai.OpenAIError as e:
+            raise RuntimeError(f"OpenAI image API error on {model!r}: {e}")
+
+        if not resp.data:
+            last_err = RuntimeError(f"{model!r} returned no image data")
+            continue
+        item = resp.data[0]
+        b64 = getattr(item, "b64_json", None)
+        if not b64:
+            last_err = RuntimeError(f"{model!r} response missing b64_json")
+            continue
+        logger.info(f"swarm_imagegen OpenAI succeeded with model {model!r}")
+        return base64.b64decode(b64)
+
+    tried = ", ".join(candidates)
+    raise RuntimeError(
+        f"all OpenAI image models failed (tried: {tried}). "
+        f"Last error: {last_err}. "
+        f"Fix: verify the org at https://platform.openai.com/settings/organization/general "
+        f"to enable gpt-image-1, or set OPENAI_IMAGE_MODEL=dall-e-3 in .env."
+    )
+
+
 _BACKENDS = {
     "gemini": _generate_gemini,
     "grok": _generate_grok,
+    "openai": _generate_openai,
 }
 
 
@@ -398,9 +471,11 @@ def status() -> dict:
         "backends_configured": {
             "gemini": bool(os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")),
             "grok": bool(os.getenv("XAI_API_KEY") or os.getenv("GROK_API_KEY")),
+            "openai": bool(os.getenv("OPENAI_API_KEY")),
         },
         "grok_image_model_override": os.getenv("GROK_IMAGE_MODEL") or "(none — using fallback chain)",
         "google_image_model_override": os.getenv("GOOGLE_IMAGE_MODEL") or "(none — using fallback chain)",
+        "openai_image_model_override": os.getenv("OPENAI_IMAGE_MODEL") or "(none — using fallback chain)",
         "valid_sizes": list(VALID_SIZES),
         "valid_styles": ["natural", "diagram", "technical", "illustration", "photo-realistic"],
     }
