@@ -48,11 +48,39 @@ _TAVILY_ENDPOINT = "https://api.tavily.com/search"
 # Provider config + rate limits
 # ============================================================
 
-def _resolved_provider(provider: str | None) -> str:
-    p = (provider or os.getenv("WEBSEARCH_PROVIDER") or DEFAULT_PROVIDER).strip().lower()
-    if p not in VALID_PROVIDERS:
-        return DEFAULT_PROVIDER
-    return p
+def _resolved_provider(provider: str | None) -> tuple[str, str | None]:
+    """Resolve which provider to use. Returns (provider, pivot_note).
+
+    Resolution order:
+      1. Explicit caller arg → honored verbatim, no auto-pivot. A model that
+         asks for google_cse and finds it misconfigured gets a clean error.
+      2. WEBSEARCH_PROVIDER env var.
+      3. DEFAULT_PROVIDER ("tavily").
+
+    For the env-var / default path, if the chosen provider isn't configured
+    but another VALID_PROVIDERS entry is, auto-pivot to the configured one.
+    This keeps a stale `WEBSEARCH_PROVIDER=google_cse` from before PR #30
+    from breaking searches when only TAVILY_API_KEY is set.
+    """
+    explicit = bool(provider)
+    raw = (provider or os.getenv("WEBSEARCH_PROVIDER") or DEFAULT_PROVIDER).strip().lower()
+    chosen = raw if raw in VALID_PROVIDERS else DEFAULT_PROVIDER
+
+    if explicit:
+        return chosen, None
+
+    ok, _ = _config_status(chosen)
+    if ok:
+        return chosen, None
+
+    for alt in VALID_PROVIDERS:
+        if alt == chosen:
+            continue
+        alt_ok, _ = _config_status(alt)
+        if alt_ok:
+            return alt, f"{chosen} not configured; routed to {alt}"
+
+    return chosen, None
 
 
 def _config_status_tavily() -> tuple[bool, str]:
@@ -217,7 +245,9 @@ def search(
     if not query or len(query.strip()) < 2:
         return {"ok": False, "error": "query too short (min 2 chars)"}
 
-    chosen = _resolved_provider(provider)
+    chosen, pivot_note = _resolved_provider(provider)
+    if pivot_note:
+        logger.info(f"swarm_websearch auto-pivot: {pivot_note}")
     ok, reason = _config_status(chosen)
     if not ok:
         return {"ok": False, "provider": chosen, "error": reason}
@@ -268,12 +298,13 @@ def status() -> dict:
         ok, reason = _config_status(name)
         providers[name] = {"configured": ok, "status": reason}
 
-    active = _resolved_provider(None)
+    active, pivot_note = _resolved_provider(None)
     return {
         "active_provider": active,
         "default_provider": DEFAULT_PROVIDER,
         "active_configured": providers[active]["configured"],
         "active_status": providers[active]["status"],
+        "auto_pivot_note": pivot_note,
         "providers": providers,
         "max_per_session": MAX_PER_SESSION,
         "max_per_24h": MAX_PER_24H,
