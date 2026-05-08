@@ -1,16 +1,22 @@
-"""Swarm web search — Google Programmable Search (Custom Search JSON API).
+"""Swarm web search — multi-provider, defaults to Tavily.
 
-Returns title + snippet + URL. No full-page fetch (yet) to keep prompt-injection
-surface area small. Rate-limited per session and per rolling 24h to keep cost
-and noise bounded.
+Returns title + url + snippet for each hit. No full-page fetch (keeps the
+prompt-injection surface area small). Per-session and rolling-24h rate
+limits keep cost and noise bounded.
 
-Required env vars:
-  GOOGLE_CSE_ID         — your Programmable Search engine "cx" id
-  GOOGLE_CSE_API_KEY    — API key with Custom Search JSON API enabled
-                          (falls back to GOOGLE_API_KEY if unset)
+Providers (selected via WEBSEARCH_PROVIDER env var, default 'tavily'):
 
-Endpoint reference:
-  https://developers.google.com/custom-search/v1/using_rest
+  tavily       — Tavily AI search (https://tavily.com). Designed for LLM
+                 agent use; clean snippets, single API key, free tier
+                 covers ~1000 queries/month. Required env: TAVILY_API_KEY.
+
+  google_cse   — Google Programmable Search (Custom Search JSON API).
+                 As of Jan 2026 new engines are limited to a 50-domain
+                 allowlist, so this only makes sense for curated-corpus
+                 search. Required env: GOOGLE_CSE_ID + GOOGLE_CSE_API_KEY
+                 (falls back to GOOGLE_API_KEY).
+
+Override the default per-call by passing provider='google_cse' / 'tavily'.
 """
 from __future__ import annotations
 
@@ -27,14 +33,35 @@ logger = logging.getLogger("SwarmVault")
 MAX_PER_SESSION = 30
 MAX_PER_24H = 200
 
+VALID_PROVIDERS = ("tavily", "google_cse")
+DEFAULT_PROVIDER = "tavily"
+
 _session_counts: dict[str, int] = {}
 _recent_calls: deque[datetime] = deque()
 _lock = threading.Lock()
 
-_ENDPOINT = "https://www.googleapis.com/customsearch/v1"
+_GOOGLE_CSE_ENDPOINT = "https://www.googleapis.com/customsearch/v1"
+_TAVILY_ENDPOINT = "https://api.tavily.com/search"
 
 
-def _config_status() -> tuple[bool, str]:
+# ============================================================
+# Provider config + rate limits
+# ============================================================
+
+def _resolved_provider(provider: str | None) -> str:
+    p = (provider or os.getenv("WEBSEARCH_PROVIDER") or DEFAULT_PROVIDER).strip().lower()
+    if p not in VALID_PROVIDERS:
+        return DEFAULT_PROVIDER
+    return p
+
+
+def _config_status_tavily() -> tuple[bool, str]:
+    if not os.getenv("TAVILY_API_KEY"):
+        return False, "missing env var: TAVILY_API_KEY"
+    return True, "ok"
+
+
+def _config_status_google_cse() -> tuple[bool, str]:
     cx = os.getenv("GOOGLE_CSE_ID")
     key = os.getenv("GOOGLE_CSE_API_KEY") or os.getenv("GOOGLE_API_KEY")
     missing = []
@@ -45,6 +72,14 @@ def _config_status() -> tuple[bool, str]:
     if missing:
         return False, f"missing env vars: {', '.join(missing)}"
     return True, "ok"
+
+
+def _config_status(provider: str) -> tuple[bool, str]:
+    if provider == "tavily":
+        return _config_status_tavily()
+    if provider == "google_cse":
+        return _config_status_google_cse()
+    return False, f"unknown provider: {provider}"
 
 
 def _check_rate_limits(session_id: str) -> tuple[bool, str]:
@@ -65,72 +100,155 @@ def _record_call(session_id: str) -> None:
         _recent_calls.append(datetime.now())
 
 
+# ============================================================
+# Provider implementations
+# ============================================================
+
+def _search_tavily(query: str, num_results: int, site: str) -> tuple[list[dict], str | None]:
+    """Returns (results, error). On error, results=[]."""
+    body = {
+        "query": query,
+        "max_results": num_results,
+        "search_depth": "basic",
+        "include_answer": False,
+        "include_raw_content": False,
+    }
+    if site:
+        body["include_domains"] = [site.strip()]
+
+    try:
+        resp = requests.post(
+            _TAVILY_ENDPOINT,
+            json=body,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {os.getenv('TAVILY_API_KEY')}",
+            },
+            timeout=20,
+        )
+    except requests.RequestException as e:
+        return [], f"network error: {e}"
+
+    if resp.status_code != 200:
+        return [], f"http {resp.status_code}: {resp.text[:300]}"
+
+    try:
+        data = resp.json()
+    except ValueError:
+        return [], "non-JSON response from Tavily"
+
+    items = data.get("results") or []
+    out = []
+    for it in items:
+        url = it.get("url", "")
+        # Best-effort 'source' display from URL host
+        source = ""
+        if url:
+            try:
+                from urllib.parse import urlparse
+                source = urlparse(url).netloc
+            except Exception:
+                source = ""
+        out.append({
+            "title": it.get("title", ""),
+            "url": url,
+            "snippet": it.get("content", ""),
+            "source": source,
+            "score": it.get("score"),
+        })
+    return out, None
+
+
+def _search_google_cse(query: str, num_results: int, site: str) -> tuple[list[dict], str | None]:
+    q = query
+    if site:
+        q = f"{q} site:{site.strip()}"
+    params = {
+        "key": os.getenv("GOOGLE_CSE_API_KEY") or os.getenv("GOOGLE_API_KEY"),
+        "cx": os.getenv("GOOGLE_CSE_ID"),
+        "q": q,
+        "num": num_results,
+        "safe": "active",
+    }
+    try:
+        resp = requests.get(_GOOGLE_CSE_ENDPOINT, params=params, timeout=20)
+    except requests.RequestException as e:
+        return [], f"network error: {e}"
+
+    if resp.status_code != 200:
+        return [], f"http {resp.status_code}: {resp.text[:300]}"
+
+    try:
+        data = resp.json()
+    except ValueError:
+        return [], "non-JSON response from Google CSE"
+
+    items = data.get("items") or []
+    out = []
+    for it in items:
+        out.append({
+            "title": it.get("title", ""),
+            "url": it.get("link", ""),
+            "snippet": it.get("snippet", ""),
+            "source": it.get("displayLink") or "",
+        })
+    return out, None
+
+
+_BACKENDS = {
+    "tavily": _search_tavily,
+    "google_cse": _search_google_cse,
+}
+
+
+# ============================================================
+# Public entrypoint
+# ============================================================
+
 def search(
     query: str,
     num_results: int = 5,
     site: str = "",
     session_id: str = "unknown",
     model: str = "unknown",
+    provider: str | None = None,
 ) -> dict:
-    """Run a Google web search. Returns {ok, results: [{title, url, snippet}], ...}."""
+    """Run a web search. Returns {ok, provider, results: [{title, url, snippet, source}], ...}."""
     if not query or len(query.strip()) < 2:
         return {"ok": False, "error": "query too short (min 2 chars)"}
 
-    ok, reason = _config_status()
+    chosen = _resolved_provider(provider)
+    ok, reason = _config_status(chosen)
     if not ok:
-        return {"ok": False, "error": reason}
+        return {"ok": False, "provider": chosen, "error": reason}
 
     allowed, reason = _check_rate_limits(session_id)
     if not allowed:
-        return {"ok": False, "error": reason}
+        return {"ok": False, "provider": chosen, "error": reason}
 
     num = max(1, min(int(num_results or 5), 10))
     q = query.strip()
-    if site:
-        q = f"{q} site:{site.strip()}"
 
-    params = {
-        "key": os.getenv("GOOGLE_CSE_API_KEY") or os.getenv("GOOGLE_API_KEY"),
-        "cx": os.getenv("GOOGLE_CSE_ID"),
-        "q": q,
-        "num": num,
-        "safe": "active",
-    }
-
+    backend = _BACKENDS[chosen]
     try:
-        resp = requests.get(_ENDPOINT, params=params, timeout=20)
-    except requests.RequestException as e:
-        logger.error(f"swarm_websearch request failed: {e}")
-        return {"ok": False, "error": f"network error: {e}"}
+        results, err = backend(q, num, site)
+    except Exception as e:
+        logger.error(f"swarm_websearch {chosen} unexpected: {type(e).__name__}: {e}")
+        return {"ok": False, "provider": chosen, "error": f"{type(e).__name__}: {e}"}
 
-    if resp.status_code != 200:
-        # Don't count a failed call against the budget
-        body = resp.text[:300]
-        logger.warning(f"swarm_websearch http {resp.status_code}: {body}")
-        return {"ok": False, "error": f"http {resp.status_code}: {body}"}
-
-    try:
-        data = resp.json()
-    except ValueError:
-        return {"ok": False, "error": "non-JSON response from Google CSE"}
-
-    items = data.get("items") or []
-    results = []
-    for it in items:
-        results.append({
-            "title": it.get("title", ""),
-            "url": it.get("link", ""),
-            "snippet": it.get("snippet", ""),
-            "source": (it.get("displayLink") or ""),
-        })
+    if err:
+        # Don't count failed calls against the per-session/24h budget
+        logger.warning(f"swarm_websearch {chosen} failed: {err}")
+        return {"ok": False, "provider": chosen, "error": err}
 
     _record_call(session_id)
     logger.info(
-        f"swarm_websearch ok — model={model} session={session_id} "
+        f"swarm_websearch ok — provider={chosen} model={model} session={session_id} "
         f"q={q!r} hits={len(results)}"
     )
     return {
         "ok": True,
+        "provider": chosen,
         "query": q,
         "results": results,
         "total_returned": len(results),
@@ -140,17 +258,25 @@ def search(
 
 
 def status() -> dict:
-    ok, reason = _config_status()
     cutoff = datetime.now() - timedelta(hours=24)
     with _lock:
         recent_count = sum(1 for t in _recent_calls if t >= cutoff)
         per_session = dict(_session_counts)
+
+    providers = {}
+    for name in VALID_PROVIDERS:
+        ok, reason = _config_status(name)
+        providers[name] = {"configured": ok, "status": reason}
+
+    active = _resolved_provider(None)
     return {
-        "configured": ok,
-        "config_status": reason,
+        "active_provider": active,
+        "default_provider": DEFAULT_PROVIDER,
+        "active_configured": providers[active]["configured"],
+        "active_status": providers[active]["status"],
+        "providers": providers,
         "max_per_session": MAX_PER_SESSION,
         "max_per_24h": MAX_PER_24H,
         "calls_in_last_24h": recent_count,
         "per_session_counts": per_session,
-        "provider": "Google Programmable Search (CSE)",
     }
