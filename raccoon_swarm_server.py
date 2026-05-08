@@ -1552,7 +1552,7 @@ def save_single_results(query, responses):
 # FLASK APP
 # ============================================
 app = Flask(__name__)
-app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50MB max total upload
+app.config['MAX_CONTENT_LENGTH'] = 200 * 1024 * 1024  # 200MB max total upload (20 files × per-file caps fit comfortably)
 app.secret_key = os.getenv("RRI_AUTH_TOKEN", "dev-secret-key-change-me")
 IDEAS_FILE = os.path.join(os.getenv("RRI_STORAGE_DIR", "."), "ideas.json")
 loop_sessions = {}
@@ -2165,6 +2165,15 @@ HOME_HTML = r"""
         d.textContent = text;
         return d.innerHTML;
     }
+    async function parseJsonOrThrow(r) {
+        if (r.ok) return r.json();
+        const text = await r.text();
+        if (r.status === 413) throw new Error('Upload too large (200 MB max total). Try fewer or smaller files.');
+        if (r.status === 401 || r.status === 302) throw new Error('Auth required — reload and log in.');
+        const titleMatch = text.match(/<title>([^<]+)<\/title>/i);
+        const msg = titleMatch ? titleMatch[1].trim() : text.slice(0, 200);
+        throw new Error(`HTTP ${r.status}: ${msg}`);
+    }
     function saveIdea() {
         const text = document.getElementById('query').value.trim();
         if (!text) return;
@@ -2425,7 +2434,7 @@ HOME_HTML = r"""
         if (mode === 'single') {
             output.innerHTML = '<div class="status"><span class="spinner"></span> Dispatching to swarm...' + (fileCount ? ' (' + fileCount + ' files)' : '') + '</div>';
             fetch('/ping-swarm', fetchOpts)
-            .then(r => r.json())
+            .then(parseJsonOrThrow)
             .then(data => {
                 let html = '<div class="round-header">Swarm Responses</div>';
                 if (data.files_processed) {
@@ -2457,7 +2466,7 @@ HOME_HTML = r"""
         } else {
             output.innerHTML = '<div class="status"><span class="spinner"></span> Initiating loop...' + (fileCount ? ' (' + fileCount + ' files)' : '') + '</div>';
             fetch('/start-loop', fetchOpts)
-            .then(r => r.json())
+            .then(parseJsonOrThrow)
             .then(data => {
                 if (data.error) {
                     output.innerHTML = `<div class="status">${data.error}</div>`;
