@@ -2118,7 +2118,7 @@ HOME_HTML = r"""
     });
     function addFiles(newFiles) {
         for (const f of newFiles) {
-            if (uploadedFiles.length >= 10) { alert('Maximum 10 files allowed.'); break; }
+            if (uploadedFiles.length >= 20) { alert('Maximum 20 files allowed.'); break; }
             if (!uploadedFiles.some(ex => ex.name === f.name && ex.size === f.size)) {
                 uploadedFiles.push(f);
             }
