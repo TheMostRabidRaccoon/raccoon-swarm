@@ -1716,6 +1716,7 @@ HOME_HTML = r"""
             --gemini: #9b59b6;
             --perplexity: #1ab4d2;
             --human: #ff6b9d;
+            --play: #f1c40f;
         }
         body {
             font-family: 'DM Sans', -apple-system, system-ui, sans-serif;
@@ -2033,6 +2034,7 @@ HOME_HTML = r"""
             <label class="toggle-label"><input type="checkbox" id="use-context" checked> Context</label>
             <label class="toggle-label"><input type="checkbox" id="use-voice" checked> Voice</label>
             <label class="toggle-label"><input type="checkbox" id="sovereignty-mode"> <span style="color:var(--terra);">Sovereignty</span></label>
+            <label class="toggle-label"><input type="checkbox" id="play-mode"> <span style="color:var(--play);">Play</span></label>
             <label class="toggle-label"><input type="checkbox" id="human-in-loop"> <span style="color:var(--human);">Human</span></label>
             <input type="text" id="human-persona" placeholder="The Conductor" value="The Conductor">
         </div>
@@ -2081,6 +2083,17 @@ HOME_HTML = r"""
         setTimeout(() => ctx.close(), 200);
       } catch {}
     }
+    // ---- KERNEL MODE INTERLOCK ----
+    // PLAY takes precedence over SOVEREIGNTY on the backend (per Session 60).
+    // Mirror that in the UI so the active mode is unambiguous: ticking one
+    // unticks the other.
+    document.getElementById('play-mode').addEventListener('change', function(e) {
+        if (e.target.checked) document.getElementById('sovereignty-mode').checked = false;
+    });
+    document.getElementById('sovereignty-mode').addEventListener('change', function(e) {
+        if (e.target.checked) document.getElementById('play-mode').checked = false;
+    });
+
     // ---- FILE UPLOAD MANAGEMENT ----
     let uploadedFiles = [];
     document.getElementById('file-input').addEventListener('change', function(e) {
@@ -2304,6 +2317,7 @@ HOME_HTML = r"""
     function buildFetchOptions(query, useContext, numRounds) {
         const models = getSelectedModels();
         const sovereignty = document.getElementById('sovereignty-mode').checked;
+        const play = document.getElementById('play-mode').checked;
         const humanInLoop = document.getElementById('human-in-loop').checked;
         const humanPersona = document.getElementById('human-persona').value.trim() || 'The Conductor';
         if (uploadedFiles.length > 0) {
@@ -2313,6 +2327,7 @@ HOME_HTML = r"""
             fd.append('rounds', numRounds.toString());
             fd.append('models', JSON.stringify(models));
             fd.append('sovereignty', sovereignty.toString());
+            fd.append('play', play.toString());
             fd.append('human_in_loop', humanInLoop.toString());
             fd.append('human_persona', humanPersona);
             for (const f of uploadedFiles) fd.append('files', f);
@@ -2321,7 +2336,7 @@ HOME_HTML = r"""
         return {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({query, use_context: useContext, rounds: numRounds, models: models, sovereignty: sovereignty, human_in_loop: humanInLoop, human_persona: humanPersona})
+            body: JSON.stringify({query, use_context: useContext, rounds: numRounds, models: models, sovereignty: sovereignty, play: play, human_in_loop: humanInLoop, human_persona: humanPersona})
         };
     }
     function clearUploadedFiles() { uploadedFiles = []; renderFileChips(); }
