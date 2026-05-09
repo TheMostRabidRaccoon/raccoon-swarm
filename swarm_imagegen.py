@@ -486,6 +486,67 @@ def generate_image(
 
 
 # ============================================================
+# Backfill + listing
+# ============================================================
+
+def backfill_outputs_mirror() -> dict:
+    """Copy any pre-existing artifacts/images/*.png into OUTPUTS_DIR.
+
+    Pre-PR-35 generations landed only in /artifacts/images/ and were
+    invisible to the /download/<file> route. This is idempotent —
+    skips files already present in OUTPUTS_DIR by name. Safe to call
+    at startup and on every listing request.
+    """
+    src_root = swarm_filestore._storage_root() / ARTIFACTS_SUBDIR / IMAGES_PREFIX
+    dst = _outputs_dir()
+    if dst is None or not src_root.exists():
+        return {"ran": False, "copied": 0, "skipped": 0,
+                "src": str(src_root), "dst": str(dst) if dst else None}
+    try:
+        dst.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        logger.warning(f"backfill: cannot create OUTPUTS_DIR {dst}: {e}")
+        return {"ran": False, "copied": 0, "skipped": 0,
+                "src": str(src_root), "dst": str(dst), "error": str(e)}
+
+    copied = skipped = failed = 0
+    for src in src_root.glob("*.png"):
+        target = dst / src.name
+        if target.exists():
+            skipped += 1
+            continue
+        try:
+            target.write_bytes(src.read_bytes())
+            copied += 1
+        except OSError as e:
+            failed += 1
+            logger.warning(f"backfill copy failed for {src.name}: {e}")
+    return {"ran": True, "copied": copied, "skipped": skipped, "failed": failed,
+            "src": str(src_root), "dst": str(dst)}
+
+
+def list_images() -> dict:
+    """List every PNG under artifacts/images/, newest first.
+
+    Runs backfill_outputs_mirror() first so the returned download_urls
+    are immediately usable even for pre-PR-35 generations.
+    """
+    backfill_outputs_mirror()
+    src_root = swarm_filestore._storage_root() / ARTIFACTS_SUBDIR / IMAGES_PREFIX
+    items = []
+    if src_root.exists():
+        for p in sorted(src_root.glob("*.png"), key=lambda x: x.stat().st_mtime, reverse=True):
+            stat = p.stat()
+            items.append({
+                "filename": p.name,
+                "size_bytes": stat.st_size,
+                "mtime": datetime.fromtimestamp(stat.st_mtime).isoformat(),
+                "download_url": f"/download/{p.name}",
+            })
+    return {"count": len(items), "images": items, "src": str(src_root)}
+
+
+# ============================================================
 # Diagnostics
 # ============================================================
 
