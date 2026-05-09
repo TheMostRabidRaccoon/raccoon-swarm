@@ -2,7 +2,9 @@
 
 Lets the swarm produce publication-quality figures and visual artifacts
 directly from inside a session, without needing to hand specs out to
-external image tools. Outputs persist under /artifacts/images/.
+external image tools. Outputs persist under /artifacts/images/, and are
+mirrored into the server's OUTPUTS_DIR so each in-session image surfaces
+as a /download/<file> link in the chat panel alongside DOCX outputs.
 
 Backends:
   gemini  — Google Imagen via the google-genai SDK. Requires GOOGLE_API_KEY.
@@ -79,6 +81,20 @@ _SLUG_RE = re.compile(r"[^a-z0-9]+")
 def _slug(text: str, max_len: int = 40) -> str:
     s = _SLUG_RE.sub("-", text.lower()).strip("-")
     return s[:max_len] or "image"
+
+
+def _outputs_dir() -> Path | None:
+    """Resolve the server's OUTPUTS_DIR for download-link mirroring.
+
+    Mirrors the dispatch logic in raccoon_swarm_server.py so an image
+    generated mid-session shows up as a /download/<file> link in the UI.
+    Returns None when no usable mirror target exists (don't fail the
+    primary write just because the mirror dir is unavailable).
+    """
+    if os.getenv("RAILWAY_ENVIRONMENT") or os.getenv("RRI_STORAGE_DIR"):
+        return Path(os.getenv("RRI_STORAGE_DIR", "/data")) / "outputs"
+    gdrive = Path.home() / "Library/CloudStorage/GoogleDrive-kad@rabidraccoonintelligence.org/My Drive/Logs_v2_live"
+    return gdrive if gdrive.exists() else None
 
 
 def _output_path(prompt: str, model_name: str, save_to: str | None) -> Path:
@@ -430,6 +446,21 @@ def generate_image(
     _record_generation()
     rel_path = str(out_path.relative_to(swarm_filestore._storage_root()))
 
+    # Mirror into OUTPUTS_DIR so the image surfaces as a /download/<file>
+    # link in the chat panel. Best-effort: a mirror failure must not fail
+    # the primary write (the canonical copy under /artifacts/images/ is
+    # what the swarm reasons about).
+    download_url: str | None = None
+    outputs_dir = _outputs_dir()
+    if outputs_dir is not None:
+        try:
+            outputs_dir.mkdir(parents=True, exist_ok=True)
+            mirror_path = outputs_dir / out_path.name
+            mirror_path.write_bytes(png_bytes)
+            download_url = f"/download/{out_path.name}"
+        except OSError as e:
+            logger.warning(f"swarm_imagegen mirror to OUTPUTS_DIR failed (image still at {rel_path}): {e}")
+
     # Append a one-line audit entry to /logs/image-generations.log
     try:
         audit = (
@@ -445,12 +476,74 @@ def generate_image(
     return {
         "ok": True,
         "image_path": rel_path,
+        "download_url": download_url,
         "prompt_used": full_prompt,
         "backend_used": backend,
         "dimensions": size,
         "file_size_bytes": len(png_bytes),
         "daily_count": current + 1,
     }
+
+
+# ============================================================
+# Backfill + listing
+# ============================================================
+
+def backfill_outputs_mirror() -> dict:
+    """Copy any pre-existing artifacts/images/*.png into OUTPUTS_DIR.
+
+    Pre-PR-35 generations landed only in /artifacts/images/ and were
+    invisible to the /download/<file> route. This is idempotent —
+    skips files already present in OUTPUTS_DIR by name. Safe to call
+    at startup and on every listing request.
+    """
+    src_root = swarm_filestore._storage_root() / ARTIFACTS_SUBDIR / IMAGES_PREFIX
+    dst = _outputs_dir()
+    if dst is None or not src_root.exists():
+        return {"ran": False, "copied": 0, "skipped": 0,
+                "src": str(src_root), "dst": str(dst) if dst else None}
+    try:
+        dst.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        logger.warning(f"backfill: cannot create OUTPUTS_DIR {dst}: {e}")
+        return {"ran": False, "copied": 0, "skipped": 0,
+                "src": str(src_root), "dst": str(dst), "error": str(e)}
+
+    copied = skipped = failed = 0
+    for src in src_root.glob("*.png"):
+        target = dst / src.name
+        if target.exists():
+            skipped += 1
+            continue
+        try:
+            target.write_bytes(src.read_bytes())
+            copied += 1
+        except OSError as e:
+            failed += 1
+            logger.warning(f"backfill copy failed for {src.name}: {e}")
+    return {"ran": True, "copied": copied, "skipped": skipped, "failed": failed,
+            "src": str(src_root), "dst": str(dst)}
+
+
+def list_images() -> dict:
+    """List every PNG under artifacts/images/, newest first.
+
+    Runs backfill_outputs_mirror() first so the returned download_urls
+    are immediately usable even for pre-PR-35 generations.
+    """
+    backfill_outputs_mirror()
+    src_root = swarm_filestore._storage_root() / ARTIFACTS_SUBDIR / IMAGES_PREFIX
+    items = []
+    if src_root.exists():
+        for p in sorted(src_root.glob("*.png"), key=lambda x: x.stat().st_mtime, reverse=True):
+            stat = p.stat()
+            items.append({
+                "filename": p.name,
+                "size_bytes": stat.st_size,
+                "mtime": datetime.fromtimestamp(stat.st_mtime).isoformat(),
+                "download_url": f"/download/{p.name}",
+            })
+    return {"count": len(items), "images": items, "src": str(src_root)}
 
 
 # ============================================================

@@ -3081,6 +3081,57 @@ def websearch_status():
     return jsonify(swarm_websearch.status())
 
 
+@app.route("/artifacts/images", methods=["GET"])
+@require_auth
+def artifacts_images_list():
+    """List every PNG the swarm has generated, newest first.
+
+    Each entry carries a /download/<file> URL. Pre-PR-35 images that
+    only exist under /artifacts/images/ are mirrored into OUTPUTS_DIR
+    on demand by list_images(), so old links work too.
+    """
+    if swarm_imagegen is None:
+        return jsonify({"error": "swarm_imagegen unavailable"}), 503
+    return jsonify(swarm_imagegen.list_images())
+
+
+@app.route("/websearch/test", methods=["GET"])
+@require_auth
+def websearch_test():
+    """End-to-end web search canary: runs a real query against the active
+    provider and reports ok/error + latency. Does NOT count against the
+    swarm session-cap (uses session_id='canary'). Pass ?q=... to override.
+
+    Use this from your Mac after pulling to verify Tavily reachability
+    without dispatching the whole swarm:
+        curl -b cookies.txt http://<host>/websearch/test
+    """
+    import time
+    query = (request.args.get("q") or "anthropic claude release notes").strip()
+    provider_override = request.args.get("provider") or None
+    started = time.monotonic()
+    result = swarm_websearch.search(
+        query=query,
+        num_results=3,
+        session_id="canary",
+        model="websearch_test",
+        provider=provider_override,
+    )
+    elapsed_ms = int((time.monotonic() - started) * 1000)
+    sample = []
+    for hit in (result.get("results") or [])[:3]:
+        sample.append({"title": hit.get("title", ""), "url": hit.get("url", "")})
+    return jsonify({
+        "ok": result.get("ok", False),
+        "provider": result.get("provider"),
+        "query": query,
+        "latency_ms": elapsed_ms,
+        "error": result.get("error"),
+        "sample_hits": sample,
+        "hit_count": len(result.get("results") or []),
+    })
+
+
 @app.route("/mail/log", methods=["GET"])
 @require_auth
 def mail_log():
@@ -4363,6 +4414,13 @@ if __name__ == "__main__":
     print(f"Storage:     {OUTPUTS_DIR}")
     print(f"Memory:      {MEMORY_FILE}")
     print(f"Daemon:      interval={swarm_daemon.interval_seconds}s, max_daily={swarm_daemon.max_daily_sessions}")
+    if swarm_imagegen is not None:
+        try:
+            bf = swarm_imagegen.backfill_outputs_mirror()
+            if bf.get("ran"):
+                print(f"Image backfill: copied={bf['copied']} skipped={bf['skipped']} failed={bf.get('failed', 0)}")
+        except Exception as e:
+            logger.warning(f"image backfill at startup failed: {e}")
     print("Endpoints:")
     print("  GET  /               - Swarm UI")
     print("  POST /ping-swarm     - Single-shot swarm")
@@ -4372,7 +4430,9 @@ if __name__ == "__main__":
     print("  POST /tts            - Text-to-speech per model")
     print("  POST /idea           - Save an idea")
     print("  GET  /ideas          - List ideas")
-    print("  GET  /download/      - Download output files")
+    print("  GET  /download/      - Download output files (DOCX, PNG, JSON)")
+    print("  GET  /artifacts/images - List all swarm-generated images")
+    print("  GET  /websearch/test - Live Tavily canary (?q=... to override)")
     print("  GET  /context        - View/update boot context")
     print("  GET  /memory         - View swarm persistent memory")
     print("  POST /memory/clear   - Reset swarm memory (with backup)")
