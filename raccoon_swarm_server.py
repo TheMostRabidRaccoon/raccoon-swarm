@@ -74,6 +74,10 @@ import swarm_filestore
 import swarm_mail
 import swarm_tools
 import swarm_websearch
+try:
+    import swarm_imagegen
+except ImportError:
+    swarm_imagegen = None
 
 # Master switch for native MCP tool registration in model API calls.
 # Set RRI_MCP_TOOLS_ENABLED=false to fall back to directive-only behavior
