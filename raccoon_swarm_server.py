@@ -1892,6 +1892,11 @@ HOME_HTML = r"""
         .model-block.gemini { border-left-color: var(--gemini); }
         .model-block.perplexity { border-left-color: var(--perplexity); }
         .model-block.human { border-left-color: var(--human); }
+        .model-block a.download-link {
+            color: var(--terra); text-decoration: none;
+            border-bottom: 1px dotted var(--terra);
+        }
+        .model-block a.download-link:hover { color: var(--terra-glow); border-bottom-style: solid; }
         .model-header {
             display: flex; align-items: center; gap: 8px;
             margin-bottom: 8px;
@@ -2213,6 +2218,15 @@ HOME_HTML = r"""
         d.textContent = text;
         return d.innerHTML;
     }
+    // Auto-linkify /download/<file> references in model output. Run on
+    // already-escaped text — the path chars (\w, dot, hyphen) survive
+    // HTML-escaping intact, so the regex is safe to apply post-esc().
+    function autoLinkifyDownloads(escapedText) {
+        return escapedText.replace(
+            /\/download\/([\w.\-]+)/g,
+            '<a href="/download/$1" target="_blank" rel="noopener" class="download-link">/download/$1</a>'
+        );
+    }
     async function parseJsonOrThrow(r) {
         if (r.ok) return r.json();
         const text = await r.text();
@@ -2342,7 +2356,7 @@ HOME_HTML = r"""
         const voiceLabel = VOICE_LABELS[cls] || '';
         const role = MODEL_ROLES[cls] || '';
         const displayName = roundLabel ? `${name} (Round ${roundLabel})` : name;
-        const escapedText = esc(text);
+        const escapedText = autoLinkifyDownloads(esc(text));
         let roleHTML = role ? `<span class="role-label ${cls}">${role}</span>` : '';
         let voiceHTML = '';
         const btnId = 'vbtn-' + (voiceBtnCounter++);
