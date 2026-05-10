@@ -132,12 +132,12 @@ def _record_call(session_id: str) -> None:
 # Provider implementations
 # ============================================================
 
-def _search_tavily(query: str, num_results: int, site: str) -> tuple[list[dict], str | None]:
+def _search_tavily(query: str, num_results: int, site: str, deep: bool = False) -> tuple[list[dict], str | None]:
     """Returns (results, error). On error, results=[]."""
     body = {
         "query": query,
         "max_results": num_results,
-        "search_depth": "basic",
+        "search_depth": "advanced" if deep else "basic",
         "include_answer": False,
         "include_raw_content": False,
     }
@@ -240,8 +240,16 @@ def search(
     session_id: str = "unknown",
     model: str = "unknown",
     provider: str | None = None,
+    deep: bool = False,
 ) -> dict:
-    """Run a web search. Returns {ok, provider, results: [{title, url, snippet, source}], ...}."""
+    """Run a web search. Returns {ok, provider, results: [{title, url, snippet, source}], ...}.
+
+    deep=True: Tavily uses search_depth='advanced' which returns longer,
+    more thorough snippets. Costs ~2× the API credits per query, but the
+    page content is still Tavily-sanitized — same prompt-injection
+    surface as a basic search, just more text per hit. Ignored for
+    google_cse (the Programmable Search API has no equivalent flag).
+    """
     if not query or len(query.strip()) < 2:
         return {"ok": False, "error": "query too short (min 2 chars)"}
 
@@ -261,7 +269,10 @@ def search(
 
     backend = _BACKENDS[chosen]
     try:
-        results, err = backend(q, num, site)
+        if chosen == "tavily":
+            results, err = backend(q, num, site, deep=bool(deep))
+        else:
+            results, err = backend(q, num, site)
     except Exception as e:
         logger.error(f"swarm_websearch {chosen} unexpected: {type(e).__name__}: {e}")
         return {"ok": False, "provider": chosen, "error": f"{type(e).__name__}: {e}"}
