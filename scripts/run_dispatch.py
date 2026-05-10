@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 import traceback
 from datetime import datetime
@@ -28,14 +29,29 @@ REPO_ROOT = SCRIPT_DIR.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+# Auto-reexec under the repo venv if we landed on a system Python that
+# doesn't have our deps. See scripts/build_semantic_index.py for the
+# reasoning. systemd unit invocations already use the venv path
+# directly, so this only matters for manual shell runs.
+_VENV_PY = REPO_ROOT / "venv" / "bin" / "python3"
+if _VENV_PY.exists() and Path(sys.executable).resolve() != _VENV_PY.resolve():
+    os.execv(str(_VENV_PY), [str(_VENV_PY), str(Path(__file__).resolve()), *sys.argv[1:]])
+
 # Load .env from the repo root so the runner has ELEVENLABS_API_KEY,
 # SMTP_*, etc. when invoked from a shell. systemd's EnvironmentFile=
 # already covers the unit-triggered case; this covers manual runs.
+# Loud failure on missing dotenv so a misconfigured Python doesn't
+# silently produce a bad run.
 try:
     from dotenv import load_dotenv
     load_dotenv(REPO_ROOT / ".env")
 except ImportError:
-    pass
+    print(
+        f"WARNING: python-dotenv not importable in {sys.executable}.\n"
+        f"         .env will not be loaded; expect missing-API-key errors.\n"
+        f"         Fix: {_VENV_PY} -m pip install python-dotenv",
+        file=sys.stderr,
+    )
 
 import swarm_dispatch  # noqa: E402
 
