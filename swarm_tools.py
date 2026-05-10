@@ -21,6 +21,7 @@ import swarm_codeexec
 import swarm_websearch
 import swarm_webverify
 import swarm_dispatch
+import swarm_semantic
 
 try:
     import swarm_imagegen
@@ -128,6 +129,14 @@ def _dispatch_web_search(
 
 def _dispatch_web_verify(url: str, session_id: str = "unknown") -> dict:
     return swarm_webverify.verify(url=url, session_id=session_id)
+
+
+def _dispatch_filestore_semantic_search(
+    query: str,
+    top_k: int = 5,
+    min_score: float = 0.0,
+) -> dict:
+    return swarm_semantic.search(query=query, top_k=top_k, min_score=min_score)
 
 
 def _dispatch_dispatch_queue_write(
@@ -317,6 +326,30 @@ TOOL_DEFINITIONS: dict[str, dict[str, Any]] = {
             "required": ["query"],
         },
         "dispatch": _dispatch_web_search,
+    },
+    "filestore_semantic_search": {
+        "description": (
+            "Semantic search over the swarm filestore. Use this when "
+            "filestore_search (substring) misses because the file uses "
+            "different wording than the query. Returns top-k chunks "
+            "ranked by cosine similarity of OpenAI embeddings. Each "
+            "result has path, chunk_index, snippet (first 300 chars), "
+            "and score (0-1, higher is closer). Pair with filestore_read "
+            "to pull the full file once you've found the right chunk. "
+            "Index is built from the filestore content; if you get "
+            "'index is empty', tell the Conductor to run "
+            "scripts/build_semantic_index.py or POST /semantic/reindex."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Natural-language query. Min 2 chars."},
+                "top_k": {"type": "integer", "description": "Number of hits to return, 1-20. Default 5."},
+                "min_score": {"type": "number", "description": "Optional cosine-similarity floor 0-1. Cuts off weak matches. Default 0."},
+            },
+            "required": ["query"],
+        },
+        "dispatch": _dispatch_filestore_semantic_search,
     },
     "dispatch_queue_write": {
         "description": (
