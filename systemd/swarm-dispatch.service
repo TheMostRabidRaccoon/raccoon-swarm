@@ -1,0 +1,23 @@
+[Unit]
+Description=Process queued swarm dispatch payloads (oneshot)
+After=swarm.service
+# Run only when the path unit triggers us; do not auto-start at boot.
+RefuseManualStart=no
+
+[Service]
+Type=oneshot
+User=theconductor
+WorkingDirectory=/home/theconductor/raccoon-swarm
+EnvironmentFile=-/home/theconductor/raccoon-swarm/.env
+ExecStart=/home/theconductor/raccoon-swarm/venv/bin/python3 /home/theconductor/raccoon-swarm/scripts/run_dispatch.py
+StandardOutput=journal
+StandardError=journal
+# Lock down a bit. The runner needs filesystem access to swarm/, /tmp,
+# and the network for ElevenLabs. Adjust if a stricter sandbox is wanted.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+TimeoutStartSec=900
+
+[Install]
+WantedBy=multi-user.target

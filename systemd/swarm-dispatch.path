@@ -1,0 +1,14 @@
+[Unit]
+Description=Watch swarm/dispatch/queued/ for new production payloads
+After=swarm.service
+
+[Path]
+# Resolve $RRI_STORAGE_DIR/swarm/dispatch/queued at install time.
+# Default below assumes the same RRI_STORAGE_DIR the swarm.service uses;
+# edit this PathChanged= line if your storage root differs.
+PathChanged=/home/theconductor/raccoon-swarm/swarm/dispatch/queued
+PathExistsGlob=/home/theconductor/raccoon-swarm/swarm/dispatch/queued/*.json
+Unit=swarm-dispatch.service
+
+[Install]
+WantedBy=multi-user.target

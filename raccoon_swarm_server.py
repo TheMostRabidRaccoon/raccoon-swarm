@@ -692,7 +692,8 @@ NATIVE TOOLS (for models that support tool_use — Claude does):
 
 You also have native callable tools in addition to the text directives above:
   filestore_search, filestore_read, filestore_list, filestore_write,
-  filestore_append, code_exec, image_generate, web_search, web_verify.
+  filestore_append, code_exec, image_generate, web_search, web_verify,
+  dispatch_queue_write.
 
   web_search runs a public-web query (Tavily by default; pass
   provider='google_cse' for the curated-allowlist alternative) and returns
@@ -704,6 +705,15 @@ You also have native callable tools in addition to the text directives above:
   description ONLY (no page body). Use it to confirm a repo/paper/post is
   reachable before citing it. Tighter caps than search (20/session, 100/24h)
   because URL probes are higher-value targets for prompt injection.
+
+  dispatch_queue_write submits a production payload to the deterministic
+  video pipeline. ONLY the Phase 4 owner (per production-pipeline-v1)
+  should call this — and ONLY after image review has passed. The runner
+  on the server will pick up the payload and email the Conductor with
+  the result. Payload shape matches POST /scripted-episode (panels list,
+  voice config, etc.). Models other than the Phase 4 owner that call
+  this are committing a governance violation and SHOULD be flagged in
+  the next session synthesis.
 
 UNTRUSTED CONTENT — PROMPT-INJECTION HYGIENE:
 
@@ -3116,6 +3126,23 @@ def websearch_status():
     return jsonify(swarm_websearch.status())
 
 
+@app.route("/dispatch/status", methods=["GET"])
+@require_auth
+def dispatch_status():
+    """List the dispatch queue contents by state (queued/processing/done/failed).
+
+    Per the production-pipeline-v1 spec: Phase 4 owner writes payloads via
+    the dispatch_queue_write swarm tool, the systemd watcher triggers
+    scripts/run_dispatch.py, payloads transition queued → processing →
+    done/failed. This endpoint is the read-only window into that queue.
+    """
+    try:
+        import swarm_dispatch
+    except ImportError:
+        return jsonify({"error": "swarm_dispatch unavailable"}), 503
+    return jsonify(swarm_dispatch.status())
+
+
 @app.route("/artifacts/images", methods=["GET"])
 @require_auth
 def artifacts_images_list():
@@ -4468,6 +4495,7 @@ if __name__ == "__main__":
     print("  GET  /download/      - Download output files (DOCX, PNG, JSON)")
     print("  GET  /artifacts/images - List all swarm-generated images")
     print("  GET  /websearch/test - Live Tavily canary (?q=... to override)")
+    print("  GET  /dispatch/status - Production-pipeline dispatch queue state")
     print("  GET  /context        - View/update boot context")
     print("  GET  /memory         - View swarm persistent memory")
     print("  POST /memory/clear   - Reset swarm memory (with backup)")
