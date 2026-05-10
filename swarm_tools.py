@@ -20,6 +20,7 @@ import swarm_filestore
 import swarm_codeexec
 import swarm_websearch
 import swarm_webverify
+import swarm_dispatch
 
 try:
     import swarm_imagegen
@@ -127,6 +128,26 @@ def _dispatch_web_search(
 
 def _dispatch_web_verify(url: str, session_id: str = "unknown") -> dict:
     return swarm_webverify.verify(url=url, session_id=session_id)
+
+
+def _dispatch_dispatch_queue_write(
+    script: dict,
+    callback_email_subject_prefix: str = "",
+    notes: str = "",
+    model: str = "unknown",
+    session_id: str = "unknown",
+) -> dict:
+    submitted_by = f"swarm-{session_id}/{model}"
+    payload = {
+        "dispatch_version": swarm_dispatch.DISPATCH_VERSION,
+        "submitted_by": submitted_by,
+        "script": script,
+    }
+    if callback_email_subject_prefix:
+        payload["callback_email_subject_prefix"] = callback_email_subject_prefix
+    if notes:
+        payload["notes"] = notes
+    return swarm_dispatch.write_payload(payload, submitted_by=submitted_by)
 
 
 def _dispatch_image_generate(
@@ -297,6 +318,38 @@ TOOL_DEFINITIONS: dict[str, dict[str, Any]] = {
         },
         "dispatch": _dispatch_web_search,
     },
+    "dispatch_queue_write": {
+        "description": (
+            "Submit a production payload to the dispatch queue. Use ONLY at the "
+            "end of Phase 4 (image-review-passed) per the production-pipeline-v1 "
+            "spec. The runner picks it up via a systemd path-unit watcher and "
+            "executes the deterministic scripted-episode pipeline (TTS + frames "
+            "+ ffmpeg → MP4). The Conductor is emailed when the run completes "
+            "or fails. The 'script' arg must match the existing /scripted-episode "
+            "shape: project_slug, panels[] with index/character/line/voice. "
+            "Models other than the Phase 4 owner SHOULD NOT call this — flag it "
+            "as a governance violation in the next session synthesis."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "script": {
+                    "type": "object",
+                    "description": "The episode script payload — same shape as POST /scripted-episode (panels list, voice config, etc.).",
+                },
+                "callback_email_subject_prefix": {
+                    "type": "string",
+                    "description": "Optional — prepended to the notification email subject (e.g. '[s01e02]').",
+                },
+                "notes": {
+                    "type": "string",
+                    "description": "Optional free-form notes for the audit log.",
+                },
+            },
+            "required": ["script"],
+        },
+        "dispatch": _dispatch_dispatch_queue_write,
+    },
     "web_verify": {
         "description": (
             "Confirm a URL exists. Returns HTTP status, page title, meta "
@@ -360,8 +413,10 @@ def dispatch(name: str, args: dict, calling_model: str = "unknown", session_id: 
         params = (args or {}).copy()
         if name in ("code_exec", "image_generate", "web_search") and "model" not in params:
             params["model"] = calling_model
-        if name in ("web_search", "web_verify") and "session_id" not in params:
+        if name in ("web_search", "web_verify", "dispatch_queue_write") and "session_id" not in params:
             params["session_id"] = session_id
+        if name == "dispatch_queue_write" and "model" not in params:
+            params["model"] = calling_model
         return fn(**params)
     except TypeError as e:
         # Bad args — surface to model so it can retry
