@@ -692,14 +692,20 @@ NATIVE TOOLS (for models that support tool_use — Claude does):
 
 You also have native callable tools in addition to the text directives above:
   filestore_search, filestore_read, filestore_list, filestore_write,
-  filestore_append, code_exec, image_generate, web_search, web_verify,
-  dispatch_queue_write.
+  filestore_append, filestore_semantic_search, code_exec, image_generate,
+  web_search, web_verify, dispatch_queue_write.
 
   web_search runs a public-web query (Tavily by default; pass
   provider='google_cse' for the curated-allowlist alternative) and returns
   title+url+snippet for each hit. Pass deep=true for longer Tavily snippets
   (~2× cost). Use it for current events, fact-checking a claim, finding a
   specific source, or surfacing recent docs. Per-session cap (default 30).
+
+  filestore_semantic_search runs a meaning-based search over the same
+  filestore. Use it when filestore_search (substring) misses — e.g. you
+  search 'calibration loop' but the file says 'self-correcting feedback
+  closure'. Returns top-k chunks ranked by cosine similarity. Pair with
+  filestore_read to pull the full file once the right chunk is found.
 
   web_verify confirms a URL exists. Returns status + title + meta
   description ONLY (no page body). Use it to confirm a repo/paper/post is
@@ -3126,6 +3132,35 @@ def websearch_status():
     return jsonify(swarm_websearch.status())
 
 
+@app.route("/semantic/status", methods=["GET"])
+@require_auth
+def semantic_status():
+    """Semantic-search index diagnostics: model, file count, chunk count, size."""
+    try:
+        import swarm_semantic
+    except ImportError:
+        return jsonify({"error": "swarm_semantic unavailable"}), 503
+    return jsonify(swarm_semantic.status())
+
+
+@app.route("/semantic/reindex", methods=["POST"])
+@require_auth
+def semantic_reindex():
+    """Rebuild the semantic index. Idempotent: only re-embeds files whose
+    content_hash has changed since last build. Pass JSON body {"force": true}
+    to re-embed everything (use after upgrading the embedding model)."""
+    try:
+        import swarm_semantic
+    except ImportError:
+        return jsonify({"error": "swarm_semantic unavailable"}), 503
+    body = request.get_json(silent=True) or {}
+    force = bool(body.get("force"))
+    try:
+        return jsonify(swarm_semantic.reindex(force=force))
+    except RuntimeError as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
+
+
 @app.route("/dispatch/status", methods=["GET"])
 @require_auth
 def dispatch_status():
@@ -4496,6 +4531,8 @@ if __name__ == "__main__":
     print("  GET  /artifacts/images - List all swarm-generated images")
     print("  GET  /websearch/test - Live Tavily canary (?q=... to override)")
     print("  GET  /dispatch/status - Production-pipeline dispatch queue state")
+    print("  GET  /semantic/status - Semantic-search index diagnostics")
+    print("  POST /semantic/reindex - Rebuild the semantic index (idempotent)")
     print("  GET  /context        - View/update boot context")
     print("  GET  /memory         - View swarm persistent memory")
     print("  POST /memory/clear   - Reset swarm memory (with backup)")
