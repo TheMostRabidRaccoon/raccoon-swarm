@@ -26,6 +26,16 @@ REPO_ROOT = SCRIPT_DIR.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+# Load .env from the repo root so OPENAI_API_KEY (and friends) are present
+# whether this script is invoked from systemd (which has EnvironmentFile=)
+# or from a shell that hasn't sourced .env. Best-effort — the script will
+# error cleanly downstream if the key still isn't set.
+try:
+    from dotenv import load_dotenv
+    load_dotenv(REPO_ROOT / ".env")
+except ImportError:
+    pass
+
 import swarm_semantic  # noqa: E402
 
 logging.basicConfig(

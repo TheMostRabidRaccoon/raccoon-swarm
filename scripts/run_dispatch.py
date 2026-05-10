@@ -28,6 +28,15 @@ REPO_ROOT = SCRIPT_DIR.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+# Load .env from the repo root so the runner has ELEVENLABS_API_KEY,
+# SMTP_*, etc. when invoked from a shell. systemd's EnvironmentFile=
+# already covers the unit-triggered case; this covers manual runs.
+try:
+    from dotenv import load_dotenv
+    load_dotenv(REPO_ROOT / ".env")
+except ImportError:
+    pass
+
 import swarm_dispatch  # noqa: E402
 
 logging.basicConfig(
