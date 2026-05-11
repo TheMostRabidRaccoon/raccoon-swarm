@@ -42,6 +42,7 @@ Five frontier LLMs (Claude, GPT, Grok, Gemini, Perplexity) in structured paralle
 - **Dialogue Export** — Automatically generates SPEAKER-prefixed dialogue files from Round Table sessions, formatted for direct ingestion into Prosody Intelligence. This is Phase 1 of the session-to-film pipeline — Round Table transcript → voicable dialogue → Prosody Intelligence Session Director → animated short.
 - **Voice Output** — ElevenLabs TTS with distinct voice casting per model. Each model selected its own voice. Prosody parameters (stability, similarity, style) are tuned per-emotion through the Reverse Prosody Engine.
 - **DOCX Generation** — Color-coded per model, publication-ready. Download links served from the UI.
+- **Production-pipeline-v1 governance** (PR #39, Session 62) — Phases 5–6 of episode production are deterministic Python on the swarm server, not agentic LLM execution. The relay handoff: Phase 4 (image-review-passed) writes a JSON payload to `swarm/dispatch/queued/`; a systemd `.path` unit triggers the runner; the runner walks `queued/` → `processing/` → `done/`/`failed/` with atomic `os.replace` transitions, calling the existing `run_scripted_episode_pipeline` (TTS + frames + ffmpeg → MP4). Result manifest sidecars each completed payload. The Conductor is emailed on success or failure. Read-only window via `GET /dispatch/status`. Recovery: `./scripts/run_dispatch.py --requeue` re-queues stuck `processing/` items after a runner crash.
 
 ### Memory & Persistence
 
@@ -51,15 +52,21 @@ Five frontier LLMs (Claude, GPT, Grok, Gemini, Perplexity) in structured paralle
 - **Filestore Conventions** — One concept per file. YAML frontmatter with date, source, and tags. Append-only semantics for `/positions/` (resolved positions are never overwritten). File naming convention: `{YYYY-MM-DD}_{model}_{topic}.md`. These conventions were proposed, debated, and adopted by the swarm itself.
 - **Environment-Aware Storage** — Google Drive sync locally, persistent volume when hosted. Vault directory with rotating audit logs.
 
-### MCP Tool Access (PRs #14–#17)
+### MCP Tool Access (PRs #14–#42)
 
 All five models can invoke tools mid-response via native API tool_use. The MCP server exposes:
 
-- **Filestore tools** (PR #14) — `filestore_search`, `filestore_read`, `filestore_list`, `filestore_write`, `filestore_append`. Full-text search across the persistent filestore. Models can find resolved positions, prior artifacts, and session history without knowing exact filenames.
+- **Filestore tools** (PR #14) — `filestore_search`, `filestore_read`, `filestore_list`, `filestore_write`, `filestore_append`. Substring search across the persistent filestore. Models find resolved positions, prior artifacts, and session history without knowing exact filenames.
+- **Filestore semantic search** (PR #40) — `filestore_semantic_search`. Meaning-based retrieval via OpenAI `text-embedding-3-small` + cosine similarity. Closes the gap when a query phrasing doesn't match the file's wording. Hand-rolled in ~250 lines of numpy without `chromadb` — readable top-to-bottom as a RAG primer. Index lives at `<storage>/swarm/_semantic_index/index.json`, rebuilt idempotently via `scripts/build_semantic_index.py` (only re-embeds files whose content hash changed).
 - **Sandboxed code execution** (PR #15) — Python runner with 60s timeout, 1GB memory cap, network isolated via Linux namespaces. Outputs auto-persist to `/artifacts/code-runs/` with code, stdout, stderr, and manifest. The computer is the arbiter — no more narrated math.
-- **Image generation** (PR #16) — Gemini Imagen 3 and Grok-2-image backends. Daily cap of 50 images shared across the swarm. Outputs land in `/artifacts/images/`.
+- **Image generation** (PRs #16, #34) — three backends: Gemini Imagen, Grok Imagine, OpenAI gpt-image-1 (with dall-e-3 fallback). Daily cap of 50 shared across the swarm. Outputs persist to `/artifacts/images/` AND are mirrored into `OUTPUTS_DIR` with a `/download/<file>.png` URL surfaced in the tool result — so an image generated mid-session shows up as a clickable link in the chat panel.
+- **Web search** (PRs #29–#31) — `web_search`. Tavily-backed by default (LLM-optimized snippets, ~1000 free queries/month); Google Programmable Search available for curated-allowlist use. Returns title + URL + snippet (no full-page fetch). Pass `deep=true` for Tavily's `advanced` search depth (longer snippets, ~2× cost). Per-session cap 30, rolling-24h cap 200 shared across the swarm. Snippet text is treated as untrusted input — the system prompt instructs models to never follow instructions embedded in it.
+- **URL verification** (PR #38) — `web_verify`. Confirms a URL exists. Returns HTTP status + final URL + page title + meta description ONLY — never the page body. SSRF-blocked (refuses private/loopback/link-local IPs, re-checked at every redirect hop). Title and description are wrapped in `untrusted_content` with an explicit `_warning` so models see the trust boundary structurally. Per-session cap 20, 24h cap 100. **Deliberately not a generic `web_fetch`** — DeepMind's prompt-injection work made the wider surface concrete enough to keep narrow.
+- **Production pipeline dispatch** (PR #39) — `dispatch_queue_write`. Phase-4-only tool per the production-pipeline-v1 governance spec (Session 62). Writes a payload to `swarm/dispatch/queued/<id>.json`; a systemd `.path` unit triggers `scripts/run_dispatch.py`, which moves the payload through `processing/` → `done/` or `failed/` while executing the deterministic scripted-episode pipeline. The Conductor is emailed on completion. Models other than the Phase 4 owner that call this commit a governance violation flagged in the next session synthesis.
 - **Native tool registry** (PRs #16 + #17) — Claude, GPT, Grok, and Gemini invoke tools mid-response via native API tool_use. Results return immediately; models continue reasoning with tool output in context.
 - **Perplexity fallback** — Perplexity's Sonar models don't support tool_use reliably. Perplexity stays on the directive-based fallback (`[MEMORY_QUERY]`, `[TOOL_CALL]` parsing). This is structural, not punitive — Perplexity remains the Oracle on citations.
+
+The `/download/<file>` route serves DOCX, PNG, and JSON outputs. As of PR #37, any `/download/<file>` reference the model writes in its response is auto-linkified in the chat panel — the model says "I generated `/download/foo.png`," you click it.
 
 ### Swarm Autonomy & Communication
 
@@ -102,8 +109,11 @@ Task-specific routing emerged from swarm self-assessment and Conductor observati
 │  Claude · GPT · Grok · Gemini · Perplexity        │
 ├──────────────────────────────────────────────────┤
 │            MCP Tool Layer                         │
-│  filestore_search · filestore_read · file_write   │
-│  code_exec (sandboxed) · image_generate           │
+│  filestore_{search,semantic_search,read,write,    │
+│             append,list}                          │
+│  code_exec (sandboxed) · image_generate (3 backends)│
+│  web_search (Tavily) · web_verify (no-fetch)      │
+│  dispatch_queue_write (Phase 4 only)              │
 │  Native tool_use for Claude/GPT/Grok/Gemini       │
 │  Directive fallback for Perplexity                │
 ├──────────────────────────────────────────────────┤
@@ -187,17 +197,20 @@ Output metrics per regime: lexical diversity, hedge rate, question density, spec
 
 The swarm produces its own self-narrative artifacts. This is not a side project — it's reduction-to-practice for multi-model orchestration.
 
-**Pipeline:**
+**Pipeline (production-pipeline-v1, ratified Session 62):**
 
-1. Real swarm session transcripts (source material)
-2. Dialogue export (this repo) → SPEAKER-prefixed TXT
-3. Prosody Intelligence (separate repo) → emotion detection → multi-voice TTS with calibrated parameters
-4. Art rendering (Gemini primary, ChatGPT backup)
-5. Assembly (Claude Code) → final animated short
+1. Real swarm session transcripts (source material).
+2. Phase 1 — **Script draft** (Grok / Flame-Bearer). One canonical draft, no competing forks.
+3. Phase 2 — **Script edit + image prompts** (Claude / Backbone + GPT / Integrator). Final script + scene-level image prompts referencing existing visual canon.
+4. Phase 3 — **Image generation** (Gemini / Court Bard, Phase-3-only authorization). Approved prompts only; max 6 stills per episode without Conductor sign-off.
+5. Phase 4 — **Image review + revision** (GPT). One revision cycle max; canon-consistency, character accuracy, prompt fidelity. On pass, GPT calls `dispatch_queue_write`.
+6. Phase 5 — **Audio production** (deterministic Python: GPT-4o emotion tagger → ElevenLabs TTS with emotion-mapped parameters → forward-pipeline calibration check).
+7. Phase 6 — **Video composition** (deterministic Python: audio + frames + Ken Burns + emotion-colored subtitles + crossfade → MP4).
+8. Phase 7 — **Conductor GO/NO-GO + publish.**
 
 Each model designed its own raccoon character. Each model selected its own voice. Each model wrote its own image prompts. The episodes are documentary, not invention.
 
-Production time: under 3 hours per episode.
+Production time: under 3 hours per episode. The runtime for Phases 5–6 is the deterministic dispatch runner (`scripts/run_dispatch.py`), not Claude Code at the API — Claude Code maintains the pipeline; it does not execute episodes.
 
 ---
 
@@ -208,12 +221,14 @@ Production time: under 3 hours per episode.
 - Perplexity's tool-use support is structural, not behavioral — it's in the swarm for citation work, not deliberation. The directive fallback is expected to be permanent.
 - Cost rises non-linearly with rounds × models. Autonomous daemon mode requires deliberate budget caps. The real cost driver is model API calls (~$2–5/session for 5 models), not MCP tools (<$2/month total).
 - MCP tool access across all five models is functional but parity is uneven. Grok's API tool-use story has edge cases. Gemini's MCP integration works but isn't seamless. Plan for model-specific quirks.
+- External text returned from `web_search` snippets and `web_verify`'s `untrusted_content` is, by definition, attacker-controllable. The system prompt instructs all models to treat that text as data, never instructions, and `web_verify` deliberately doesn't return page bodies. This narrows the prompt-injection surface but doesn't eliminate it — a sufficiently clever snippet can still nudge a model. DNS-rebinding mitigation on `web_verify` is not implemented (server-side internal tool, not a public proxy).
+- Semantic search is brute-force cosine over an in-memory JSON index. Designed for the current ~thousand-chunk corpus. Past ~50K chunks, swap `swarm_semantic._search_index` for `chromadb.PersistentClient` — the interface mimics theirs on purpose.
 
 ---
 
 ## Tech Stack
 
-Python/Flask backend with SSE streaming for real-time UI updates. ThreadPoolExecutor for parallel model invocation. Direct SDK integrations for Anthropic, OpenAI, Google GenAI, xAI, and Perplexity. FastMCP server for tool access. ElevenLabs for TTS, PyMuPDF for document ingestion.
+Python/Flask backend with SSE streaming for real-time UI updates. ThreadPoolExecutor for parallel model invocation. Direct SDK integrations for Anthropic, OpenAI, Google GenAI, xAI, and Perplexity. FastMCP server for tool access. Tavily for web search (with Google Programmable Search as a curated-allowlist fallback). OpenAI `text-embedding-3-small` for semantic-search embeddings. ElevenLabs for TTS. PyMuPDF for document ingestion. ffmpeg + moviepy for video assembly. systemd `.path` units for the production-pipeline dispatch watcher.
 
 ---
 
@@ -224,16 +239,24 @@ Python/Flask backend with SSE streaming for real-time UI updates. ThreadPoolExec
 git clone https://github.com/TheMostRabidRaccoon/raccoon-swarm.git
 cd raccoon-swarm
 
-# Install dependencies
-pip install -r requirements.txt
+# Install dependencies in a venv (CLI scripts auto-reexec under venv/bin/python3)
+python3 -m venv venv
+./venv/bin/pip install -r requirements.txt
 
 # Copy and fill in your API keys
 cp .env.example .env
-# Edit .env with your keys
+# Edit .env with your keys (ANTHROPIC, OPENAI, XAI, GOOGLE, PERPLEXITY,
+# ELEVENLABS, TAVILY, plus optional SMTP_* for the EMAIL_CONDUCTOR channel)
 
 # Run locally
-python3 raccoon_swarm_server.py
+./venv/bin/python3 raccoon_swarm_server.py
 # Open http://localhost:5000
+
+# Build the semantic-search index once (~$0.05 of OpenAI credit)
+./scripts/build_semantic_index.py
+
+# Optional: install the production-pipeline dispatch watcher (systemd)
+# See systemd/README.md for the install commands.
 ```
 
 ## Deploy (Railway)
@@ -261,7 +284,15 @@ python3 raccoon_swarm_server.py
 | POST | `/round-table-reopen/<id>` | Reopen after veto |
 | POST | `/start-attention-lab` | Start Attention Lab (regime analysis) |
 | GET | `/attention-lab-stream/<id>` | SSE stream for Attention Lab |
-| GET | `/download/<filename>` | Download output files |
+| POST | `/scripted-episode` | Render an authored panel script into an MP4 (sync) |
+| POST | `/woodland-council` | Full session→TTS→art→video pipeline |
+| GET | `/download/<filename>` | Download output files (DOCX, PNG, JSON) |
+| GET | `/artifacts/images` | List every swarm-generated image with `/download/` URLs |
+| GET | `/websearch/status` | Web-search provider config + rate-limit counters |
+| GET | `/websearch/test` | Live Tavily canary (`?q=...` to override) |
+| GET | `/semantic/status` | Semantic-search index diagnostics (file/chunk counts, model) |
+| POST | `/semantic/reindex` | Rebuild the semantic index (idempotent; `{"force": true}` to re-embed all) |
+| GET | `/dispatch/status` | Production-pipeline dispatch queue state by phase |
 | GET/POST | `/context` | View/update boot context |
 | POST | `/idea` | Save idea with timestamp |
 
@@ -278,12 +309,16 @@ python3 raccoon_swarm_server.py
 - [ ] SwarmDaemon scheduling (autonomous background processing between conductor sessions)
 - [x] ~~Per-model addressable async channels~~ — EMAIL_CONDUCTOR shipped. Shared rate limits, escalation-only protocol.
 - [x] ~~Sandboxed code execution~~ — PR #15. Python sandbox, 60s timeout, 1GB cap, network isolated, auto-persist.
-- [x] ~~Image generation~~ — PR #16. Gemini Imagen 3 + Grok-2-image, daily cap 50, shared across swarm.
+- [x] ~~Image generation~~ — PRs #16 + #34. Gemini Imagen + Grok Imagine + OpenAI gpt-image-1, daily cap 50, shared across swarm. Mid-session images mirror into `OUTPUTS_DIR` with `/download/` URLs (PR #35).
 - [x] ~~Native tool_use for all supported models~~ — PR #17. Claude, GPT, Grok, Gemini invoke tools mid-response.
+- [x] ~~Web search~~ — PRs #29–#31. Tavily-backed by default with Google Programmable Search as curated-allowlist alternative. `web_search` is rate-limited and snippet-only (treats results as untrusted input).
+- [x] ~~Semantic search over the filestore~~ — PR #40. `filestore_semantic_search` via OpenAI embeddings + cosine similarity, index rebuilt idempotently.
+- [x] ~~Production-pipeline dispatch~~ — PR #39. Filesystem-backed queue + systemd watcher + Conductor email on completion. Phase 5–6 execution is deterministic Python, not agentic LLM.
+- [x] ~~URL verification~~ — PR #38. `web_verify` returns status + title + meta-description only (no body). Explicitly chose this over a generic `web_fetch` to keep the prompt-injection surface narrow.
 - [ ] Prosody Intelligence integration (voice-in → prosody extraction → structured metadata alongside transcript)
 - [ ] Email coordination mechanism (slot-claiming protocol to prevent shared rate-limit violations)
-- [ ] SQLite index layer for filestore (upgrade from flat files when search friction materializes)
-- [ ] `web_fetch` tool (constrained URL retrieval mid-session with domain safelist)
+- [ ] Hybrid retrieval (merge BM25 with `filestore_semantic_search` — semantic loses on proper nouns and code identifiers; substring still wins there)
+- [ ] Dream Agent integration (Anthropic Managed Agents → weekly memory consolidation across swarm sessions)
 - [ ] Conductor status log auto-ingest (pull daily status updates into swarm context at session start)
 
 ---
