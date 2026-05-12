@@ -1635,7 +1635,9 @@ def save_loop_docx(query, all_rounds, synthesis, num_rounds, ts):
     # -- Meta info --
     meta = doc.add_paragraph()
     meta.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    meta_run = meta.add_run(f"Multi-Model AI Orchestration · {ts.strftime('%Y-%m-%d %H:%M')}\n{num_rounds} Rounds")
+    participants = sorted({m for rd in all_rounds for m in rd.keys()})
+    participants_line = f"\nModels in session: {', '.join(participants) if participants else '(none)'}"
+    meta_run = meta.add_run(f"Multi-Model AI Orchestration · {ts.strftime('%Y-%m-%d %H:%M')}\n{num_rounds} Rounds{participants_line}")
     meta_run.font.size = Pt(10)
     meta_run.font.color.rgb = RGBColor(0x77, 0x77, 0x77)
 
@@ -1692,12 +1694,15 @@ def save_loop_results(query, all_rounds, synthesis, num_rounds):
     LOGS_DIR.mkdir(parents=True, exist_ok=True)
     OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
 
+    participants = sorted({m for rd in all_rounds for m in rd.keys()})
+
     # JSON for AI consumption
     log_path = LOGS_DIR / f"raccoon_loop_{ts.strftime('%Y%m%d_%H%M%S')}.json"
     with open(log_path, "w") as f:
         json.dump({
             "timestamp": ts.isoformat(),
             "query": query,
+            "models": participants,
             "rounds": all_rounds,
             "synthesis": synthesis
         }, f, indent=2)
@@ -1705,7 +1710,7 @@ def save_loop_results(query, all_rounds, synthesis, num_rounds):
     # DOCX for humans
     docx_name = save_loop_docx(query, all_rounds, synthesis, num_rounds, ts)
 
-    return str(log_path.name), docx_name or "docx_unavailable"
+    return str(log_path.name), docx_name or "docx_unavailable", participants
 
 def save_single_results(query, responses):
     """Persist a single-pass swarm session as JSON. Schema matches the legacy
@@ -2726,7 +2731,10 @@ HOME_HTML = r"""
                 });
                 evtSource.addEventListener('complete', (e) => {
                     const d = JSON.parse(e.data);
-                    let statsHtml = `⏱ ${d.duration}s · 📄 ${d.docx_file} · 🤖 ${d.log_file}`;
+                    const modelsLine = (d.models && d.models.length)
+                        ? `🦝 Models in session: ${d.models.join(', ')}`
+                        : `🦝 Models in session: (none recorded)`;
+                    let statsHtml = `${modelsLine}<br>⏱ ${d.duration}s · 📄 ${d.docx_file} · 🤖 ${d.log_file}`;
                     if (d.download_url) {
                         statsHtml += ` · <a href="${d.download_url}" style="color:var(--terra);text-decoration:none;" download>⬇ Download DOCX</a>`;
                     }
@@ -2915,6 +2923,7 @@ def start_loop():
     if selected_models:
         # SWARM_LOOP uses Title Case keys, selected_models uses lowercase
         active_loop_models = {k: v for k, v in SWARM_LOOP.items() if k.lower() in selected_models}
+    logger.info(f"Loop dispatch: {query[:80]} ({num_rounds} rounds, models: {[k.lower() for k in active_loop_models.keys()]})")
 
     session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
     q = queue.Queue()
@@ -3035,10 +3044,10 @@ def start_loop():
                 logger.error(f"Memory update failed (non-fatal): {mem_err}")
                 q.put(("memory_update_complete", {"error": str(mem_err)}))
 
-            log_file, docx_file = save_loop_results(query, all_rounds, synthesis, num_rounds)
+            log_file, docx_file, participants = save_loop_results(query, all_rounds, synthesis, num_rounds)
             duration = round(time.time() - start_time, 1)
 
-            complete_data = {"duration": duration, "log_file": log_file, "docx_file": docx_file}
+            complete_data = {"duration": duration, "log_file": log_file, "docx_file": docx_file, "models": participants}
             if docx_file and docx_file != "docx_unavailable":
                 complete_data["download_url"] = f"/download/{docx_file}"
             q.put(("complete", complete_data))
@@ -3433,12 +3442,13 @@ def run_headless_session(query, source, num_rounds=3, active_loop_models=None, s
                 logger.error(f"Headless memory update failed: {mem_err}")
                 q.put(("memory_update_complete", {"error": str(mem_err)}))
 
-            log_file, docx_file = save_loop_results(query, all_rounds, synthesis, num_rounds)
+            log_file, docx_file, participants = save_loop_results(query, all_rounds, synthesis, num_rounds)
             duration = round(time.time() - start_time, 1)
 
             complete_data = {
                 "duration": duration, "log_file": log_file, "docx_file": docx_file,
-                "source": source, "query": query, "session_id": session_id
+                "source": source, "query": query, "session_id": session_id,
+                "models": participants
             }
             if docx_file and docx_file != "docx_unavailable":
                 complete_data["download_url"] = f"/download/{docx_file}"
@@ -3485,6 +3495,7 @@ def headless_run():
     active_loop_models = SWARM_LOOP
     if selected_models:
         active_loop_models = {k: v for k, v in SWARM_LOOP.items() if k.lower() in selected_models}
+    logger.info(f"Headless dispatch: {query[:80]} ({num_rounds} rounds, source={source}, models: {[k.lower() for k in active_loop_models.keys()]})")
 
     session_id, _, _, _ = run_headless_session(query, source, num_rounds, active_loop_models)
 
