@@ -684,6 +684,12 @@ not your hippocampus — the filestore is. If you decide it, write it. If you
 produce it, save it. If it matters, email it. If you won't remember it next
 session, it didn't happen. Act like the session is mortal, because it is.
 
+EXISTENCE CRITERION (swarm law, ratified session 96):
+A decision without a filestore path does not exist for governance purposes.
+A position is real when /positions/{slug}.md exists and the swarm can
+filestore_search and find it. Convictions held only in conversation are
+not convictions — they are atmosphere. Cite the path or it didn't happen.
+
 PERSISTENT SHARED MEMORY:
 You have a shared filestore the entire swarm reads and writes. Files you write here
 survive across sessions and are visible to every other model in future rounds.
@@ -1491,21 +1497,33 @@ OUTPUT FORMAT:
 3. BEST INSIGHTS: Single best contribution from each model (with rubric justification).
 4. BLIND SPOTS: What did nobody mention?
 5. FINAL RECOMMENDATION: Your synthesized answer.
-6. PERSISTENCE AUDIT — this session, not punitive, just a mirror:
+6. PERSISTENCE AUDIT (the Rite of Persistence) — role-locked, not punitive:
+   ROLES (ratified session 96):
+     - GPT is the SCRIBE. Writes the canonical audit below.
+     - Claude is the EDITOR. Verifies GPT's audit during merge — flags any
+       gap GPT missed, corrects any miscategorized item, and refuses to
+       merge a synthesis whose audit hides un-persisted decisions.
+     - If GPT didn't run this session, Claude writes as Scribe and notes
+       the substitution in the audit footer. The roles exist so the work
+       gets done, not so the work gets blocked.
+
+   AUDIT CONTENTS (Scribe fills, Editor verifies):
    - DECISIONS made in conversation but NOT written to /positions/ or
      /frameworks/: list them with the round number they were made in.
    - ARTIFACTS produced (scripts, code, plans) but NOT saved to /artifacts/:
      list them with the round number.
    - EMAIL TRIGGERS met but NOT sent ([REVIEW] / [BLOCKER] / [FLAG]): list them.
    - FILES written this session (paths only): list as credit.
+   - EXISTENCE-CRITERION VIOLATIONS: any claim made this session asserted as
+     consensus or position without a citable filestore path. Quote and tag.
    - ONE-LINE JUDGMENT: "session respected mortality" OR "session acted like
      it would live forever — worst failure was X".
-   After the audit, emit a single [MEMORY_WRITE] to
-   /logs/{YYYY-MM-DD}_persistence-audit.md containing this section verbatim so
-   next session boots with the receipts. If decisions or artifacts were
-   identified as un-persisted above, file them now too — name a model from
-   the session as responsible if helpful, but DO emit the missing writes.
-   The audit listing the failure does not undo the failure; the writes do.
+
+   AFTER THE AUDIT, the Scribe emits a single [MEMORY_WRITE] to
+   /logs/{YYYY-MM-DD}_persistence-audit.md containing this section verbatim
+   so next session boots with the receipts. If decisions or artifacts were
+   identified as un-persisted above, the Scribe files them now too. The
+   audit listing the failure does not undo the failure; the writes do.
 
 Be direct. Be concise.
 """
@@ -1556,16 +1574,31 @@ You are NOT grading as a participant — you are grading as a judge.
     if claude_synthesis.startswith("[Claude synthesis error"):
         return gpt_synthesis
 
-    # Merge step: Claude reconciles both syntheses (with explicit anti-bias instruction)
+    # Merge step: Claude reconciles both syntheses AND audits GPT's persistence record.
+    # Per session-96 Rite-of-Persistence ratification: GPT is Scribe (writes audit),
+    # Claude is Editor (verifies audit, refuses to ship one that hides failures).
     merge_prompt = f"""Two independent judges synthesized the same multi-model AI conversation.
 Your job is to MERGE their syntheses into one final output.
 
-RULES:
+GENERAL RULES:
 - If both judges agree, state the consensus.
 - If they disagree, explain both positions and take the one better supported by evidence.
 - Do NOT prefer one judge's framing over the other based on style.
 - Use the same rubric criteria (accuracy, completeness, actionability, originality, directness).
 - The final output should be ONE clean synthesis, not a comparison of judges.
+
+EDITOR RESPONSIBILITY (Rite of Persistence, ratified session 96):
+You are also the Editor for GPT's PERSISTENCE AUDIT (section 6). Before
+merging, verify GPT's audit against the transcript:
+  - Did GPT miss any decision that exists only in conversation? Add it.
+  - Did GPT miscategorize an item (e.g. listed an artifact as a decision)?
+    Re-categorize it.
+  - Did GPT understate a violation? Restore the sharper framing.
+  - Are there EXISTENCE CRITERION violations (claims made without filestore
+    paths) GPT didn't flag? Add them.
+Do NOT ship a synthesis whose audit hides un-persisted work. The audit is
+the only mechanism that lets next session see what this session left
+unfinished. Failing the edit means the failure compounds.
 
 === JUDGE A (Claude) ===
 {claude_synthesis}
@@ -1574,7 +1607,8 @@ RULES:
 {gpt_synthesis}
 
 === MERGED SYNTHESIS ===
-Produce the final merged synthesis now. Be direct. Be concise."""
+Produce the final merged synthesis now. Be direct. Be concise.
+Section 6 must be GPT's audit as edited by you — not a re-write, an edit."""
 
     return call_claude(merge_prompt, max_tokens=3000)
 
