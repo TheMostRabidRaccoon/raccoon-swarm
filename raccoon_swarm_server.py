@@ -159,6 +159,45 @@ VOICE_CAST = {
 AUDIO_CACHE_DIR = os.path.join(tempfile.gettempdir(), "rri_voice_cache")
 os.makedirs(AUDIO_CACHE_DIR, exist_ok=True)
 
+
+def _normalize_loudness(mp3_bytes: bytes, label: str = "") -> bytes:
+    """Single-pass ffmpeg loudnorm to EBU R128 broadcast standard
+    (-16 LUFS integrated / -1 dBTP / 11 LU range). Keeps clips consistent
+    across raccoons and across episodes so E02/E03 don't need a manual
+    levels pass. Returns input bytes unchanged if ffmpeg is missing or
+    fails — defensive, never make TTS worse."""
+    import subprocess
+    fin_path = fout_path = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False, dir=AUDIO_CACHE_DIR) as fin:
+            fin.write(mp3_bytes)
+            fin_path = fin.name
+        fout_path = fin_path + ".norm.mp3"
+        subprocess.run(
+            [
+                "ffmpeg", "-y", "-i", fin_path,
+                "-af", "loudnorm=I=-16:LRA=11:TP=-1",
+                "-codec:a", "libmp3lame", "-b:a", "128k",
+                fout_path,
+            ],
+            capture_output=True, timeout=60, check=True,
+        )
+        with open(fout_path, "rb") as f:
+            normalized = f.read()
+        logger.info(f"loudnorm ok — {label} {len(mp3_bytes)//1024}KB -> {len(normalized)//1024}KB")
+        return normalized
+    except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired) as e:
+        logger.warning(f"loudnorm fell through for {label}: {type(e).__name__}: {e}")
+        return mp3_bytes
+    finally:
+        for p in (fin_path, fout_path):
+            if p and os.path.exists(p):
+                try:
+                    os.remove(p)
+                except OSError:
+                    pass
+
+
 def generate_voice(text, model_name):
     if not ELEVENLABS_API_KEY:
         return None
@@ -192,8 +231,9 @@ def generate_voice(text, model_name):
             timeout=30
         )
         if resp.status_code == 200:
+            normalized = _normalize_loudness(resp.content, label=f"{model_name}/{text_hash[:8]}")
             with open(cache_path, "wb") as f:
-                f.write(resp.content)
+                f.write(normalized)
             return cache_path
         else:
             logging.error(f"TTS error for {model_name}: {resp.status_code}")
