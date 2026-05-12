@@ -3267,6 +3267,14 @@ def websearch_status():
     return jsonify(swarm_websearch.status())
 
 
+@app.route("/prosody/status", methods=["GET"])
+@require_auth
+def prosody_status():
+    """Prosody engine diagnostics: reachable?, configured URL, rate-limit counters."""
+    import swarm_prosody
+    return jsonify(swarm_prosody.status())
+
+
 @app.route("/semantic/status", methods=["GET"])
 @require_auth
 def semantic_status():
