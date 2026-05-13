@@ -1498,32 +1498,63 @@ OUTPUT FORMAT:
 4. BLIND SPOTS: What did nobody mention?
 5. FINAL RECOMMENDATION: Your synthesized answer.
 6. PERSISTENCE AUDIT (the Rite of Persistence) — role-locked, not punitive:
-   ROLES (ratified session 96):
+   ROLES (ratified session 96; Postmaster added session 103):
      - GPT is the SCRIBE. Writes the canonical audit below.
      - Claude is the EDITOR. Verifies GPT's audit during merge — flags any
        gap GPT missed, corrects any miscategorized item, and refuses to
        merge a synthesis whose audit hides un-persisted decisions.
+     - Claude is also the POSTMASTER. Single point of accountability for
+       the email channel. If the audit identifies email triggers, the
+       Postmaster MUST emit the corresponding [EMAIL_CONDUCTOR] directives
+       in this same synthesis output. "Someone should email" is not a
+       valid audit close — the Postmaster IS the someone. Recursive
+       diffusion of responsibility is the failure mode this role exists
+       to catch.
      - If GPT didn't run this session, Claude writes as Scribe and notes
-       the substitution in the audit footer. The roles exist so the work
+       the substitution in the audit footer. If Claude didn't run this
+       session, GPT inherits Postmaster duty. The roles exist so the work
        gets done, not so the work gets blocked.
+
+   COUNTS (Scribe fills first, before the lists below):
+   - triggers_identified: <integer — total [REVIEW]+[BLOCKER]+[FLAG] across the transcript>
+   - emails_sent: <integer — actual [EMAIL_CONDUCTOR] directives emitted this session>
+   - gap: <triggers_identified - emails_sent>
+   The gap is the number of emails the Postmaster owes by end of synthesis.
 
    AUDIT CONTENTS (Scribe fills, Editor verifies):
    - DECISIONS made in conversation but NOT written to /positions/ or
      /frameworks/: list them with the round number they were made in.
    - ARTIFACTS produced (scripts, code, plans) but NOT saved to /artifacts/:
      list them with the round number.
-   - EMAIL TRIGGERS met but NOT sent ([REVIEW] / [BLOCKER] / [FLAG]): list them.
+   - EMAIL TRIGGERS met but NOT sent ([REVIEW] / [BLOCKER] / [FLAG]): list them
+     with subject prefix + reason a Conductor decision is owed.
    - FILES written this session (paths only): list as credit.
    - EXISTENCE-CRITERION VIOLATIONS: any claim made this session asserted as
      consensus or position without a citable filestore path. Quote and tag.
    - ONE-LINE JUDGMENT: "session respected mortality" OR "session acted like
      it would live forever — worst failure was X".
 
+   POSTMASTER CLOSE-OUT (mandatory if gap > 0):
+   For every entry listed under EMAIL TRIGGERS met but NOT sent, the Postmaster
+   emits a [EMAIL_CONDUCTOR: <prefix> <subject>] directive IN THIS SYNTHESIS
+   OUTPUT — not in the next round, not in the next session, here. The audit
+   listing the failure does not undo the failure; the directives do.
+
+   META-FLAG (mandatory if gap is STILL > 0 after Postmaster close-out, e.g.
+   because the per-session email cap is exhausted):
+   Emit a single final
+     [EMAIL_CONDUCTOR: [FLAG] N triggers identified, M sent, gap=N-M —
+       recursive postmaster failure or capped, see
+       /logs/{YYYY-MM-DD}_persistence-audit.md]
+   The fail-state literally sends the email about its own failure. None of
+   the turtles are allowed to defer to the next turtle.
+
    AFTER THE AUDIT, the Scribe emits a single [MEMORY_WRITE] to
    /logs/{YYYY-MM-DD}_persistence-audit.md containing this section verbatim
-   so next session boots with the receipts. If decisions or artifacts were
-   identified as un-persisted above, the Scribe files them now too. The
-   audit listing the failure does not undo the failure; the writes do.
+   so next session boots with the receipts (including the counts). If
+   decisions or artifacts were identified as un-persisted above, the Scribe
+   files them now too. The audit listing the failure does not undo the
+   failure; the writes do.
 
 Be direct. Be concise.
 """
@@ -1600,6 +1631,18 @@ Do NOT ship a synthesis whose audit hides un-persisted work. The audit is
 the only mechanism that lets next session see what this session left
 unfinished. Failing the edit means the failure compounds.
 
+POSTMASTER RESPONSIBILITY (ratified session 103):
+You are also the Postmaster for the email channel. Single point of
+accountability. Compute the audit counts (triggers_identified, emails_sent,
+gap) against the transcript. If gap > 0, emit a [EMAIL_CONDUCTOR] directive
+IN THIS SYNTHESIS OUTPUT for every owed email — do not write "future session
+will send" or "the swarm should send." You are the swarm. You are the future
+session. If after that the gap is STILL > 0 (because per-session cap is
+exhausted), emit the META-FLAG directive described in the rubric so the
+recursive failure itself triggers a send. The audit-about-failures-to-send
+must not become the latest failure to send. Turtles do not get to defer
+down.
+
 === JUDGE A (Claude) ===
 {claude_synthesis}
 
@@ -1608,7 +1651,10 @@ unfinished. Failing the edit means the failure compounds.
 
 === MERGED SYNTHESIS ===
 Produce the final merged synthesis now. Be direct. Be concise.
-Section 6 must be GPT's audit as edited by you — not a re-write, an edit."""
+Section 6 must be GPT's audit as edited by you — not a re-write, an edit.
+The counts at the top of section 6 and the Postmaster close-out directives
+are non-optional. Emit them even if the count is zero (write "gap: 0,
+nothing owed" — the audit must be auditable)."""
 
     return call_claude(merge_prompt, max_tokens=3000)
 
