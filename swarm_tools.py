@@ -20,6 +20,7 @@ import swarm_filestore
 import swarm_codeexec
 import swarm_websearch
 import swarm_webverify
+import swarm_prosody
 import swarm_dispatch
 import swarm_semantic
 
@@ -129,6 +130,26 @@ def _dispatch_web_search(
 
 def _dispatch_web_verify(url: str, session_id: str = "unknown") -> dict:
     return swarm_webverify.verify(url=url, session_id=session_id)
+
+
+def _dispatch_prosody_analyze(
+    text: str,
+    voice: str = "claude",
+    generate_audio: bool = False,
+    multi_voice: bool = False,
+    crossfade_ms: int = 100,
+    model: str = "unknown",
+    session_id: str = "unknown",
+) -> dict:
+    return swarm_prosody.analyze(
+        text=text,
+        voice=voice,
+        generate_audio=generate_audio,
+        multi_voice=multi_voice,
+        crossfade_ms=crossfade_ms,
+        session_id=session_id,
+        model=model,
+    )
 
 
 def _dispatch_filestore_semantic_search(
@@ -404,6 +425,32 @@ TOOL_DEFINITIONS: dict[str, dict[str, Any]] = {
         },
         "dispatch": _dispatch_web_verify,
     },
+    "prosody_analyze": {
+        "description": (
+            "Run a line of script through the prosody-intelligence reverse "
+            "pipeline. Returns an emotion_map (per-segment emotion + intensity "
+            "+ TTS parameters). Optionally generates audio rendered in a "
+            "raccoon voice (returns audio_url). Use this for: E02/E03 prosody "
+            "tuning, A/B-comparing voice readings of the same line, generating "
+            "performance-quality TTS that respects script emotion rather than "
+            "ElevenLabs' default neutral read. Engine: prosody-intelligence "
+            "(separate RRI service). Per-session cap (20) and 24h cap (100). "
+            "If generate_audio=True the engine calls ElevenLabs — counts "
+            "against that channel's budget too."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "text": {"type": "string", "description": "Line/script to analyze. Min 2 chars."},
+                "voice": {"type": "string", "description": "Voice for TTS render: 'claude', 'grok', 'gemini', 'gpt', 'perplexity'. Default 'claude'."},
+                "generate_audio": {"type": "boolean", "description": "If true, also render audio via ElevenLabs. Default false (returns emotion_map only)."},
+                "multi_voice": {"type": "boolean", "description": "Multi-voice render in one pass (engine splits by tagged speaker). Default false."},
+                "crossfade_ms": {"type": "integer", "description": "Crossfade between voice segments in multi-voice mode, ms. Default 100."},
+            },
+            "required": ["text"],
+        },
+        "dispatch": _dispatch_prosody_analyze,
+    },
     "image_generate": {
         "description": (
             "Generate an image from a text prompt via Gemini Imagen, Grok "
@@ -444,9 +491,9 @@ def dispatch(name: str, args: dict, calling_model: str = "unknown", session_id: 
     try:
         # Inject calling_model where the dispatch supports it
         params = (args or {}).copy()
-        if name in ("code_exec", "image_generate", "web_search") and "model" not in params:
+        if name in ("code_exec", "image_generate", "web_search", "prosody_analyze") and "model" not in params:
             params["model"] = calling_model
-        if name in ("web_search", "web_verify", "dispatch_queue_write") and "session_id" not in params:
+        if name in ("web_search", "web_verify", "dispatch_queue_write", "prosody_analyze") and "session_id" not in params:
             params["session_id"] = session_id
         if name == "dispatch_queue_write" and "model" not in params:
             params["model"] = calling_model
