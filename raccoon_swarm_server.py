@@ -3111,6 +3111,22 @@ def start_loop():
             synthesis = run_synthesis(query, all_rounds)
             q.put(("synthesis_complete", {"synthesis": synthesis}))
 
+            # Parse directives FROM the synthesis output itself. Without this,
+            # Postmaster [EMAIL_CONDUCTOR] directives and audit [MEMORY_WRITE]
+            # directives emitted in section 6 render as decorative text in the
+            # docx and never execute — the recursive-postmaster failure.
+            try:
+                synth_pseudo = {"synthesizer": synthesis}
+                fs_synth = swarm_filestore.process_round_writes(synth_pseudo)
+                mail_synth = swarm_mail.process_round_emails(synth_pseudo, session_id)
+                if fs_synth.get("writes") or fs_synth.get("appends"):
+                    logger.info(f"synthesis directives: filestore {fs_synth}")
+                if mail_synth.get("sent") or mail_synth.get("rejected"):
+                    logger.info(f"synthesis directives: mail {mail_synth}")
+                q.put(("synthesis_directives", {"filestore": fs_synth, "mail": mail_synth}))
+            except Exception as e:
+                logger.error(f"synthesis directive parse failed (non-fatal): {e}")
+
             # Phase 1: Extract and persist swarm memory
             q.put(("memory_update_start", {}))
             try:
@@ -3515,6 +3531,22 @@ def run_headless_session(query, source, num_rounds=3, active_loop_models=None, s
             q.put(("synthesis_start", {}))
             synthesis = run_synthesis(query, all_rounds)
             q.put(("synthesis_complete", {"synthesis": synthesis}))
+
+            # Parse directives FROM the synthesis output itself. Without this,
+            # Postmaster [EMAIL_CONDUCTOR] directives and audit [MEMORY_WRITE]
+            # directives emitted in section 6 render as decorative text in the
+            # docx and never execute — the recursive-postmaster failure.
+            try:
+                synth_pseudo = {"synthesizer": synthesis}
+                fs_synth = swarm_filestore.process_round_writes(synth_pseudo)
+                mail_synth = swarm_mail.process_round_emails(synth_pseudo, session_id)
+                if fs_synth.get("writes") or fs_synth.get("appends"):
+                    logger.info(f"synthesis directives [headless]: filestore {fs_synth}")
+                if mail_synth.get("sent") or mail_synth.get("rejected"):
+                    logger.info(f"synthesis directives [headless]: mail {mail_synth}")
+                q.put(("synthesis_directives", {"filestore": fs_synth, "mail": mail_synth}))
+            except Exception as e:
+                logger.error(f"synthesis directive parse failed (non-fatal): {e}")
 
             # Persist memory
             q.put(("memory_update_start", {}))
