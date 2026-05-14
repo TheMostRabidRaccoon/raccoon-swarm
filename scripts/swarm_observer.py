@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ruff: noqa: E402
 """swarm_observer — weekly cross-session digest for the Conductor.
 
 Reads the swarm filestore (~/raccoon-swarm/swarm/ by default) plus recent
@@ -31,18 +32,29 @@ Cron suggestion (weekly Sunday 8am):
 """
 from __future__ import annotations
 
-import argparse
 import os
-import smtplib
 import sys
+from pathlib import Path
+
+# Self-bootstrap into the swarm's venv if we're not already there. Looks for
+# {repo_root}/venv/bin/python3 next to this script's parent dir. Means the
+# script "just works" via `./scripts/swarm_observer.py` without remembering
+# `source venv/bin/activate` — and cron entries don't need venv-activation
+# wrappers either.
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+_VENV_PYTHON = _REPO_ROOT / "venv" / "bin" / "python3"
+if _VENV_PYTHON.exists() and Path(sys.executable).resolve() != _VENV_PYTHON.resolve():
+    os.execv(str(_VENV_PYTHON), [str(_VENV_PYTHON), __file__, *sys.argv[1:]])
+
+import argparse
+import smtplib
 from datetime import datetime, timedelta
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-from pathlib import Path
 
 try:
     from dotenv import load_dotenv
-    load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+    load_dotenv(_REPO_ROOT / ".env")
 except ImportError:
     pass
 
