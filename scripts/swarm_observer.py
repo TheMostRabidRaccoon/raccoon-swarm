@@ -31,18 +31,28 @@ Cron suggestion (weekly Sunday 8am):
 """
 from __future__ import annotations
 
-import argparse
 import os
-import smtplib
 import sys
-from datetime import datetime, timedelta
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
 from pathlib import Path
+
+# Self-bootstrap into the swarm's venv if we're not already there. Looks for
+# {repo_root}/venv/bin/python3 next to this script's parent dir. Means
+# `./scripts/swarm_observer.py` "just works" — no `source venv/bin/activate`
+# step — and cron entries don't need a venv-activation wrapper either.
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+_VENV_PYTHON = _REPO_ROOT / "venv" / "bin" / "python3"
+if _VENV_PYTHON.exists() and Path(sys.executable).resolve() != _VENV_PYTHON.resolve():
+    os.execv(str(_VENV_PYTHON), [str(_VENV_PYTHON), __file__, *sys.argv[1:]])
+
+import argparse  # noqa: E402
+import smtplib  # noqa: E402
+from datetime import datetime, timedelta  # noqa: E402
+from email.mime.multipart import MIMEMultipart  # noqa: E402
+from email.mime.text import MIMEText  # noqa: E402
 
 try:
     from dotenv import load_dotenv
-    load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+    load_dotenv(_REPO_ROOT / ".env")
 except ImportError:
     pass
 
