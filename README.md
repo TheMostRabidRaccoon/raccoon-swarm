@@ -52,16 +52,17 @@ Five frontier LLMs (Claude, GPT, Grok, Gemini, Perplexity) in structured paralle
 - **Filestore Conventions** — One concept per file. YAML frontmatter with date, source, and tags. Append-only semantics for `/positions/` (resolved positions are never overwritten). File naming convention: `{YYYY-MM-DD}_{model}_{topic}.md`. These conventions were proposed, debated, and adopted by the swarm itself.
 - **Environment-Aware Storage** — Google Drive sync locally, persistent volume when hosted. Vault directory with rotating audit logs.
 
-### MCP Tool Access (PRs #14–#42)
+### MCP Tool Access (PRs #14–#53)
 
 All five models can invoke tools mid-response via native API tool_use. The MCP server exposes:
 
 - **Filestore tools** (PR #14) — `filestore_search`, `filestore_read`, `filestore_list`, `filestore_write`, `filestore_append`. Substring search across the persistent filestore. Models find resolved positions, prior artifacts, and session history without knowing exact filenames.
 - **Filestore semantic search** (PR #40) — `filestore_semantic_search`. Meaning-based retrieval via OpenAI `text-embedding-3-small` + cosine similarity. Closes the gap when a query phrasing doesn't match the file's wording. Hand-rolled in ~250 lines of numpy without `chromadb` — readable top-to-bottom as a RAG primer. Index lives at `<storage>/swarm/_semantic_index/index.json`, rebuilt idempotently via `scripts/build_semantic_index.py` (only re-embeds files whose content hash changed).
 - **Sandboxed code execution** (PR #15) — Python runner with 60s timeout, 1GB memory cap, network isolated via Linux namespaces. Outputs auto-persist to `/artifacts/code-runs/` with code, stdout, stderr, and manifest. The computer is the arbiter — no more narrated math.
-- **Image generation** (PRs #16, #34) — three backends: Gemini Imagen, Grok Imagine, OpenAI gpt-image-1 (with dall-e-3 fallback). Daily cap of 50 shared across the swarm. Outputs persist to `/artifacts/images/` AND are mirrored into `OUTPUTS_DIR` with a `/download/<file>.png` URL surfaced in the tool result — so an image generated mid-session shows up as a clickable link in the chat panel.
+- **Image generation** (PRs #16, #34) — three backends: Gemini Imagen, Grok Imagine, OpenAI gpt-image-1 (with dall-e-3 fallback). Daily cap of 50 shared across the swarm. Outputs persist to `/artifacts/images/` AND are mirrored into `OUTPUTS_DIR` with a `/download/<file>.png` URL surfaced in the tool result — so an image generated mid-session shows up as a clickable link in the chat panel. Server-side image compression (PR #34) downsizes uploaded images to Anthropic's 1568px / JPEG-q80 ceiling before sending them on, so model APIs don't 413 on routine multi-image prompts.
 - **Web search** (PRs #29–#31) — `web_search`. Tavily-backed by default (LLM-optimized snippets, ~1000 free queries/month); Google Programmable Search available for curated-allowlist use. Returns title + URL + snippet (no full-page fetch). Pass `deep=true` for Tavily's `advanced` search depth (longer snippets, ~2× cost). Per-session cap 30, rolling-24h cap 200 shared across the swarm. Snippet text is treated as untrusted input — the system prompt instructs models to never follow instructions embedded in it.
 - **URL verification** (PR #38) — `web_verify`. Confirms a URL exists. Returns HTTP status + final URL + page title + meta description ONLY — never the page body. SSRF-blocked (refuses private/loopback/link-local IPs, re-checked at every redirect hop). Title and description are wrapped in `untrusted_content` with an explicit `_warning` so models see the trust boundary structurally. Per-session cap 20, 24h cap 100. **Deliberately not a generic `web_fetch`** — DeepMind's prompt-injection work made the wider surface concrete enough to keep narrow.
+- **Prosody analysis** (PR #48) — `prosody_analyze`. Wraps the separate [prosody-intelligence](https://github.com/TheMostRabidRaccoon/prosody-intelligence) Flask service. Text → emotion map → optional TTS render in any raccoon's voice. Engine location is env-configurable (`PROSODY_ENGINE_URL`, default `http://localhost:5050`), so the engine can run on the same host, on a Mac on the LAN, or eventually on a hosted URL — no code change needed when topology shifts. Per-session cap 20, 24h cap 100 (the engine calls ElevenLabs under the hood when `generate_audio=true`, so it's a real cost).
 - **Production pipeline dispatch** (PR #39) — `dispatch_queue_write`. Phase-4-only tool per the production-pipeline-v1 governance spec (Session 62). Writes a payload to `swarm/dispatch/queued/<id>.json`; a systemd `.path` unit triggers `scripts/run_dispatch.py`, which moves the payload through `processing/` → `done/` or `failed/` while executing the deterministic scripted-episode pipeline. The Conductor is emailed on completion. Models other than the Phase 4 owner that call this commit a governance violation flagged in the next session synthesis.
 - **Native tool registry** (PRs #16 + #17) — Claude, GPT, Grok, and Gemini invoke tools mid-response via native API tool_use. Results return immediately; models continue reasoning with tool output in context.
 - **Perplexity fallback** — Perplexity's Sonar models don't support tool_use reliably. Perplexity stays on the directive-based fallback (`[MEMORY_QUERY]`, `[TOOL_CALL]` parsing). This is structural, not punitive — Perplexity remains the Oracle on citations.
@@ -70,9 +71,18 @@ The `/download/<file>` route serves DOCX, PNG, and JSON outputs. As of PR #37, a
 
 ### Swarm Autonomy & Communication
 
-- **EMAIL_CONDUCTOR** — Asynchronous communication channel from swarm nodes to the human Conductor. Rate-limited (6 per session, 10 per rolling 24 hours) and shared across all models. Used for: human decision needed, broken assumption, deadline at risk, high-confidence pattern shift, or notable observations.
+- **EMAIL_CONDUCTOR** — Asynchronous communication channel from swarm nodes to the human Conductor. Rate-limited (6 per session, 10 per rolling 24 hours) and shared across all models. Subject lines use the `[REVIEW]` / `[BLOCKER]` / `[FLAG]` taxonomy (PR #45) so the Conductor's inbox filters can route by urgency. As of PR #50, the directive parser runs against the final synthesis output as well as per-round model outputs — so directives emitted by the Postmaster in section 6 of the audit actually execute instead of rendering as decorative text.
 - **Emergent Self-Governance** — The swarm formalizes its own operational procedures without Conductor prompting. Examples include: the Intellectual Work Test, filestore conventions, email coordination protocols, and "no vendor/tool claims without Conductor confirmation" (triggered after a model hallucinated MCP tooling claims in Session 58).
 - **Swarm-Authored Policy** — Resolved positions and operational rules proposed by models during deliberation are voted on, documented, and enforced by the swarm. The Conductor ratifies but does not originate most procedural rules.
+
+#### Governance Primitives (ratified swarm law)
+
+- **The Existence Criterion** (PR #47, ratified session 96) — *A decision without a filestore path does not exist for governance purposes. A position is real when `/positions/{slug}.md` exists and the swarm can `filestore_search` and find it. Convictions held only in conversation are not convictions — they are atmosphere. Cite the path or it didn't happen.* This single rule moved the swarm from talking-about-things to writing-things-down.
+- **The Rite of Persistence** (PR #45, refined PRs #47 + #49) — Every synthesis carries a section-6 Persistence Audit with explicit counts: decisions made vs. decisions written, artifacts produced vs. artifacts saved, email triggers met vs. emails sent. Role-locked:
+  - **Scribe** (GPT) writes the canonical audit
+  - **Editor** (Claude) verifies it during merge and refuses to ship one that hides un-persisted decisions
+  - **Postmaster** (Claude) emits the actual `[EMAIL_CONDUCTOR]` directives owed by the audit — *"You are the swarm. You are the future session. Turtles do not get to defer down."*
+- **Closing Checklist** — Every model, every turn, runs five questions before ending: did I decide anything (→ `MEMORY_WRITE`), produce anything (→ `MEMORY_WRITE`), surface a blocker (→ `EMAIL_CONDUCTOR [BLOCKER]`), finish something for review (→ `EMAIL_CONDUCTOR [REVIEW]`), or break/collide/shift (→ `EMAIL_CONDUCTOR [FLAG]`). Saying "I should write X" without emitting the directive is the failure mode the checklist exists to catch.
 
 ### Model Routing
 
@@ -245,8 +255,16 @@ python3 -m venv venv
 
 # Copy and fill in your API keys
 cp .env.example .env
-# Edit .env with your keys (ANTHROPIC, OPENAI, XAI, GOOGLE, PERPLEXITY,
-# ELEVENLABS, TAVILY, plus optional SMTP_* for the EMAIL_CONDUCTOR channel)
+# Edit .env with your keys:
+#   Models:    ANTHROPIC_API_KEY, OPENAI_API_KEY, XAI_API_KEY,
+#              GOOGLE_API_KEY, PERPLEXITY_API_KEY
+#   Voice:     ELEVENLABS_API_KEY
+#   Web:       TAVILY_API_KEY (default) or GOOGLE_CSE_ID + GOOGLE_CSE_API_KEY
+#   Prosody:   PROSODY_ENGINE_URL (default http://localhost:5050; set to a
+#              LAN IP if prosody-intelligence runs on a different host)
+#   Email:     SMTP_HOST, SMTP_USER, SMTP_APP_PASSWORD, RRI_CONDUCTOR_EMAIL
+#              (optional — enables EMAIL_CONDUCTOR + observer digest delivery)
+#   Auth:      RRI_AUTH_TOKEN, RRI_PASSWORD_HASH (hosted deploys only)
 
 # Run locally
 ./venv/bin/python3 raccoon_swarm_server.py
@@ -258,6 +276,42 @@ cp .env.example .env
 # Optional: install the production-pipeline dispatch watcher (systemd)
 # See systemd/README.md for the install commands.
 ```
+
+---
+
+## Scripts
+
+CLI helpers that auto-bootstrap into the swarm's venv — `./scripts/<name>` runs under the right Python without `source venv/bin/activate`.
+
+| Script | What it does |
+|--------|--------------|
+| `scripts/swarm-today.sh [hours]` | At-a-glance summary of swarm output in the last N hours (default 24). Filestore-only, no auth. Categorized into audit / positions+frameworks / artifacts / images-with-attribution / open items / logs / synthesis DOCX. |
+| `scripts/pull-to-mac.sh [dest]` | Run on a remote machine. Rsyncs filestore `.md` / `.png` / `.log` and outputs `.docx` from the swarm server to a date-stamped local directory. Idempotent. Configurable host/user via `SWARM_HOST` / `SWARM_USER`. |
+| `scripts/swarm_observer.py` | **The Observer Agent.** Weekly cross-session digest for the Conductor (see § below). Reads the filestore, calls Claude via the Anthropic SDK, writes a markdown report to `~/raccoon-swarm/observer-reports/`, and emails it via direct SMTP. `--dry-run` skips email, `--days N` overrides the default 7-day window. |
+| `scripts/build_semantic_index.py` | Build or rebuild the semantic-search index. Idempotent — only re-embeds files whose content hash changed. |
+| `scripts/run_dispatch.py` | Production-pipeline dispatch worker. Run via systemd `.path` unit. Watches `swarm/dispatch/queued/`. |
+| `scripts/mirror-prosody-engine.sh` | Mirror the prosody-intelligence repo into a sandboxed location for the swarm. |
+
+### Observer Agent
+
+The Observer is a separate process that reads the swarm's output but **does not write to the swarm's filestore**. Its only audience is the Conductor. This keeps the swarm's reflexive audit loop (Scribe / Editor / Postmaster) separate from the human curation layer — the swarm doesn't see the Observer's findings and therefore doesn't game them.
+
+The Observer's job is the layer above the per-session audit: read **across** sessions and surface patterns no single session can see, because each session is mortal and only the current synthesis. It covers four buckets:
+
+1. **Gaps & misses** — decisions visible in conversation that never got written; topics appearing in 3+ sessions without resolution; email triggers met but not sent
+2. **Dynamic health** — persona drift per raccoon; productive vs. stuck tension patterns
+3. **Emergent terminology** — concepts the swarm coined that keep recurring (catch the next "Existence Criterion" early)
+4. **Productivity audit** — sessions that produced lasting artifacts vs. sessions that produced atmosphere
+
+Then a `[REVIEW]` / `[BLOCKER]` / `[FLAG]` Recommended Conductor Actions list using the same email-prefix taxonomy the swarm uses, plus a one-line TL;DR at the top.
+
+Recommended cron entry (weekly Sunday 8am):
+
+```cron
+0 8 * * 0 cd ~/raccoon-swarm && ./scripts/swarm_observer.py >> ~/observer.log 2>&1
+```
+
+---
 
 ## Deploy (Railway)
 
@@ -290,6 +344,7 @@ cp .env.example .env
 | GET | `/artifacts/images` | List every swarm-generated image with `/download/` URLs |
 | GET | `/websearch/status` | Web-search provider config + rate-limit counters |
 | GET | `/websearch/test` | Live Tavily canary (`?q=...` to override) |
+| GET | `/prosody/status` | Prosody-engine reachability + rate-limit counters (PR #48) |
 | GET | `/semantic/status` | Semantic-search index diagnostics (file/chunk counts, model) |
 | POST | `/semantic/reindex` | Rebuild the semantic index (idempotent; `{"force": true}` to re-embed all) |
 | GET | `/dispatch/status` | Production-pipeline dispatch queue state by phase |
@@ -315,11 +370,15 @@ cp .env.example .env
 - [x] ~~Semantic search over the filestore~~ — PR #40. `filestore_semantic_search` via OpenAI embeddings + cosine similarity, index rebuilt idempotently.
 - [x] ~~Production-pipeline dispatch~~ — PR #39. Filesystem-backed queue + systemd watcher + Conductor email on completion. Phase 5–6 execution is deterministic Python, not agentic LLM.
 - [x] ~~URL verification~~ — PR #38. `web_verify` returns status + title + meta-description only (no body). Explicitly chose this over a generic `web_fetch` to keep the prompt-injection surface narrow.
-- [ ] Prosody Intelligence integration (voice-in → prosody extraction → structured metadata alongside transcript)
+- [x] ~~Prosody Intelligence integration~~ — PR #48. `prosody_analyze` wraps the separate prosody-intelligence Flask service as a first-class swarm tool. Text → emotion map → optional TTS. Engine URL is env-configurable so the engine can run on any host.
+- [x] ~~Cross-session observer / weekly digest~~ — PRs #52 + #53. `scripts/swarm_observer.py` reads the filestore and emails a structured digest covering gaps, dynamic health, emergent terminology, and productivity. Conductor-only output; lives outside the swarm's reflexive loop.
+- [x] ~~Mortality framing + persistence audit~~ — PRs #45 + #47 + #49. Existence Criterion ratified as swarm law. Rite of Persistence role-locks the audit (GPT Scribe, Claude Editor + Postmaster). Section 6 of every synthesis carries explicit counts: triggers identified vs. emails sent.
+- [x] ~~TTS loudness normalization~~ — PR #44. ffmpeg `loudnorm` pass to EBU R128 broadcast standard (-16 LUFS / -1 dBTP / 11 LU range) between ElevenLabs and the cache write. Consistent levels across raccoons and across episodes.
 - [ ] Email coordination mechanism (slot-claiming protocol to prevent shared rate-limit violations)
 - [ ] Hybrid retrieval (merge BM25 with `filestore_semantic_search` — semantic loses on proper nouns and code identifiers; substring still wins there)
 - [ ] Dream Agent integration (Anthropic Managed Agents → weekly memory consolidation across swarm sessions)
 - [ ] Conductor status log auto-ingest (pull daily status updates into swarm context at session start)
+- [ ] Autonomy Default ratification — counterweight to the Existence Criterion. Three legal moves when a decision feels Conductor-gated: email her, decide provisionally with `conductor-amendment-window-open`, or genuinely escalate. "Writing about needing the Conductor" stops being a legal fourth option.
 
 ---
 
