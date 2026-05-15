@@ -72,6 +72,7 @@ import requests as http_requests
 
 import swarm_filestore
 import swarm_mail
+import swarm_orchestrator
 import swarm_tools
 import swarm_websearch
 try:
@@ -1150,16 +1151,21 @@ def call_claude(query, max_tokens=2000, images=None, session_id="unknown"):
             # Append the assistant's tool_use turn so the next call can see it
             messages.append({"role": "assistant", "content": [b.model_dump() for b in msg.content]})
 
-            # Execute every tool_use block in this turn, gather tool_result blocks
+            # Execute every tool_use block in this turn, gather tool_result blocks.
+            # Round Orchestrator annotates the tool-result content with a budget
+            # warning when we're in the wind-down zone (last 3 iterations by
+            # default). Models read the warning naturally and self-regulate.
             tool_results = []
             for block in msg.content:
                 if getattr(block, "type", None) != "tool_use":
                     continue
                 result = swarm_tools.dispatch(block.name, block.input or {}, calling_model="claude", session_id=session_id)
+                content = json.dumps(result, default=str)
+                content = swarm_orchestrator.annotate_tool_result(content, iteration, max_iters)
                 tool_results.append({
                     "type": "tool_result",
                     "tool_use_id": block.id,
-                    "content": json.dumps(result, default=str),
+                    "content": content,
                 })
             messages.append({"role": "user", "content": tool_results})
 
@@ -1242,17 +1248,22 @@ def _openai_chat_with_tools(
         }
         messages.append(assistant_turn)
 
-        # Execute each tool call, append a tool-role message per result
+        # Execute each tool call, append a tool-role message per result.
+        # Round Orchestrator annotates content with a budget warning in the
+        # wind-down zone (last 3 iterations by default) — models read it
+        # naturally and self-regulate before exhaustion.
         for tc in tool_calls:
             try:
                 args = json.loads(tc.function.arguments) if tc.function.arguments else {}
             except json.JSONDecodeError:
                 args = {}
             result = swarm_tools.dispatch(tc.function.name, args, calling_model=calling_model, session_id=session_id)
+            content = json.dumps(result, default=str)
+            content = swarm_orchestrator.annotate_tool_result(content, iteration, max_iters)
             messages.append({
                 "role": "tool",
                 "tool_call_id": tc.id,
-                "content": json.dumps(result, default=str),
+                "content": content,
             })
 
     logger.warning(f"{label} tool-use loop hit MAX_TOOL_ITERATIONS={max_iters}")
@@ -1387,6 +1398,8 @@ def call_gemini(query, max_tokens=2000, images=None, session_id="unknown"):
                 )
                 executed_tools.append((fc.name, args_short))
                 result = swarm_tools.dispatch(fc.name, args, calling_model="gemini", session_id=session_id)
+                # Round Orchestrator: annotate with budget warning in wind-down zone
+                result = swarm_orchestrator.annotate_tool_result_dict(result, iteration, max_iters)
                 response_parts.append(genai_types.Part.from_function_response(
                     name=fc.name,
                     response={"result": result},
