@@ -89,11 +89,16 @@ def _mcp_tools_enabled() -> bool:
 
 # Cap on tool-use iterations per single call to a model. Prevents an infinite
 # loop where a model keeps requesting tools indefinitely. Configurable via
-# RRI_MCP_MAX_ITERATIONS env var. Default 10 — empirically 5 was too tight
-# for research workflows where models search → read → reason → maybe write.
+# RRI_MCP_MAX_ITERATIONS env var. Default 15 — empirically 5 was too tight
+# for research workflows where models search → read → reason → maybe write,
+# and 10 wasn't enough for sessions where governance directives require
+# multiple verification reads + multiple file writes + a final synthesis
+# response (session 104 observed Claude + GPT exhausting the cap with no
+# closing prose). 15 buys roughly two more file ops per turn without giving
+# misbehaving loops dramatically more rope.
 def _max_tool_iterations() -> int:
     try:
-        return max(1, int(os.getenv("RRI_MCP_MAX_ITERATIONS", "10")))
+        return max(1, int(os.getenv("RRI_MCP_MAX_ITERATIONS", "15")))
     except ValueError:
         return 10
 
@@ -3096,9 +3101,18 @@ def start_loop():
 
                 q.put(("round_complete", {"round": round_num, "responses": round_results}))
 
-                # Human-in-the-loop: wait for human input after AI round
+                # Human-in-the-loop: wait for human input after AI round.
+                # Configurable via RRI_HUMAN_TIMEOUT_SECONDS (default 600 = 10 min).
+                # The Conductor observed timing out at 300s while reading + typing
+                # at normal pace, especially during sessions with long synthesis
+                # outputs. The timer does NOT reset on activity — it's a hard
+                # ceiling from "human input requested" to "submit." Bumping the
+                # default rather than implementing keystroke-reset for now.
                 if human_in_loop:
-                    human_timeout = 300  # 5 minutes
+                    try:
+                        human_timeout = max(30, int(os.getenv("RRI_HUMAN_TIMEOUT_SECONDS", "600")))
+                    except (TypeError, ValueError):
+                        human_timeout = 600
                     q.put(("human_input_requested", {
                         "round": round_num, "total": num_rounds,
                         "timeout_seconds": human_timeout
