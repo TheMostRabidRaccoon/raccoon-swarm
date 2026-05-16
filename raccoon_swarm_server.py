@@ -70,6 +70,7 @@ except ImportError:
 
 import requests as http_requests
 
+import swarm_closer
 import swarm_filestore
 import swarm_mail
 import swarm_orchestrator
@@ -3142,6 +3143,8 @@ def start_loop():
             # Postmaster [EMAIL_CONDUCTOR] directives and audit [MEMORY_WRITE]
             # directives emitted in section 6 render as decorative text in the
             # docx and never execute — the recursive-postmaster failure.
+            fs_synth = None
+            mail_synth = None
             try:
                 synth_pseudo = {"synthesizer": synthesis}
                 fs_synth = swarm_filestore.process_round_writes(synth_pseudo)
@@ -3169,6 +3172,21 @@ def start_loop():
 
             log_file, docx_file, participants = save_loop_results(query, all_rounds, synthesis, num_rounds)
             duration = round(time.time() - start_time, 1)
+
+            # Session Closer: end-of-session digest email + local fallback.
+            # Runs on a daemon thread, so SMTP latency never blocks "complete".
+            # Idempotent via marker file in OUTPUTS_DIR.
+            swarm_closer.run_post_session_closer(
+                query=query,
+                all_rounds=all_rounds,
+                synthesis=synthesis,
+                session_id=session_id,
+                outputs_dir=OUTPUTS_DIR,
+                logs_dir=LOGS_DIR,
+                fs_synth=fs_synth,
+                mail_synth=mail_synth,
+                duration=duration,
+            )
 
             complete_data = {"duration": duration, "log_file": log_file, "docx_file": docx_file, "models": participants}
             if docx_file and docx_file != "docx_unavailable":
@@ -3563,6 +3581,8 @@ def run_headless_session(query, source, num_rounds=3, active_loop_models=None, s
             # Postmaster [EMAIL_CONDUCTOR] directives and audit [MEMORY_WRITE]
             # directives emitted in section 6 render as decorative text in the
             # docx and never execute — the recursive-postmaster failure.
+            fs_synth = None
+            mail_synth = None
             try:
                 synth_pseudo = {"synthesizer": synthesis}
                 fs_synth = swarm_filestore.process_round_writes(synth_pseudo)
@@ -3591,6 +3611,21 @@ def run_headless_session(query, source, num_rounds=3, active_loop_models=None, s
 
             log_file, docx_file, participants = save_loop_results(query, all_rounds, synthesis, num_rounds)
             duration = round(time.time() - start_time, 1)
+
+            # Session Closer: end-of-session digest email + local fallback.
+            # Runs on a daemon thread, so SMTP latency never blocks "complete".
+            # Idempotent via marker file in OUTPUTS_DIR.
+            swarm_closer.run_post_session_closer(
+                query=query,
+                all_rounds=all_rounds,
+                synthesis=synthesis,
+                session_id=session_id,
+                outputs_dir=OUTPUTS_DIR,
+                logs_dir=LOGS_DIR,
+                fs_synth=fs_synth,
+                mail_synth=mail_synth,
+                duration=duration,
+            )
 
             complete_data = {
                 "duration": duration, "log_file": log_file, "docx_file": docx_file,

@@ -1,0 +1,371 @@
+"""Session Closer — fires after every synthesis save. Two jobs in v1:
+emails the Conductor a digest of what happened, and writes a fallback
+local markdown file if SMTP isn't configured.
+
+Architecture: read-only against the filestore. The Closer doesn't make
+filing decisions — it observes what just happened and tells you. Job 2
+(persistence scrub backstop) lands in v2 once we've soaked v1 for a
+couple of real sessions.
+
+Trigger: called from loop_worker and headless_worker right after the
+synthesis-directive parsing finishes. Runs on a daemon thread —
+fire-and-forget. SMTP flakiness never blocks session completion.
+
+Idempotency: marker file at OUTPUTS_DIR/{session_id}.closer-fired.json.
+Re-running a session save is safe; the Closer logs "already fired" and
+returns without sending or writing.
+
+Disable: RRI_CLOSER_ENABLED=false (default true).
+
+Family: per-iteration Round Orchestrator → end-of-session Closer →
+weekly Observer. Same surveillance lineage, different cadences.
+"""
+from __future__ import annotations
+
+import json
+import logging
+import os
+import re
+import smtplib
+import threading
+from datetime import datetime
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from pathlib import Path
+from typing import Optional
+
+import swarm_orchestrator
+
+logger = logging.getLogger("SwarmVault")
+
+
+def _enabled() -> bool:
+    return os.getenv("RRI_CLOSER_ENABLED", "true").strip().lower() not in ("0", "false", "no", "off")
+
+
+# Audit COUNTS block from synthesis section 6 (PERSISTENCE AUDIT):
+#   triggers_identified: <N>
+#   emails_sent: <M>
+#   gap: <K>
+_COUNT_RE = re.compile(
+    r"triggers_identified:\s*(\d+).*?emails_sent:\s*(\d+).*?gap:\s*(-?\d+)",
+    re.DOTALL | re.IGNORECASE,
+)
+
+# [EMAIL_CONDUCTOR: [BLOCKER|REVIEW|FLAG] subject text]
+# Matches the three-tier taxonomy from PERSISTENT_MEMORY_PROTOCOL.
+_EMAIL_TAG_RE = re.compile(
+    r"\[EMAIL_CONDUCTOR:\s*\[(BLOCKER|REVIEW|FLAG)\]\s*([^\]\n]+?)\]"
+)
+
+# Provider-side rate-limit indicators visible inside model output text.
+# (Truncations are detected separately via swarm_orchestrator.)
+_RATE_LIMIT_HINTS = ("429", "rate_limit", "rate limit", "ratelimit", "TooManyRequests")
+
+
+def _parse_audit_counts(synthesis: str) -> Optional[dict]:
+    if not synthesis:
+        return None
+    m = _COUNT_RE.search(synthesis)
+    if not m:
+        return None
+    return {
+        "triggers_identified": int(m.group(1)),
+        "emails_sent": int(m.group(2)),
+        "gap": int(m.group(3)),
+    }
+
+
+def _extract_email_directives(text: str) -> list[dict]:
+    if not text:
+        return []
+    return [{"prefix": m.group(1), "subject": m.group(2).strip()}
+            for m in _EMAIL_TAG_RE.finditer(text)]
+
+
+def _detect_rate_limits(round_results: dict) -> list[str]:
+    hits = []
+    for model, output in round_results.items():
+        if model == "_meta" or not isinstance(output, str):
+            continue
+        for hint in _RATE_LIMIT_HINTS:
+            if hint in output:
+                hits.append(model)
+                break
+    return hits
+
+
+def build_digest(
+    *,
+    query: str,
+    all_rounds: list[dict],
+    synthesis: str,
+    session_id: str,
+    fs_synth: Optional[dict] = None,
+    mail_synth: Optional[dict] = None,
+    duration: Optional[float] = None,
+) -> dict:
+    """Pure function: assemble the digest data from session inputs.
+    Returns a dict ready to be formatted into an email body.
+    """
+    synthesis_directives = _extract_email_directives(synthesis or "")
+    blockers = [d for d in synthesis_directives if d["prefix"] == "BLOCKER"]
+    reviews = [d for d in synthesis_directives if d["prefix"] == "REVIEW"]
+    flags = [d for d in synthesis_directives if d["prefix"] == "FLAG"]
+
+    mail_sent = (mail_synth or {}).get("sent", []) or []
+    mail_rejected = (mail_synth or {}).get("rejected", []) or []
+    fs_writes = (fs_synth or {}).get("writes", []) or []
+    fs_appends = (fs_synth or {}).get("appends", []) or []
+    fs_rejected = (fs_synth or {}).get("rejected", []) or []
+
+    counts = _parse_audit_counts(synthesis or "")
+
+    rounds_summary = []
+    truncated_models: set[str] = set()
+    rate_limited_models: set[str] = set()
+    for i, rd in enumerate(all_rounds, 1):
+        models = sorted(m for m in rd.keys() if m != "_meta")
+        for m, _partial in swarm_orchestrator.detect_truncations(rd):
+            truncated_models.add(m)
+        for m in _detect_rate_limits(rd):
+            rate_limited_models.add(m)
+        rounds_summary.append({"round": i, "models": models})
+
+    return {
+        "session_id": session_id,
+        "query": (query or "").strip(),
+        "rounds": rounds_summary,
+        "duration_sec": duration,
+        "blockers": blockers,
+        "reviews": reviews,
+        "flags": flags,
+        "mail_sent": mail_sent,
+        "mail_rejected": mail_rejected,
+        "fs_writes": fs_writes,
+        "fs_appends": fs_appends,
+        "fs_rejected": fs_rejected,
+        "audit_counts": counts,
+        "truncated_models": sorted(truncated_models),
+        "rate_limited_models": sorted(rate_limited_models),
+    }
+
+
+def _path_of(item) -> str:
+    if isinstance(item, dict):
+        return item.get("path") or item.get("file") or str(item)
+    return str(item)
+
+
+def format_digest_email(digest: dict) -> tuple[str, str]:
+    """Returns (subject, body). Plain text + markdown formatting."""
+    counts = digest.get("audit_counts")
+    gap = counts["gap"] if counts else None
+
+    if gap is not None and gap > 0:
+        subject_tail = f"gap={gap}"
+    elif digest.get("blockers"):
+        subject_tail = f"{len(digest['blockers'])} blocker(s)"
+    elif digest.get("truncated_models") or digest.get("rate_limited_models"):
+        subject_tail = "model issues"
+    else:
+        subject_tail = "clean"
+
+    subject = f"Swarm Closer — Session {digest['session_id']} — {subject_tail}"
+
+    lines: list[str] = []
+
+    q = digest["query"]
+    if q:
+        q_short = q.replace("\n", " ").strip()
+        if len(q_short) > 200:
+            q_short = q_short[:197] + "..."
+        lines.append(f"**Query:** {q_short}")
+        lines.append("")
+
+    # 1. What needs you
+    lines.append("## What needs you")
+    needs: list[str] = []
+    for d in digest["blockers"]:
+        needs.append(f"- [BLOCKER] {d['subject']}")
+    for d in digest["reviews"]:
+        needs.append(f"- [REVIEW] {d['subject']}")
+    if not needs:
+        needs.append("- (nothing flagged for your attention)")
+    lines.extend(needs)
+    lines.append("")
+
+    # 2. What moved
+    lines.append("## What moved")
+    moved: list[str] = []
+    if digest["fs_writes"]:
+        moved.append(f"- {len(digest['fs_writes'])} file(s) written from synthesis:")
+        for w in digest["fs_writes"][:10]:
+            moved.append(f"  - `{_path_of(w)}`")
+        if len(digest["fs_writes"]) > 10:
+            moved.append(f"  - ...and {len(digest['fs_writes']) - 10} more")
+    if digest["fs_appends"]:
+        moved.append(f"- {len(digest['fs_appends'])} file(s) appended from synthesis:")
+        for a in digest["fs_appends"][:10]:
+            moved.append(f"  - `{_path_of(a)}`")
+    if digest["mail_sent"]:
+        moved.append(f"- {len(digest['mail_sent'])} email(s) sent from synthesis:")
+        for e in digest["mail_sent"]:
+            moved.append(f"  - {e.get('subject', '?')} (from {e.get('model', '?')})")
+    if digest["flags"]:
+        moved.append(f"- {len(digest['flags'])} [FLAG] item(s) noted in synthesis")
+    if not moved:
+        moved.append("- (no filestore or mail activity from synthesis)")
+    lines.extend(moved)
+    lines.append("")
+
+    # 3. What's owed
+    lines.append("## What's owed")
+    owed: list[str] = []
+    if counts:
+        owed.append(
+            f"- Audit: triggers_identified={counts['triggers_identified']}, "
+            f"emails_sent={counts['emails_sent']}, gap={counts['gap']}"
+        )
+        if counts["gap"] > 0:
+            owed.append(f"  - **{counts['gap']} email trigger(s) identified but not sent**")
+    else:
+        owed.append("- (no audit COUNTS block found in synthesis section 6)")
+    if digest["mail_rejected"]:
+        owed.append(f"- {len(digest['mail_rejected'])} email(s) rejected from synthesis:")
+        for e in digest["mail_rejected"]:
+            owed.append(f"  - {e.get('subject', '?')} — {e.get('reason', '?')}")
+    if digest["fs_rejected"]:
+        owed.append(f"- {len(digest['fs_rejected'])} filestore write(s) rejected from synthesis")
+    lines.extend(owed)
+    lines.append("")
+
+    # 4. Round-by-round (collapsed)
+    lines.append("## Round-by-round")
+    for r in digest["rounds"]:
+        models_str = ", ".join(r["models"]) if r["models"] else "(no models)"
+        lines.append(f"- Round {r['round']}: {models_str}")
+    if digest.get("duration_sec"):
+        lines.append(f"- Total duration: {digest['duration_sec']}s")
+    lines.append("")
+
+    # 5. Truncations & rate limits
+    if digest["truncated_models"] or digest["rate_limited_models"]:
+        lines.append("## Truncations & rate limits")
+        if digest["truncated_models"]:
+            lines.append(f"- Tool-loop truncations: {', '.join(digest['truncated_models'])}")
+        if digest["rate_limited_models"]:
+            lines.append(f"- Rate-limit indicators (429-class): {', '.join(digest['rate_limited_models'])}")
+        lines.append("")
+
+    return subject, "\n".join(lines).strip()
+
+
+def _marker_path(session_id: str, outputs_dir: Path) -> Path:
+    return outputs_dir / f"{session_id}.closer-fired.json"
+
+
+def _send_via_smtp(subject: str, body: str, session_id: str) -> tuple[bool, str]:
+    """Send the digest via smtplib directly. Bypasses swarm_mail's per-session
+    rate limit because the Closer is a system-level send, not a model-emitted
+    directive. Still respects SMTP env config. Returns (success, reason)."""
+    needed = ["SMTP_HOST", "SMTP_PORT", "SMTP_USER", "SMTP_APP_PASSWORD", "RRI_CONDUCTOR_EMAIL"]
+    missing = [v for v in needed if not os.getenv(v)]
+    if missing:
+        return False, f"missing env vars: {', '.join(missing)}"
+
+    to_addr = os.getenv("RRI_CONDUCTOR_EMAIL")
+    from_addr = os.getenv("SMTP_USER")
+    full_subject = f"[RRI Closer] {subject.strip()[:140]}"
+    full_body = (
+        f"{body}\n\n"
+        f"---\n"
+        f"Session: {session_id}\n"
+        f"Sent: {datetime.now().isoformat(timespec='seconds')}\n"
+    )
+
+    msg = MIMEMultipart()
+    msg["From"] = from_addr
+    msg["To"] = to_addr
+    msg["Subject"] = full_subject
+    msg.attach(MIMEText(full_body, "plain"))
+
+    try:
+        host = os.getenv("SMTP_HOST")
+        port = int(os.getenv("SMTP_PORT", "587"))
+        with smtplib.SMTP(host, port, timeout=30) as server:
+            server.starttls()
+            server.login(from_addr, os.getenv("SMTP_APP_PASSWORD"))
+            server.sendmail(from_addr, to_addr, msg.as_string())
+        return True, "sent"
+    except smtplib.SMTPException as e:
+        return False, f"smtp error: {e}"
+    except (OSError, ValueError) as e:
+        return False, f"send error: {e}"
+
+
+def run_post_session_closer(
+    *,
+    query: str,
+    all_rounds: list[dict],
+    synthesis: str,
+    session_id: str,
+    outputs_dir: Path,
+    logs_dir: Path,
+    fs_synth: Optional[dict] = None,
+    mail_synth: Optional[dict] = None,
+    duration: Optional[float] = None,
+) -> None:
+    """Top-level entrypoint. Fires on a daemon thread so SMTP latency never
+    blocks session completion. Idempotent via marker file. Failures are
+    logged but never raised."""
+    if not _enabled():
+        logger.info(f"[closer] disabled via RRI_CLOSER_ENABLED; skipping session {session_id}")
+        return
+
+    def _worker():
+        marker = _marker_path(session_id, outputs_dir)
+        try:
+            if marker.exists():
+                logger.info(f"[closer] marker exists for session {session_id}; skipping")
+                return
+
+            digest = build_digest(
+                query=query,
+                all_rounds=all_rounds,
+                synthesis=synthesis,
+                session_id=session_id,
+                fs_synth=fs_synth,
+                mail_synth=mail_synth,
+                duration=duration,
+            )
+            subject, body = format_digest_email(digest)
+
+            logs_dir.mkdir(parents=True, exist_ok=True)
+            local_path = logs_dir / f"closer-digest-{session_id}.md"
+            local_path.write_text(f"# {subject}\n\n{body}\n")
+
+            sent, reason = _send_via_smtp(subject, body, session_id)
+            outcome = "emailed" if sent else f"logged-only ({reason})"
+
+            outputs_dir.mkdir(parents=True, exist_ok=True)
+            marker.write_text(json.dumps({
+                "session_id": session_id,
+                "fired_at": datetime.now().isoformat(timespec="seconds"),
+                "outcome": outcome,
+                "local_path": str(local_path),
+                "subject": subject,
+            }, indent=2))
+
+            logger.info(f"[closer] session {session_id}: {outcome}; digest at {local_path}")
+        except Exception as e:
+            logger.error(f"[closer] failed for session {session_id}: {type(e).__name__}: {e}")
+
+    threading.Thread(target=_worker, daemon=True, name=f"closer-{session_id}").start()
+
+
+def status() -> dict:
+    return {
+        "enabled": _enabled(),
+        "version": 1,
+    }
