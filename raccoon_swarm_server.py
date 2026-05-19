@@ -1838,19 +1838,48 @@ human_response_queues = {}  # session_id -> queue.Queue for human-in-the-loop in
 # ============================================
 # AUTHENTICATION (for hosted deployment)
 # ============================================
+import ipaddress
 from functools import wraps
 
 RRI_AUTH_TOKEN = os.getenv("RRI_AUTH_TOKEN", "")
 RRI_PASSWORD_HASH = os.getenv("RRI_PASSWORD_HASH", "")
+# Comma-separated CIDRs that bypass the login gate (homelab / LAN access).
+# Defaults cover loopback + RFC1918 ranges so the swarm box and other machines
+# on the home network can hit the UI without a password while hosted/public
+# clients still get the gate. Override with RRI_TRUSTED_CIDRS="" to disable.
+_DEFAULT_TRUSTED_CIDRS = "127.0.0.0/8,::1/128,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,fc00::/7,fe80::/10"
+TRUSTED_CIDRS = [
+    ipaddress.ip_network(c.strip())
+    for c in os.getenv("RRI_TRUSTED_CIDRS", _DEFAULT_TRUSTED_CIDRS).split(",")
+    if c.strip()
+]
 
 def is_auth_enabled():
     """Auth is only active when both env vars are set (i.e., hosted mode)."""
     return bool(RRI_AUTH_TOKEN and RRI_PASSWORD_HASH)
 
+def _client_ip():
+    # request.remote_addr is the direct peer; we deliberately don't trust
+    # X-Forwarded-For here because the LAN-trust bypass would otherwise be
+    # spoofable from a public client behind a proxy.
+    return request.remote_addr or ""
+
+def _is_trusted_client():
+    ip_str = _client_ip()
+    if not ip_str:
+        return False
+    try:
+        ip = ipaddress.ip_address(ip_str)
+    except ValueError:
+        return False
+    return any(ip in net for net in TRUSTED_CIDRS)
+
 def require_auth(f):
     @wraps(f)
     def decorated(*args, **kwargs):
         if not is_auth_enabled():
+            return f(*args, **kwargs)
+        if _is_trusted_client():
             return f(*args, **kwargs)
         # Check session cookie
         if request.cookies.get("rri_token") == RRI_AUTH_TOKEN:
@@ -1918,7 +1947,7 @@ LOGIN_HTML = r"""
 
 @app.route("/login", methods=["GET", "POST"])
 def login():
-    if not is_auth_enabled():
+    if not is_auth_enabled() or _is_trusted_client():
         return redirect("/")
     if request.method == "POST":
         password = request.form.get("password", "")
@@ -4793,6 +4822,8 @@ if __name__ == "__main__":
     print(f"Local:       http://localhost:{port}")
     print(f"Voice:       {'ENABLED' if ELEVENLABS_API_KEY else 'DISABLED (set ELEVENLABS_API_KEY)'}")
     print(f"Auth:        {'ENABLED' if is_auth_enabled() else 'DISABLED (set RRI_AUTH_TOKEN + RRI_PASSWORD_HASH)'}")
+    if is_auth_enabled() and TRUSTED_CIDRS:
+        print(f"Trusted:     {', '.join(str(n) for n in TRUSTED_CIDRS)} (bypass login)")
     print(f"Storage:     {OUTPUTS_DIR}")
     print(f"Memory:      {MEMORY_FILE}")
     print(f"Daemon:      interval={swarm_daemon.interval_seconds}s, max_daily={swarm_daemon.max_daily_sessions}")
