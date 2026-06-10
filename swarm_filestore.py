@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 import re
+import json
 import logging
 from datetime import datetime
 from pathlib import Path
@@ -345,6 +346,177 @@ def process_round_queries(round_results: dict) -> str:
             else:
                 parts.append(f"\n### {r['path']} (snippet, full size {r['size']} chars)\n{r['snippet']}")
     parts.append("\n=== END MEMORY QUERY RESULTS ===")
+    return "\n".join(parts)
+
+
+# ============================================================
+# Write verification — anti "performative archiving"
+# ============================================================
+
+# Phrases that signal a model is CLAIMING it persisted a file. Catches the
+# recurring failure mode where a model narrates a save ("it is done", "now
+# exists at ...") without ever emitting an actual [MEMORY_WRITE] directive.
+_CLAIM_CUES = (
+    "wrote", "written", "saved", "persist", "created", "archiv", "filed",
+    "committed", "stored", "scribed", "inscribed", "logged", "carved",
+    "it is done", "now exists", "now lives", "lives at", "resides", "is saved",
+    "has been written", "pulled it into being", "into existence", "laid the",
+)
+
+# A filestore-shaped path: <lowercase-dir>/<...>.<ext>, optionally backticked.
+_PATH_IN_TEXT_RE = re.compile(
+    r"`?((?:/)?[a-z][a-z0-9_-]*(?:/[A-Za-z0-9_\-.]+)+\.(?:md|json|txt|log))`?"
+)
+
+
+def detect_write_claims(text: str, window: int = 140) -> list[str]:
+    """Heuristically find filestore paths a model *claims* to have written.
+
+    Surfaces filestore-shaped paths that appear near a persistence cue. This is
+    the signature of performative archiving: announcing a write in prose without
+    emitting an actual [MEMORY_WRITE] directive. Heuristic by design — meant to
+    flag paths for verification, never to block anything.
+
+    Returns a de-duplicated list of normalized relative paths (leading slash
+    stripped).
+    """
+    if not text:
+        return []
+    low = text.lower()
+    claimed: list[str] = []
+    seen: set[str] = set()
+    for m in _PATH_IN_TEXT_RE.finditer(text):
+        path = m.group(1).lstrip("/")
+        if path in seen:
+            continue
+        start = max(0, m.start() - window)
+        ctx = low[start:m.end() + 40]
+        if any(cue in ctx for cue in _CLAIM_CUES):
+            seen.add(path)
+            claimed.append(path)
+    return claimed
+
+
+def verify_round_claims(round_results: dict) -> dict:
+    """Cross-check each model's *claimed* file writes against what actually
+    landed in the filestore. Call AFTER process_round_writes() so legitimately
+    persisted files already exist on disk.
+
+    Returns {"phantoms": [{"model", "path"}, ...]} — claimed paths that do not
+    exist on disk. An empty list means every claim checked out.
+    """
+    phantoms = []
+    for model_name, output in (round_results or {}).items():
+        if model_name == "_meta" or not isinstance(output, str):
+            continue
+        for path in detect_write_claims(output):
+            if read_file(path) is None:
+                phantoms.append({"model": model_name, "path": path})
+                logger.info(f"swarm_filestore: phantom write claim by {model_name}: {path}")
+    return {"phantoms": phantoms}
+
+
+def verification_context(verification: dict) -> str:
+    """Build a context block naming claimed-but-missing files, to inject into
+    the NEXT round. Returns an empty string when all claims checked out."""
+    phantoms = verification.get("phantoms") if verification else None
+    if not phantoms:
+        return ""
+    parts = [
+        "=== WRITE VERIFICATION (from prior round) ===",
+        "These paths were spoken about as if saved, but do NOT exist in the",
+        "filestore. Announcing a write is not a write — to actually persist a",
+        "file you MUST emit a [MEMORY_WRITE: <path>] ... [/MEMORY_WRITE] block.",
+        "Do not cite or rely on these paths until they verifiably exist:",
+    ]
+    for p in phantoms:
+        parts.append(f"  - {p['path']}  (claimed by {p['model']} — NOT FOUND)")
+    parts.append("=== END WRITE VERIFICATION ===")
+    return "\n".join(parts)
+
+
+# ============================================================
+# External Drive index — what exists OUTSIDE the filestore
+# ============================================================
+
+def _drive_index_path() -> Path | None:
+    """Resolve the Drive index manifest. RRI_DRIVE_INDEX overrides; otherwise
+    look for _drive_index.json|txt at the filestore root."""
+    env = os.getenv("RRI_DRIVE_INDEX")
+    if env:
+        p = Path(env)
+        return p if p.exists() else None
+    root = _storage_root()
+    for name in ("_drive_index.json", "_drive_index.txt"):
+        cand = root / name
+        if cand.exists():
+            return cand
+    return None
+
+
+def _load_drive_index(path: Path) -> list[dict]:
+    """Parse a Drive index manifest. JSON: a list of objects (or {"files": [...]}),
+    each with name/url/modified. Text: one 'name<TAB>url' (or bare name) per line."""
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError:
+        return []
+    if path.suffix == ".json":
+        try:
+            data = json.loads(raw)
+        except ValueError:
+            logger.warning(f"swarm_filestore: drive index {path} is not valid JSON")
+            return []
+        if isinstance(data, dict):
+            data = data.get("files") or data.get("entries") or []
+        return [e for e in data if isinstance(e, dict)]
+    entries = []
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        cols = line.split("\t")
+        entry = {"name": cols[0].strip()}
+        if len(cols) > 1 and cols[1].strip():
+            entry["url"] = cols[1].strip()
+        entries.append(entry)
+    return entries
+
+
+def drive_index_context(max_entries: int = 80) -> str:
+    """Surface an index of external Google Drive files so the swarm knows what
+    exists OUTSIDE its own filestore.
+
+    Recurring blind spot: artifacts saved to Drive (e.g. a finished script) look
+    "lost" because filestore search can't see them, and the swarm burns rounds
+    reconstructing what already exists. The manifest is maintained out-of-band
+    (e.g. an rclone/gdrive sync job writing to RRI_DRIVE_INDEX); this function
+    only reads and formats it. Returns "" when no manifest is present.
+    """
+    path = _drive_index_path()
+    if not path:
+        return ""
+    entries = _load_drive_index(path)
+    if not entries:
+        return ""
+    parts = [
+        "EXTERNAL DRIVE FILES (Google Drive — NOT in the filestore; reference only).",
+        "If the Conductor mentions a file you cannot find in the filestore, check",
+        "this list before concluding it is lost:",
+    ]
+    for e in entries[:max_entries]:
+        name = e.get("name") or e.get("title") or "?"
+        line = f"  - {name}"
+        mod = e.get("modified") or e.get("modifiedTime")
+        if mod:
+            line += f"  ({mod})"
+        url = e.get("url") or e.get("viewUrl")
+        if url:
+            line += f"  {url}"
+        parts.append(line)
+    extra = len(entries) - max_entries
+    if extra > 0:
+        parts.append(f"  … and {extra} more (refine with [MEMORY_QUERY] once mirrored).")
     return "\n".join(parts)
 
 
