@@ -83,6 +83,42 @@ def _extract_email_directives(text: str) -> list[dict]:
             for m in _EMAIL_TAG_RE.finditer(text)]
 
 
+# Bare tier-tagged items anywhere in the transcript — NOT only inside an
+# [EMAIL_CONDUCTOR] directive. Lets the digest carry WHAT was flagged even when
+# the swarm identified a trigger but never emitted a directive for it, so the
+# Conductor still gets the substance instead of just a count. The {12,240}
+# bound (and excluding brackets) skips incidental mentions like "a [FLAG] not a
+# [REVIEW]" and only captures items with a real description.
+_TRIGGER_ITEM_RE = re.compile(
+    r"\[(BLOCKER|REVIEW|FLAG)\]\s*[:\-—]?\s*([^\n\[\]]{12,240})"
+)
+
+
+def _extract_trigger_items(*texts: str, limit: int = 12) -> list[dict]:
+    """Pull tier-tagged items ([BLOCKER]/[REVIEW]/[FLAG]) from any text, deduped
+    and capped. Surfaces the content behind the audit gap when no email fired."""
+    items: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+    for text in texts:
+        if not text:
+            continue
+        for m in _TRIGGER_ITEM_RE.finditer(text):
+            tier = m.group(1).upper()
+            desc = m.group(2).strip().strip("*`").rstrip(".—-: ").strip()
+            # Skip fragments that are punctuation-led (incidental mid-sentence
+            # tag references rather than a real flagged item).
+            if not desc or not desc[0].isalnum():
+                continue
+            key = (tier, desc.lower())
+            if key in seen:
+                continue
+            seen.add(key)
+            items.append({"tier": tier, "text": desc})
+            if len(items) >= limit:
+                return items
+    return items
+
+
 def _detect_rate_limits(round_results: dict) -> list[str]:
     hits = []
     for model, output in round_results.items():
@@ -121,6 +157,15 @@ def build_digest(
 
     counts = _parse_audit_counts(synthesis or "")
 
+    # Tier-tagged items found across the synthesis + round transcript, regardless
+    # of whether they became [EMAIL_CONDUCTOR] directives. This is what lets the
+    # digest tell the Conductor *what* was flagged even when the email gap > 0.
+    round_text = "\n".join(
+        out for rd in all_rounds for m, out in rd.items()
+        if m != "_meta" and isinstance(out, str)
+    )
+    trigger_items = _extract_trigger_items(synthesis or "", round_text)
+
     rounds_summary = []
     truncated_models: set[str] = set()
     rate_limited_models: set[str] = set()
@@ -146,6 +191,7 @@ def build_digest(
         "fs_appends": fs_appends,
         "fs_rejected": fs_rejected,
         "audit_counts": counts,
+        "trigger_items": trigger_items,
         "truncated_models": sorted(truncated_models),
         "rate_limited_models": sorted(rate_limited_models),
     }
@@ -231,6 +277,14 @@ def format_digest_email(digest: dict) -> tuple[str, str]:
             owed.append(f"  - **{counts['gap']} email trigger(s) identified but not sent**")
     else:
         owed.append("- (no audit COUNTS block found in synthesis section 6)")
+    # Carry the substance, not just the count: when the swarm flagged things but
+    # didn't email them (gap > 0, or no audit block at all), list what they were
+    # so the info reaches the Conductor regardless of the directive dance.
+    trigger_items = digest.get("trigger_items") or []
+    if trigger_items and (gap is None or gap > 0):
+        owed.append("- What was flagged (so you have it even if no email fired):")
+        for it in trigger_items:
+            owed.append(f"  - [{it['tier']}] {it['text']}")
     if digest["mail_rejected"]:
         owed.append(f"- {len(digest['mail_rejected'])} email(s) rejected from synthesis:")
         for e in digest["mail_rejected"]:
