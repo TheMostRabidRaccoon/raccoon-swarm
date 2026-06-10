@@ -10,7 +10,7 @@ Engine location is configurable via env:
                         Default: http://localhost:5050.
                         Examples:
                           - Same host as swarm:          http://localhost:5050
-                          - Host on LAN:                 http://192.168.1.254:5050
+                          - Mac on LAN:                  http://192.168.1.50:5050
                           - Future production deploy:    https://prosody.rri.example/
 
 Per-session and rolling-24h rate limits keep cost bounded (the engine calls
