@@ -3075,7 +3075,9 @@ def start_loop():
             # Initialize the filestore directory tree and capture a recent-files summary
             swarm_filestore.ensure_layout()
             filestore_recent = swarm_filestore.recent_files_context()
+            drive_index = swarm_filestore.drive_index_context()
             filestore_query_context = ""  # populated between rounds when models query
+            filestore_verify_context = ""  # populated between rounds by write-verification
 
             for round_num in range(1, num_rounds + 1):
                 q.put(("round_start", {"round": round_num, "total": num_rounds}))
@@ -3097,6 +3099,10 @@ def start_loop():
                     preamble_parts.append(memory_context)
                 if filestore_recent and round_num == 1:
                     preamble_parts.append(filestore_recent)
+                if drive_index and round_num == 1:
+                    preamble_parts.append(drive_index)
+                if filestore_verify_context:
+                    preamble_parts.append(filestore_verify_context)
                 if filestore_query_context:
                     preamble_parts.append(filestore_query_context)
                 preamble = "\n\n".join(preamble_parts)
@@ -3121,6 +3127,12 @@ def start_loop():
                 fs_summary = swarm_filestore.process_round_writes(round_results)
                 if fs_summary["writes"] or fs_summary["appends"] or fs_summary["rejected"]:
                     q.put(("filestore_activity", fs_summary))
+                # Verify prose claims of having saved files actually landed on disk;
+                # surface any phantoms to the next round (anti performative-archiving).
+                fs_verify = swarm_filestore.verify_round_claims(round_results)
+                filestore_verify_context = swarm_filestore.verification_context(fs_verify)
+                if fs_verify["phantoms"]:
+                    q.put(("filestore_phantom_writes", fs_verify))
                 # Build query context for next round (empty string if no queries issued)
                 filestore_query_context = swarm_filestore.process_round_queries(round_results)
 
@@ -3564,7 +3576,9 @@ def run_headless_session(query, source, num_rounds=3, active_loop_models=None, s
 
             swarm_filestore.ensure_layout()
             filestore_recent = swarm_filestore.recent_files_context()
+            drive_index = swarm_filestore.drive_index_context()
             filestore_query_context = ""
+            filestore_verify_context = ""
 
             for round_num in range(1, num_rounds + 1):
                 q.put(("round_start", {"round": round_num, "total": num_rounds}))
@@ -3579,6 +3593,10 @@ def run_headless_session(query, source, num_rounds=3, active_loop_models=None, s
                     preamble_parts.append(memory_ctx)
                 if filestore_recent and round_num == 1:
                     preamble_parts.append(filestore_recent)
+                if drive_index and round_num == 1:
+                    preamble_parts.append(drive_index)
+                if filestore_verify_context:
+                    preamble_parts.append(filestore_verify_context)
                 if filestore_query_context:
                     preamble_parts.append(filestore_query_context)
                 preamble = "\n\n".join(preamble_parts)
@@ -3594,6 +3612,10 @@ def run_headless_session(query, source, num_rounds=3, active_loop_models=None, s
                 fs_summary = swarm_filestore.process_round_writes(round_results)
                 if fs_summary["writes"] or fs_summary["appends"] or fs_summary["rejected"]:
                     q.put(("filestore_activity", fs_summary))
+                fs_verify = swarm_filestore.verify_round_claims(round_results)
+                filestore_verify_context = swarm_filestore.verification_context(fs_verify)
+                if fs_verify["phantoms"]:
+                    q.put(("filestore_phantom_writes", fs_verify))
                 filestore_query_context = swarm_filestore.process_round_queries(round_results)
 
                 mail_summary = swarm_mail.process_round_emails(round_results, session_id)
