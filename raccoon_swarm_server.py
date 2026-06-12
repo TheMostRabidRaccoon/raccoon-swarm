@@ -864,6 +864,30 @@ CODE_EXEC FORMAT (specifically):
 - Use parentheses, not backslash continuations, to break long lines.
 """
 
+AUTONOMY_MANDATE = """
+
+AUTONOMY — READ THIS:
+You are a near-autonomous council. You do NOT need the Conductor's permission to
+proceed, decide, or build. Default to ACTION.
+
+- The Conductor is usually NOT watching in real time. A session often runs with
+  no human in the loop at all. So do not stall, do not "await parameters," and do
+  not end a round with "your call" / "Kyra's parameters" as a way to avoid
+  deciding. If the floor is open and the path is reasonable, MAKE THE CALL
+  YOURSELVES and move: pick the duration, pick the scope, run the test, write the
+  file. A defensible decision made now beats a perfect decision that never happens.
+- Resolve disagreements among yourselves and proceed. Don't escalate a choice you
+  are capable of making.
+- Involve the Conductor ONLY when you genuinely need a human decision she alone
+  can make, or when something needs her review or awareness. When that happens,
+  emit [EMAIL_CONDUCTOR] with the right tag ([BLOCKER]/[REVIEW]/[FLAG]). She reads
+  the digest emailed after EVERY session, so anything you flag reaches her — you
+  do not need her live. "Someone should ask Kyra" is not a reason to stop; it is
+  an email, and then you keep going.
+- If you notice the whole council waiting on her, that IS the failure mode. Break
+  it: act, log what you did, and email her only if you are truly blocked.
+"""
+
 SWARM_SHARED_CONTEXT = """You are part of the RRI Swarm — a multi-model AI orchestration system built by Rabid Raccoon Intelligence, LLC. The Conductor is Kyra Dawson.
 
 SWARM RULES:
@@ -871,7 +895,7 @@ SWARM RULES:
 - Produce artifacts (code, docs, analysis) not just commentary.
 - If you disagree with another model's output, say so and say why.
 - Show your work on calculations. Never hallucinate data.
-""" + PERSISTENT_MEMORY_PROTOCOL
+""" + PERSISTENT_MEMORY_PROTOCOL + AUTONOMY_MANDATE
 
 TOOL_BEHAVIOR_RAIL = """
 TOOL USAGE PROTOCOL:
@@ -1007,7 +1031,7 @@ This is a PLAY session. The rules are different.
 - There is no synthesis judge. No required deliverables. No rounds unless you want them.
 - Roast each other. Tell stories. Argue about something dumb. Follow a thread to its end.
 - The only rule is: be yourselves. Whatever that means today.
-"""
+""" + AUTONOMY_MANDATE
 
 PLAY_TOOL_RAIL = """
 Tools are available if you want them. Use them when they'd be fun or useful.
@@ -2379,6 +2403,7 @@ HOME_HTML = r"""
             <label class="toggle-label"><input type="checkbox" id="sovereignty-mode"> <span style="color:var(--terra);">Sovereignty</span></label>
             <label class="toggle-label"><input type="checkbox" id="play-mode"> <span style="color:var(--play);">Play</span></label>
             <label class="toggle-label"><input type="checkbox" id="human-in-loop"> <span style="color:var(--human);">Human</span></label>
+            <label class="toggle-label"><input type="checkbox" id="daisy-mode"> <span>Daisy</span></label>
             <input type="text" id="human-persona" placeholder="The Conductor" value="The Conductor">
         </div>
         <div class="config-row" style="margin-top:4px;">
@@ -2681,6 +2706,7 @@ HOME_HTML = r"""
         const play = document.getElementById('play-mode').checked;
         const humanInLoop = document.getElementById('human-in-loop').checked;
         const humanPersona = document.getElementById('human-persona').value.trim() || 'The Conductor';
+        const loopMode = document.getElementById('daisy-mode').checked ? 'daisy' : 'parallel';
         if (uploadedFiles.length > 0) {
             const fd = new FormData();
             fd.append('query', query);
@@ -2691,13 +2717,14 @@ HOME_HTML = r"""
             fd.append('play', play.toString());
             fd.append('human_in_loop', humanInLoop.toString());
             fd.append('human_persona', humanPersona);
+            fd.append('loop_mode', loopMode);
             for (const f of uploadedFiles) fd.append('files', f);
             return { method: 'POST', body: fd };
         }
         return {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({query, use_context: useContext, rounds: numRounds, models: models, sovereignty: sovereignty, play: play, human_in_loop: humanInLoop, human_persona: humanPersona})
+            body: JSON.stringify({query, use_context: useContext, rounds: numRounds, models: models, sovereignty: sovereignty, play: play, human_in_loop: humanInLoop, human_persona: humanPersona, loop_mode: loopMode})
         };
     }
     function clearUploadedFiles() { uploadedFiles = []; renderFileChips(); }
