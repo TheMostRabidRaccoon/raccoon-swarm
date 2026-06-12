@@ -1513,7 +1513,7 @@ def _invoke_model(func, prompt, images, session_id):
 
 
 def run_loop_round(prompt, models=None, images=None, session_id="unknown",
-                   mode="parallel", order=None):
+                   mode="parallel", order=None, on_speaker=None):
     """Run one loop round.
 
     mode="parallel": all models fire concurrently on the same prompt (original
@@ -1523,6 +1523,8 @@ def run_loop_round(prompt, models=None, images=None, session_id="unknown",
     order:           explicit speaker order (list of model names). If None, uses
                      the models dict order. Pass the per-session locked order so
                      anchor/integrator positions rotate across sessions.
+    on_speaker:      optional callback(name, resp) invoked as each model finishes
+                     (daisy only) so the caller can stream turns live.
     """
     if models is None:
         models = SWARM_LOOP
@@ -1537,6 +1539,11 @@ def run_loop_round(prompt, models=None, images=None, session_id="unknown",
                 resp = f"[{name} error: {str(e)}]"
                 logger.error(f"Loop {name} failed: {e}")
             results[name] = resp
+            if on_speaker:
+                try:
+                    on_speaker(name, resp)
+                except Exception as e:
+                    logger.error(f"on_speaker callback failed for {name}: {e}")
             # Append this speaker's turn so the next speaker reacts in-round.
             running = f"{running}\n\n=== {name} (this round) ===\n{resp}\n=== END {name} ==="
     else:  # parallel — original behavior, byte-for-byte in effect
@@ -2855,11 +2862,28 @@ HOME_HTML = r"""
                 _currentLoopSessionId = sessionId;
                 _humanPersonaName = document.getElementById('human-persona').value.trim() || 'The Conductor';
                 output.innerHTML = '';
+                let _renderedSpeakers = new Set();
                 const evtSource = new EventSource(`/loop-stream/${sessionId}`);
                 evtSource.addEventListener('round_start', (e) => {
                     const d = JSON.parse(e.data);
+                    _renderedSpeakers.clear();
                     output.innerHTML += `<div class="round-header">Round ${d.round} of ${d.total}</div>`;
                     output.innerHTML += `<div class="status" id="round-${d.round}-status"><span class="spinner"></span> Models responding...</div>`;
+                });
+                // Daisy mode: render each speaker the moment it finishes (live stream).
+                evtSource.addEventListener('speaker_complete', (e) => {
+                    const d = JSON.parse(e.data);
+                    const statusEl = document.getElementById(`round-${d.round}-status`);
+                    if (statusEl) statusEl.remove();
+                    _renderedSpeakers.add(d.model);
+                    const block = modelBlockHTML(d.model, d.response, d.round);
+                    output.innerHTML += block.html;
+                    const lastBlock = output.lastElementChild;
+                    if (lastBlock) lastBlock.scrollIntoView({ behavior: 'smooth', block: 'end' });
+                    if (document.getElementById('use-voice').checked && block.btnId) {
+                        const btn = document.getElementById(block.btnId);
+                        if (btn) queueAutoPlay(block.model, block.text, btn);
+                    }
                 });
                 evtSource.addEventListener('round_complete', (e) => {
                     const d = JSON.parse(e.data);
@@ -2867,6 +2891,7 @@ HOME_HTML = r"""
                     if (statusEl) statusEl.remove();
                     const blocks = [];
                     for (const [name, resp] of Object.entries(d.responses)) {
+                        if (_renderedSpeakers.has(name)) continue;  // already streamed live (daisy)
                         const block = modelBlockHTML(name, resp, d.round);
                         output.innerHTML += block.html;
                         blocks.push(block);
@@ -3199,6 +3224,9 @@ def start_loop():
                 round_results = run_loop_round(
                     prompt, models=active_loop_models, images=round_images,
                     session_id=session_id, mode=loop_mode, order=session_order,
+                    on_speaker=((lambda name, resp: q.put(("speaker_complete",
+                        {"round": round_num, "model": name, "response": resp})))
+                        if loop_mode == "daisy" else None),
                 )
                 all_rounds.append(round_results)
 
@@ -3220,8 +3248,11 @@ def start_loop():
                 if mail_summary["sent"] or mail_summary["rejected"]:
                     q.put(("mail_activity", mail_summary))
 
+                # In daisy mode each turn was already streamed via speaker_complete,
+                # so don't resend them here (avoids double-render and double bandwidth).
                 q.put(("round_complete", {"round": round_num,
-                        "responses": {k: v for k, v in round_results.items() if k != "_meta"}}))
+                        "responses": {} if loop_mode == "daisy"
+                                      else {k: v for k, v in round_results.items() if k != "_meta"}}))
 
                 # Human-in-the-loop: wait for human input after AI round.
                 # Configurable via RRI_HUMAN_TIMEOUT_SECONDS (default 600 = 10 min).
@@ -3346,15 +3377,30 @@ def loop_stream(session_id):
             yield f"event: error_msg\ndata: {json.dumps({'message': 'Session not found'})}\n\n"
             return
         
+        # Max idle (no real events) before treating the stream as dead. Must
+        # exceed the human-in-loop window — during a human turn the worker blocks
+        # and puts nothing on the queue, so a short timeout here was killing the
+        # stream mid-turn (the "Error: Timeout" at ~5 min). Heartbeat keeps the
+        # connection alive; only a genuinely stuck session hits max_idle.
+        try:
+            _human_to = int(os.getenv("RRI_HUMAN_TIMEOUT_SECONDS", "600"))
+        except (TypeError, ValueError):
+            _human_to = 600
+        max_idle = max(900, _human_to + 300)
+        idle = 0
         while True:
             try:
-                event_type, data = q.get(timeout=300)
+                event_type, data = q.get(timeout=15)
+                idle = 0
                 if event_type == "DONE":
                     break
                 yield f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
             except queue.Empty:
-                yield f"event: error_msg\ndata: {json.dumps({'message': 'Timeout'})}\n\n"
-                break
+                idle += 15
+                if idle >= max_idle:
+                    yield f"event: error_msg\ndata: {json.dumps({'message': 'Timeout'})}\n\n"
+                    break
+                yield ": keepalive\n\n"  # SSE comment — keeps the connection alive during long waits
         
         if session_id in loop_sessions:
             del loop_sessions[session_id]
