@@ -33,6 +33,7 @@ import sys
 import time
 import threading
 import queue
+import random
 import hashlib
 import tempfile
 import base64
@@ -1478,23 +1479,52 @@ def format_round_history(rounds, current_round, max_rounds):
     h += "=" * 60 + "\n\n"
     return h
 
-def run_loop_round(prompt, models=None, images=None, session_id="unknown"):
+def _invoke_model(func, prompt, images, session_id):
+    """Call a model function with the right signature. The main four accept
+    session_id (for per-session tool rate limiting); Perplexity and any other
+    call_ that doesn't take session_id gets the basic signature."""
+    if func in (call_claude, call_gpt, call_grok, call_gemini):
+        return func(prompt, images=images, session_id=session_id)
+    return func(prompt, images=images)
+
+
+def run_loop_round(prompt, models=None, images=None, session_id="unknown",
+                   mode="parallel", order=None):
+    """Run one loop round.
+
+    mode="parallel": all models fire concurrently on the same prompt (original
+                     behavior).
+    mode="daisy":    models answer sequentially; each sees the round prompt PLUS
+                     the answers earlier speakers gave THIS round.
+    order:           explicit speaker order (list of model names). If None, uses
+                     the models dict order. Pass the per-session locked order so
+                     anchor/integrator positions rotate across sessions.
+    """
     if models is None:
         models = SWARM_LOOP
-    futures = {}
-    for name, func in models.items():
-        # Perplexity (and any other call_ that doesn't take session_id) gets the basic signature
-        if func in (call_claude, call_gpt, call_grok, call_gemini):
-            futures[name] = executor.submit(func, prompt, images=images, session_id=session_id)
-        else:
-            futures[name] = executor.submit(func, prompt, images=images)
+    names = [n for n in (order or list(models.keys())) if n in models]
     results = {}
-    for name, future in futures.items():
-        try:
-            results[name] = future.result(timeout=180)
-        except Exception as e:
-            results[name] = f"[{name} error: {str(e)}]"
-            logger.error(f"Loop {name} failed: {e}")
+    if mode == "daisy":
+        running = prompt
+        for name in names:
+            try:
+                resp = _invoke_model(models[name], running, images, session_id)
+            except Exception as e:
+                resp = f"[{name} error: {str(e)}]"
+                logger.error(f"Loop {name} failed: {e}")
+            results[name] = resp
+            # Append this speaker's turn so the next speaker reacts in-round.
+            running = f"{running}\n\n=== {name} (this round) ===\n{resp}\n=== END {name} ==="
+    else:  # parallel — original behavior, byte-for-byte in effect
+        futures = {name: executor.submit(_invoke_model, models[name], prompt, images, session_id)
+                   for name in names}
+        for name in names:
+            try:
+                results[name] = futures[name].result(timeout=180)
+            except Exception as e:
+                results[name] = f"[{name} error: {str(e)}]"
+                logger.error(f"Loop {name} failed: {e}")
+    results["_meta"] = {"order": names, "mode": mode}
     return results
 
 SYNTHESIS_RUBRIC = """
@@ -3024,6 +3054,9 @@ def start_loop():
         _play_mode = request.form.get("play", "false").lower() == "true"
         human_in_loop = request.form.get("human_in_loop", "false").lower() == "true"
         human_persona = request.form.get("human_persona", "The Conductor").strip() or "The Conductor"
+        loop_mode = (request.form.get("loop_mode") or "parallel").strip().lower()
+        _sv = request.form.get("shuffle_order")
+        shuffle_order = None if _sv is None else (_sv.lower() == "true")
     else:
         data = request.get_json() or {}
         query = data.get("query", "")
@@ -3035,6 +3068,8 @@ def start_loop():
         _play_mode = data.get("play", False)
         human_in_loop = data.get("human_in_loop", False)
         human_persona = (data.get("human_persona", "The Conductor") or "The Conductor").strip()
+        loop_mode = (data.get("loop_mode") or "parallel").strip().lower()
+        shuffle_order = data.get("shuffle_order")  # None | bool
     # PLAY takes precedence over SOVEREIGNTY when both are set (per Session 60).
     if _play_mode:
         _sovereignty_mode = False
@@ -3052,6 +3087,20 @@ def start_loop():
         # SWARM_LOOP uses Title Case keys, selected_models uses lowercase
         active_loop_models = {k: v for k, v in SWARM_LOOP.items() if k.lower() in selected_models}
     logger.info(f"Loop dispatch: {query[:80]} ({num_rounds} rounds, models: {[k.lower() for k in active_loop_models.keys()]})")
+
+    # --- loop mode + per-session speaker order ---
+    # daisy = sequential (each model sees earlier speakers THIS round); parallel = concurrent (default).
+    # The speaking order is locked ONCE per session and reused every round, so the
+    # anchor (first) and integrator (last) positions rotate across sessions instead
+    # of one model permanently anchoring.
+    if loop_mode not in ("parallel", "daisy"):
+        loop_mode = "parallel"
+    if shuffle_order is None:
+        shuffle_order = (loop_mode == "daisy")  # daisy defaults to shuffled
+    session_order = list(active_loop_models.keys())
+    if shuffle_order:
+        random.shuffle(session_order)
+    logger.info(f"Loop speaker order ({loop_mode}, shuffled={shuffle_order}): {session_order}")
 
     session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
     q = queue.Queue()
@@ -3120,7 +3169,10 @@ def start_loop():
 
                 # Only send images in round 1 to avoid repeated vision API costs
                 round_images = images if (images and round_num == 1) else None
-                round_results = run_loop_round(prompt, models=active_loop_models, images=round_images, session_id=session_id)
+                round_results = run_loop_round(
+                    prompt, models=active_loop_models, images=round_images,
+                    session_id=session_id, mode=loop_mode, order=session_order,
+                )
                 all_rounds.append(round_results)
 
                 # Process filestore directives from this round's outputs
@@ -3141,7 +3193,8 @@ def start_loop():
                 if mail_summary["sent"] or mail_summary["rejected"]:
                     q.put(("mail_activity", mail_summary))
 
-                q.put(("round_complete", {"round": round_num, "responses": round_results}))
+                q.put(("round_complete", {"round": round_num,
+                        "responses": {k: v for k, v in round_results.items() if k != "_meta"}}))
 
                 # Human-in-the-loop: wait for human input after AI round.
                 # Configurable via RRI_HUMAN_TIMEOUT_SECONDS (default 600 = 10 min).
@@ -3622,7 +3675,8 @@ def run_headless_session(query, source, num_rounds=3, active_loop_models=None, s
                 if mail_summary["sent"] or mail_summary["rejected"]:
                     q.put(("mail_activity", mail_summary))
 
-                q.put(("round_complete", {"round": round_num, "responses": round_results}))
+                q.put(("round_complete", {"round": round_num,
+                        "responses": {k: v for k, v in round_results.items() if k != "_meta"}}))
 
             q.put(("synthesis_start", {}))
             synthesis = run_synthesis(query, all_rounds)
