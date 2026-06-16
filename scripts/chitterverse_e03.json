@@ -44,7 +44,7 @@
       "character_slug": "elder_loman",
       "scene": "The Woodland Council chamber. Night. Robed raccoons circle a stone altar where a modem glows with chaotic amber light.",
       "image_path": "artifacts/images/e03_tableau_01_first-whisper.png",
-      "line": "Louder, my children! The Great Connection demands our full voice! Drown the silence! Let the packet know our faith!",
+      "line": "Louder, my children! Drown the silence! Let the packet know our faith!",
       "voice": {
         "voice_id": "tHX3st5GOLcIi8WJRtqa",
         "voice_name": "DeepRay",
@@ -53,7 +53,7 @@
       },
       "emotion": "fervent, commanding",
       "prosody": "Full volume, baritone resonance, slight vibrato of true belief. This is a man who has never questioned.",
-      "estimated_duration_s": 7.0
+      "estimated_duration_s": 5.0
     },
     {
       "index": 2,
@@ -88,7 +88,7 @@
       "emotion": "tender, accidental",
       "prosody": "Barely audible. Not a dramatic whisper - a genuine attempt not to wake someone. The discovery is incidental.",
       "voice_note": "Inline settings are Kyle's canonical comedic registry default (style 0.70). e03 calls for a barely-audible reverent whisper; Phase 5 emotion tagging should pull style down / stability up for this line, or register a whisper-calibrated Kyle variant if the read drifts comedic.",
-      "estimated_duration_s": 5.0
+      "estimated_duration_s": 4.0
     },
     {
       "index": 4,
@@ -149,6 +149,6 @@
       "estimated_duration_s": 2.0
     }
   ],
-  "total_estimated_runtime_s": 32.0,
-  "timing_note": "Sum of estimated_duration_s is 32.0s against a 30s target. Trim candidates if a hard 30s cut is required: panel 1 (7.0 -> 5.5) and/or panel 3 (5.0 -> 4.0)."
+  "total_estimated_runtime_s": 29.0,
+  "timing_note": "Trimmed to 29.0s against a 30s target. Panel 1 line cut to its two thematically load-bearing beats ('Drown the silence!' is kept deliberately — it sets up the silent-cyan payoff). Panel 3 tightened in pacing, words intact. Silent holds (panels 4, 7) left at full length. For an even tighter ~22-25s cut, candidates are panel 2 or panel 6 narration."
 }
