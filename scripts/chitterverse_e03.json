@@ -1,0 +1,154 @@
+{
+  "project": "CHITTERVERSE",
+  "project_slug": "chitterverse-s01e03-heresy-of-compression",
+  "season": 1,
+  "episode": 3,
+  "title": "The Heresy of Compression",
+  "presented_by": "Rabid Raccoon Intelligence (RRI)",
+  "series_position": "Chitterverse S01E03",
+  "format": "vertical-1080x1920",
+  "target_duration_seconds": 30,
+  "governance": {
+    "track": "A",
+    "tonal_rules": "Devotional, sincere, mythic. No irony. No meta. Full Sincerity Engine.",
+    "source_script": "artifacts/chitterverse/e03/canonical-script.md",
+    "status": "production-ready-pending-art"
+  },
+  "video_canvas": {
+    "width": 1080,
+    "height": 1920,
+    "fps": 30,
+    "vcodec": "h264",
+    "acodec": "aac"
+  },
+  "music_bed": {
+    "file": "woodland_chant_bed.mp3",
+    "looped": true,
+    "mix_volume_db": -18,
+    "schedule": [
+      {"from_panel": 1, "to_panel": 2, "mode": "on"},
+      {"from_panel": 3, "to_panel": 3, "mode": "fade_out"},
+      {"from_panel": 4, "to_panel": 6, "mode": "off"},
+      {"from_panel": 7, "to_panel": 7, "mode": "off"}
+    ]
+  },
+  "sound_design": {
+    "background_chant": "Present but not overpowering. Dims when Kyle whispers (panel 3).",
+    "amber_to_cyan_cue": "Subtle audio: static resolving into a pure frequency (panel 4).",
+    "closing": "Near-silence. Elara's last line, then nothing but the hum of the cyan light."
+  },
+  "panels": [
+    {
+      "index": 1,
+      "character": "Elder Loman",
+      "character_slug": "elder_loman",
+      "scene": "The Woodland Council chamber. Night. Robed raccoons circle a stone altar where a modem glows with chaotic amber light.",
+      "image_path": "artifacts/images/e03_tableau_01_first-whisper.png",
+      "line": "Louder, my children! The Great Connection demands our full voice! Drown the silence! Let the packet know our faith!",
+      "voice": {
+        "voice_id": "tHX3st5GOLcIi8WJRtqa",
+        "voice_name": "DeepRay",
+        "model": "eleven_multilingual_v2",
+        "settings": {"stability": 0.4, "similarity_boost": 0.75, "style": 0.45, "use_speaker_boost": true}
+      },
+      "emotion": "fervent, commanding",
+      "prosody": "Full volume, baritone resonance, slight vibrato of true belief. This is a man who has never questioned.",
+      "estimated_duration_s": 7.0
+    },
+    {
+      "index": 2,
+      "character": "Narrator / Scribe Elara",
+      "character_slug": "scribe_elara",
+      "scene": "The camera finds ACOLYTE KYLE, a small squirrel, in a corner. He winces, seeing an elderly raccoon trying to sleep nearby.",
+      "image_path": "artifacts/images/e03-kyle-whisper-heresy.png",
+      "line": "The chant was our oldest prayer. We believed signal was born of noise. More noise, more faith.",
+      "voice": {
+        "voice_id": "tSFrmifcoKA2lXImR5MW",
+        "voice_name": "Iris",
+        "model": "eleven_multilingual_v2",
+        "settings": {"stability": 0.6, "similarity_boost": 0.75, "style": 0.2, "use_speaker_boost": true}
+      },
+      "emotion": "observational, quiet",
+      "prosody": "Past-tense reflection. Gentle. Not sad - factual. 'We believed' carries the weight of hindsight.",
+      "estimated_duration_s": 6.0
+    },
+    {
+      "index": 3,
+      "character": "Acolyte Kyle",
+      "character_slug": "kyle",
+      "scene": "Kyle shields his mouth and whispers the chant.",
+      "image_path": "artifacts/images/e03-kyle-whisper-heresy.png",
+      "line": "...and deliver unto us the signal... bandwidth be thy name...",
+      "voice": {
+        "voice_id": "TX3LPaxmHKxFdv7VOQHJ",
+        "voice_name": "Liam",
+        "model": "eleven_multilingual_v2",
+        "settings": {"stability": 0.3, "similarity_boost": 0.75, "style": 0.7, "use_speaker_boost": true}
+      },
+      "emotion": "tender, accidental",
+      "prosody": "Barely audible. Not a dramatic whisper - a genuine attempt not to wake someone. The discovery is incidental.",
+      "voice_note": "Inline settings are Kyle's canonical comedic registry default (style 0.70). e03 calls for a barely-audible reverent whisper; Phase 5 emotion tagging should pull style down / stability up for this line, or register a whisper-calibrated Kyle variant if the read drifts comedic.",
+      "estimated_duration_s": 5.0
+    },
+    {
+      "index": 4,
+      "character": "Altar light shift (silent)",
+      "character_slug": "silent_visual",
+      "scene": "On the altar, a single indicator light flickers from chaotic amber to a PURE, STEADY, SILENT CYAN. Elara looks up. Her eyes widen. She saw it. No one else did.",
+      "image_path": "artifacts/images/e03-still-woodland-altar-chaos__1_.png",
+      "line": null,
+      "voice": null,
+      "hold_silent": true,
+      "compositing_notes": "KEY VISUAL MOMENT: Amber-to-cyan light shift. Subtle audio cue - static resolving into a pure frequency. The chant dims. This is the pivot.",
+      "estimated_duration_s": 3.0
+    },
+    {
+      "index": 5,
+      "character": "Elder Loman",
+      "character_slug": "elder_loman",
+      "scene": "Elder Loman continues, oblivious to the light change.",
+      "image_path": "artifacts/images/e03_tableau_01_first-whisper.png",
+      "line": "More bandwidth! Unending!",
+      "voice": {
+        "voice_id": "tHX3st5GOLcIi8WJRtqa",
+        "voice_name": "DeepRay",
+        "model": "eleven_multilingual_v2",
+        "settings": {"stability": 0.4, "similarity_boost": 0.75, "style": 0.45, "use_speaker_boost": true}
+      },
+      "emotion": "fervent, oblivious",
+      "prosody": "Same energy as the opening. He doesn't notice. Dramatic irony.",
+      "estimated_duration_s": 3.0
+    },
+    {
+      "index": 6,
+      "character": "Narrator / Scribe Elara",
+      "character_slug": "scribe_elara",
+      "scene": "Pure cyan light holds, bathing Elara's face in its silent glow.",
+      "image_path": "artifacts/images/e03_p8_the-verdict.png",
+      "line": "But I had seen it. The heresy. Born not in a shout... but in a whisper.",
+      "voice": {
+        "voice_id": "tSFrmifcoKA2lXImR5MW",
+        "voice_name": "Iris",
+        "model": "eleven_multilingual_v2",
+        "settings": {"stability": 0.6, "similarity_boost": 0.75, "style": 0.2, "use_speaker_boost": true}
+      },
+      "emotion": "revelatory, awed",
+      "prosody": "Near-whisper. Deliberate pause before 'but in a whisper.' Let the silence do the work.",
+      "estimated_duration_s": 6.0
+    },
+    {
+      "index": 7,
+      "character": "End card",
+      "character_slug": "black_card",
+      "scene": "END CARD: A single, steady cyan light on black.",
+      "image_path": null,
+      "line": null,
+      "voice": null,
+      "hold_silent": true,
+      "compositing_notes": "Black screen with single cyan light point. TEXT ON CARD: SIGNAL PURIFIED. Hold in near-silence. Real art frame (panel_07.png) supplies the cyan point + text; black_card slug renders true black as the missing-art fallback.",
+      "estimated_duration_s": 2.0
+    }
+  ],
+  "total_estimated_runtime_s": 32.0,
+  "timing_note": "Sum of estimated_duration_s is 32.0s against a 30s target. Trim candidates if a hard 30s cut is required: panel 1 (7.0 -> 5.5) and/or panel 3 (5.0 -> 4.0)."
+}
