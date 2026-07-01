@@ -197,6 +197,102 @@ def build_digest(
     }
 
 
+# ============================================================
+# Session scorecard v0 — mechanical counters only
+# ============================================================
+#
+# The measurement arc's first brick: a structured session_scorecard.json emitted
+# beside every closer digest. MECHANICAL COUNTERS ONLY — no usefulness/quality
+# self-grades. Judgment fields are excluded by design; they require an
+# INDEPENDENT grader (an eval harness), never swarm self-report, or the
+# scoreboard is just vibes with indentation.
+#
+# Emission is fail-LOUD, not fail-CLOSED: a scorecard write failure is logged
+# but never discards the session's real work. That matches this module's own
+# contract ("Failures are logged but never raised") — the synthesis is the
+# product; the scorecard is the instrument, and a broken instrument must not
+# nuke a completed session.
+
+SCORECARD_VERSION = 1
+
+
+def count_phantom_claims(all_rounds: list[dict], synthesis: str) -> int:
+    """Number of DISTINCT filestore paths claimed-as-written across the rounds +
+    synthesis that do NOT exist on disk (reusing swarm_filestore's phantom-write
+    detector from #66). This is the concrete, computable-today core of
+    persistence_gap: announcing a write is not a write.
+
+    Call after writes have been persisted (the closer runs post-session).
+    """
+    import swarm_filestore
+    combined: dict = {}
+    for i, rd in enumerate(all_rounds or []):
+        for m, out in (rd or {}).items():
+            if m != "_meta" and isinstance(out, str):
+                combined[f"r{i}:{m}"] = out
+    if synthesis:
+        combined["synthesis"] = synthesis
+    try:
+        phantoms = swarm_filestore.verify_round_claims(combined).get("phantoms") or []
+        return len({p["path"] for p in phantoms})
+    except Exception as e:  # never let telemetry break the closer
+        logger.warning(f"[closer] phantom-claim check failed: {type(e).__name__}: {e}")
+        return 0
+
+
+def build_scorecard(digest: dict, *, phantom_write_claims: int) -> dict:
+    """Pure function: map a closer digest + phantom count to the v0 scorecard.
+
+    Everything here is an objective counter derived from what actually happened.
+    Fields that need deeper plumbing (cost, structured tool-call counts,
+    citations) are emitted as null with a reason rather than guessed.
+    """
+    rounds = digest.get("rounds") or []
+    models_active = sorted({m for r in rounds for m in (r.get("models") or [])})
+    return {
+        "scorecard_version": SCORECARD_VERSION,
+        "session_id": digest.get("session_id"),
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "query": (digest.get("query") or "")[:200],
+        "rounds": len(rounds),
+        "models_active": models_active,
+        "duration_sec": digest.get("duration_sec"),
+        "filestore": {
+            "writes": len(digest.get("fs_writes") or []),
+            "appends": len(digest.get("fs_appends") or []),
+            "rejected": len(digest.get("fs_rejected") or []),
+            "phantom_write_claims": phantom_write_claims,
+        },
+        # persistence_gap v0 == distinct claimed-but-unpersisted writes: the exact
+        # failure mode the swarm demonstrated while discussing phantom artifacts.
+        "persistence_gap": phantom_write_claims,
+        "mail": {
+            "sent": len(digest.get("mail_sent") or []),
+            "rejected": len(digest.get("mail_rejected") or []),
+        },
+        "synthesis_directives": {
+            "blockers": len(digest.get("blockers") or []),
+            "reviews": len(digest.get("reviews") or []),
+            "flags": len(digest.get("flags") or []),
+        },
+        "truncated_models": digest.get("truncated_models") or [],
+        "rate_limited_models": digest.get("rate_limited_models") or [],
+        "audit_counts": digest.get("audit_counts"),
+        # Deferred — emitted null so consumers see the field exists but isn't
+        # populated yet, rather than silently missing.
+        "cost_usd": None,
+        "tool_calls": None,
+        "citations_claimed": None,
+        "citations_verified": None,
+        "deferred_fields": {
+            "cost_usd": "needs API-billing plumbing from the loop engine",
+            "tool_calls": "needs structured tool-call counts from the loop engine",
+            "citations_claimed/verified": "needs citation extraction",
+            "quality/usefulness scores": "excluded by design — require an independent grader, not self-report",
+        },
+    }
+
+
 def _path_of(item) -> str:
     if isinstance(item, dict):
         return item.get("path") or item.get("file") or str(item)
@@ -399,6 +495,21 @@ def run_post_session_closer(
             local_path = logs_dir / f"closer-digest-{session_id}.md"
             local_path.write_text(f"# {subject}\n\n{body}\n")
 
+            # Session scorecard (mechanical counters). Fail-loud: a scorecard
+            # write failure is logged but never aborts the closer or the session.
+            try:
+                phantom_count = count_phantom_claims(all_rounds, synthesis)
+                scorecard = build_scorecard(digest, phantom_write_claims=phantom_count)
+                scorecard_path = logs_dir / f"scorecard-{session_id}.json"
+                scorecard_path.write_text(json.dumps(scorecard, indent=2))
+                logger.info(
+                    f"[closer] scorecard written: {scorecard_path} "
+                    f"(rounds={scorecard['rounds']}, persistence_gap={phantom_count})"
+                )
+            except Exception as e:
+                logger.error(f"[closer] scorecard emit failed for session {session_id}: "
+                             f"{type(e).__name__}: {e}")
+
             sent, reason = _send_via_smtp(subject, body, session_id)
             outcome = "emailed" if sent else f"logged-only ({reason})"
 
@@ -422,4 +533,5 @@ def status() -> dict:
     return {
         "enabled": _enabled(),
         "version": 1,
+        "scorecard_version": SCORECARD_VERSION,
     }
