@@ -1957,7 +1957,8 @@ _deploy_policy = swarm_deploy.policy(RRI_DEPLOYMENT_PROFILE)
 
 # In public (or an unknown/fail-closed profile) the LAN trust bypass is CLOSED
 # regardless of RRI_TRUSTED_CIDRS — this is the reverse-proxy fail-open from #66.
-if not _deploy_policy["lan_bypass_allowed"]:
+# public can re-open it only with the explicit RRI_ALLOW_PUBLIC_TRUSTED_CIDRS flag.
+if not swarm_deploy.effective_lan_bypass(RRI_DEPLOYMENT_PROFILE, os.environ):
     TRUSTED_CIDRS = []
 
 _deploy_check = swarm_deploy.startup_check(
@@ -1966,6 +1967,7 @@ _deploy_check = swarm_deploy.startup_check(
     has_persistent_secret=bool(os.getenv("RRI_AUTH_TOKEN")),
     codeexec_sandboxed=swarm_deploy.codeexec_is_sandboxed(os.environ),
     codeexec_override=swarm_deploy.codeexec_unsafe_override(os.environ),
+    public_cidr_override=swarm_deploy.public_trusted_cidrs_allowed(os.environ),
 )
 logger.warning("\n" + swarm_deploy.posture_banner(RRI_DEPLOYMENT_PROFILE, _deploy_policy, len(TRUSTED_CIDRS)))
 for _w in _deploy_check["warnings"]:

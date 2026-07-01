@@ -86,6 +86,24 @@ def test_codeexec_allowed_matrix():
     assert dep.codeexec_allowed("public", {"RRI_ALLOW_UNSAFE_PUBLIC_CODEEXEC": "yes"})[0] is True
 
 
+# ---- public trusted-CIDR escape hatch ------------------------------------
+
+def test_public_cidr_override_detection():
+    assert dep.public_trusted_cidrs_allowed({"RRI_ALLOW_PUBLIC_TRUSTED_CIDRS": "true"}) is True
+    assert dep.public_trusted_cidrs_allowed({"RRI_ALLOW_PUBLIC_TRUSTED_CIDRS": "no"}) is False
+    assert dep.public_trusted_cidrs_allowed({}) is False
+
+
+def test_effective_lan_bypass():
+    assert dep.effective_lan_bypass("local", {}) is True
+    assert dep.effective_lan_bypass("lan", {}) is True
+    # public: closed by default, opt-back-in only with the explicit flag.
+    assert dep.effective_lan_bypass("public", {}) is False
+    assert dep.effective_lan_bypass("public", {"RRI_ALLOW_PUBLIC_TRUSTED_CIDRS": "true"}) is True
+    # unknown profile stays fail-closed even with the flag (flag is public-only).
+    assert dep.effective_lan_bypass("publik", {"RRI_ALLOW_PUBLIC_TRUSTED_CIDRS": "true"}) is False
+
+
 # ---- startup_check matrix ------------------------------------------------
 
 def _check(profile, **kw):
@@ -128,6 +146,18 @@ def test_public_override_boots_but_warns():
 def test_public_fully_configured_boots_clean():
     r = _check("public")
     assert r["ok"] is True and r["fatal"] == []
+
+
+def test_public_cidr_override_warns_not_fatal():
+    r = _check("public", public_cidr_override=True)
+    assert r["ok"] is True
+    assert any("RE-ENABLED" in w for w in r["warnings"])
+
+
+def test_lan_unsandboxed_codeexec_warns():
+    r = _check("lan", codeexec_sandboxed=False)
+    assert r["ok"] is True
+    assert any("without a declared sandbox" in w for w in r["warnings"])
 
 
 def test_lan_missing_secret_warns_not_fatal():

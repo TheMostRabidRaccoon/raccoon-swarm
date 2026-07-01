@@ -57,7 +57,12 @@ banner at startup and unsafe outward-facing configs refuse to boot.
 - **Why `public` closes the LAN bypass:** the default trusted CIDRs include
   RFC1918 ranges. Behind a reverse proxy the peer IP is the proxy (often a
   private/loopback address), so the bypass would fail *open* for public
-  clients. `public` sets `TRUSTED_CIDRS = []` regardless of `RRI_TRUSTED_CIDRS`.
+  clients. `public` sets `TRUSTED_CIDRS = []` regardless of `RRI_TRUSTED_CIDRS` —
+  **unless** the operator explicitly opts back in with
+  `RRI_ALLOW_PUBLIC_TRUSTED_CIDRS=true` (logged as a loud UNSAFE warning). That
+  escape hatch exists so needing one trusted subnet doesn't force a downgrade to
+  `lan`, which would reopen the bypass far more broadly. Only use it when
+  `remote_addr` is genuinely the real client, not a proxy hop.
 - **`code_exec` on `public`:** the sandbox is homelab-grade, not security-grade
   (`swarm_codeexec.py`). On `public` it refuses to run — and the server refuses
   to boot — unless `RRI_CODEEXEC_SANDBOX=docker|gvisor|firejail|nsjail|podman`
