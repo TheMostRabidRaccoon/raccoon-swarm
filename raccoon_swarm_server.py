@@ -35,6 +35,7 @@ import threading
 import queue
 import random
 import hashlib
+import secrets
 import tempfile
 import base64
 
@@ -1891,7 +1892,11 @@ def save_single_results(query, responses):
 # ============================================
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 200 * 1024 * 1024  # 200MB max total upload (20 files × per-file caps fit comfortably)
-app.secret_key = os.getenv("RRI_AUTH_TOKEN", "dev-secret-key-change-me")
+# Never fall back to a hardcoded key: an unconfigured deployment would sign
+# session cookies with a public constant, making them forgeable. Absent an
+# explicit token, use a random per-boot key (sessions simply don't survive a
+# restart, which is fine for the dev/unconfigured case).
+app.secret_key = os.getenv("RRI_AUTH_TOKEN") or secrets.token_hex(32)
 IDEAS_FILE = os.path.join(os.getenv("RRI_STORAGE_DIR", "."), "ideas.json")
 loop_sessions = {}
 human_response_queues = {}  # session_id -> queue.Queue for human-in-the-loop input
@@ -1902,18 +1907,16 @@ human_response_queues = {}  # session_id -> queue.Queue for human-in-the-loop in
 import ipaddress
 from functools import wraps
 
+import swarm_auth  # stdlib-only auth primitives (constant-time comparisons, trust CIDRs)
+
 RRI_AUTH_TOKEN = os.getenv("RRI_AUTH_TOKEN", "")
 RRI_PASSWORD_HASH = os.getenv("RRI_PASSWORD_HASH", "")
 # Comma-separated CIDRs that bypass the login gate (homelab / LAN access).
 # Defaults cover loopback + RFC1918 ranges so the swarm box and other machines
 # on the home network can hit the UI without a password while hosted/public
 # clients still get the gate. Override with RRI_TRUSTED_CIDRS="" to disable.
-_DEFAULT_TRUSTED_CIDRS = "127.0.0.0/8,::1/128,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,fc00::/7,fe80::/10"
-TRUSTED_CIDRS = [
-    ipaddress.ip_network(c.strip())
-    for c in os.getenv("RRI_TRUSTED_CIDRS", _DEFAULT_TRUSTED_CIDRS).split(",")
-    if c.strip()
-]
+# (env unset -> homelab defaults; "" -> LAN bypass disabled.)
+TRUSTED_CIDRS = swarm_auth.parse_trusted_cidrs(os.getenv("RRI_TRUSTED_CIDRS"))
 
 def is_auth_enabled():
     """Auth is only active when both env vars are set (i.e., hosted mode)."""
@@ -1926,14 +1929,7 @@ def _client_ip():
     return request.remote_addr or ""
 
 def _is_trusted_client():
-    ip_str = _client_ip()
-    if not ip_str:
-        return False
-    try:
-        ip = ipaddress.ip_address(ip_str)
-    except ValueError:
-        return False
-    return any(ip in net for net in TRUSTED_CIDRS)
+    return swarm_auth.ip_is_trusted(_client_ip(), TRUSTED_CIDRS)
 
 def require_auth(f):
     @wraps(f)
@@ -1942,12 +1938,11 @@ def require_auth(f):
             return f(*args, **kwargs)
         if _is_trusted_client():
             return f(*args, **kwargs)
-        # Check session cookie
-        if request.cookies.get("rri_token") == RRI_AUTH_TOKEN:
+        # Check session cookie (constant-time compare — no timing oracle on the token)
+        if swarm_auth.token_matches(request.cookies.get("rri_token", ""), RRI_AUTH_TOKEN):
             return f(*args, **kwargs)
         # Check Authorization header (for API calls)
-        auth_header = request.headers.get("Authorization", "")
-        if auth_header == f"Bearer {RRI_AUTH_TOKEN}":
+        if swarm_auth.bearer_token_matches(request.headers.get("Authorization", ""), RRI_AUTH_TOKEN):
             return f(*args, **kwargs)
         return redirect("/login")
     return decorated
@@ -2012,8 +2007,7 @@ def login():
         return redirect("/")
     if request.method == "POST":
         password = request.form.get("password", "")
-        pw_hash = hashlib.sha256(password.encode()).hexdigest()
-        if pw_hash == RRI_PASSWORD_HASH:
+        if swarm_auth.password_matches(password, RRI_PASSWORD_HASH):
             resp = redirect("/")
             resp.set_cookie("rri_token", RRI_AUTH_TOKEN,
                           max_age=86400 * 30, httponly=True,
