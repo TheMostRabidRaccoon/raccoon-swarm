@@ -2,3 +2,6 @@
 # the unit suite on a bare interpreter — the tested modules (swarm_auth,
 # swarm_filestore, swarm_dispatch) are stdlib-only and need nothing else.
 pytest>=8.0
+# numpy is a hard runtime dep (requirements.txt) and the semantic search cache
+# tests exercise the real matmul path, so CI needs it too.
+numpy>=1.26
