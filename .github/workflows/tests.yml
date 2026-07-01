@@ -1,0 +1,39 @@
+name: tests
+
+# Unit suite for the swarm's safety-critical pure logic: auth comparisons,
+# filestore path safety + write verification, and the dispatch state machine.
+# These modules are stdlib-only by design, so CI needs nothing beyond pytest —
+# no anthropic/openai/PyMuPDF stack required.
+
+on:
+  pull_request:
+    paths:
+      - '**.py'
+      - 'tests/**'
+      - 'pytest.ini'
+      - 'requirements-dev.txt'
+      - '.github/workflows/tests.yml'
+  push:
+    branches: [main]
+    paths:
+      - '**.py'
+      - 'tests/**'
+      - 'pytest.ini'
+      - 'requirements-dev.txt'
+      - '.github/workflows/tests.yml'
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dev deps
+        run: python -m pip install --upgrade pip && pip install -r requirements-dev.txt
+
+      - name: Run unit suite
+        run: python -m pytest
