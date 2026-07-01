@@ -1947,6 +1947,39 @@ def require_auth(f):
         return redirect("/login")
     return decorated
 
+# ============================================================
+# DEPLOYMENT PROFILE — resolve security posture, fail closed + loud
+# ============================================================
+import swarm_deploy  # stdlib-only policy (local | lan | public)
+
+RRI_DEPLOYMENT_PROFILE = swarm_deploy.resolve_profile(os.getenv("RRI_DEPLOYMENT_PROFILE"))
+_deploy_policy = swarm_deploy.policy(RRI_DEPLOYMENT_PROFILE)
+
+# In public (or an unknown/fail-closed profile) the LAN trust bypass is CLOSED
+# regardless of RRI_TRUSTED_CIDRS — this is the reverse-proxy fail-open from #66.
+if not _deploy_policy["lan_bypass_allowed"]:
+    TRUSTED_CIDRS = []
+
+_deploy_check = swarm_deploy.startup_check(
+    RRI_DEPLOYMENT_PROFILE,
+    auth_enabled=is_auth_enabled(),
+    has_persistent_secret=bool(os.getenv("RRI_AUTH_TOKEN")),
+    codeexec_sandboxed=swarm_deploy.codeexec_is_sandboxed(os.environ),
+    codeexec_override=swarm_deploy.codeexec_unsafe_override(os.environ),
+)
+logger.warning("\n" + swarm_deploy.posture_banner(RRI_DEPLOYMENT_PROFILE, _deploy_policy, len(TRUSTED_CIDRS)))
+for _w in _deploy_check["warnings"]:
+    logger.warning(f"[deployment:{RRI_DEPLOYMENT_PROFILE}] {_w}")
+if _deploy_check["fatal"]:
+    for _f in _deploy_check["fatal"]:
+        logger.critical(f"[deployment:{RRI_DEPLOYMENT_PROFILE}] FATAL: {_f}")
+    # Fail closed: refuse to boot rather than run an unsafe outward-facing config.
+    # (Raised at import so it also stops gunicorn workers, not just `python ...`.)
+    raise SystemExit(
+        f"Refusing to boot: unsafe deployment config for profile "
+        f"'{RRI_DEPLOYMENT_PROFILE}'. Fix: " + " | ".join(_deploy_check["fatal"])
+    )
+
 LOGIN_HTML = r"""
 <!DOCTYPE html>
 <html>
