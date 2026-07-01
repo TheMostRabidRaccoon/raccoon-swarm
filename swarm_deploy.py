@@ -84,6 +84,31 @@ def codeexec_unsafe_override(env: dict) -> bool:
     return _truthy(env.get("RRI_ALLOW_UNSAFE_PUBLIC_CODEEXEC"))
 
 
+def public_trusted_cidrs_allowed(env: dict) -> bool:
+    """True when the operator has explicitly re-enabled the trusted-CIDR bypass
+    on a public profile (RRI_ALLOW_PUBLIC_TRUSTED_CIDRS=true).
+
+    Off by default: public assumes a private peer IP does NOT mean a trusted
+    human (that's the reverse-proxy fail-open from #66). This is the deliberate,
+    shame-named opt-back-in for operators who genuinely need to trust a subnet
+    on a public box — without forcing them to downgrade to 'lan' and lose the
+    rest of public's hardening.
+    """
+    return _truthy(env.get("RRI_ALLOW_PUBLIC_TRUSTED_CIDRS"))
+
+
+def effective_lan_bypass(profile: str, env: dict) -> bool:
+    """Whether the trusted-CIDR auth bypass is honored for this profile+env.
+
+    Pure decision function so the server's TRUSTED_CIDRS composition is testable
+    without importing Flask. True for local/lan; for public only when the
+    explicit opt-back-in flag is set; never for an unknown (fail-closed) profile.
+    """
+    if policy(profile)["lan_bypass_allowed"]:
+        return True
+    return profile == "public" and public_trusted_cidrs_allowed(env)
+
+
 def codeexec_allowed(profile: str, env: dict) -> tuple[bool, str | None]:
     """Whether codeexec may run under this profile. Returns (ok, reason_if_not).
 
@@ -105,7 +130,8 @@ def codeexec_allowed(profile: str, env: dict) -> tuple[bool, str | None]:
 
 
 def startup_check(profile: str, *, auth_enabled: bool, has_persistent_secret: bool,
-                  codeexec_sandboxed: bool, codeexec_override: bool) -> dict:
+                  codeexec_sandboxed: bool, codeexec_override: bool,
+                  public_cidr_override: bool = False) -> dict:
     """Validate a deployment config. Returns {ok, fatal: [...], warnings: [...]}.
 
     Pure over booleans so the whole matrix is testable without env or Flask.
@@ -115,6 +141,23 @@ def startup_check(profile: str, *, auth_enabled: bool, has_persistent_secret: bo
     fatal: list[str] = []
     warnings: list[str] = []
     pol = policy(profile)
+
+    # lan runs the homelab-grade sandbox unrestricted, but say so out loud.
+    if pol["profile"] == "lan" and not codeexec_sandboxed:
+        warnings.append(
+            "code_exec is running without a declared sandbox on a 'lan' profile — "
+            "acceptable on a trusted network, but it is homelab-grade, not "
+            "security-grade. Set RRI_CODEEXEC_SANDBOX=<backend> if that changes."
+        )
+
+    # public re-opening the CIDR bypass is legal but loud — the fail-open is back.
+    if pol["profile"] == "public" and public_cidr_override:
+        warnings.append(
+            "UNSAFE: trusted-CIDR auth bypass RE-ENABLED on a public profile via "
+            "RRI_ALLOW_PUBLIC_TRUSTED_CIDRS=true. Behind a reverse proxy the peer "
+            "IP is the proxy's — a private remote_addr no longer implies a trusted "
+            "human. Only do this if remote_addr is genuinely the real client."
+        )
 
     if not pol["known"]:
         fatal.append(
@@ -153,10 +196,13 @@ def startup_check(profile: str, *, auth_enabled: bool, has_persistent_secret: bo
 
 def posture_banner(profile: str, pol: dict, trusted_cidr_count: int) -> str:
     """A loud, human-readable summary of the active security posture."""
+    # Reflect the ACTUAL bypass state: a public profile that re-enabled the
+    # bypass has CIDRs > 0, and a local/lan profile with none configured has 0.
+    bypass_on = trusted_cidr_count > 0
     lines = [
         "==================== DEPLOYMENT POSTURE ====================",
         f"  profile:            {profile}" + ("" if pol.get("known") else "  (UNKNOWN!)"),
-        f"  LAN auth bypass:    {'ON' if pol['lan_bypass_allowed'] else 'OFF (fail-closed)'}"
+        f"  LAN auth bypass:    {'ON' if bypass_on else 'OFF (fail-closed)'}"
         f"  [{trusted_cidr_count} trusted CIDR(s)]",
         f"  auth required:      {'yes' if pol['require_auth'] else 'no'}",
         f"  persistent secret:  {'required' if pol['require_persistent_secret'] else 'optional'}",
