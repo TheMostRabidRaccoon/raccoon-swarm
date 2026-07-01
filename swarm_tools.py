@@ -156,8 +156,13 @@ def _dispatch_filestore_semantic_search(
     query: str,
     top_k: int = 5,
     min_score: float = 0.0,
+    filters: dict | None = None,
+    hybrid: bool = False,
 ) -> dict:
-    return swarm_semantic.search(query=query, top_k=top_k, min_score=min_score)
+    return swarm_semantic.search(
+        query=query, top_k=top_k, min_score=min_score,
+        filters=filters, hybrid=hybrid,
+    )
 
 
 def _dispatch_dispatch_queue_write(
@@ -367,6 +372,24 @@ TOOL_DEFINITIONS: dict[str, dict[str, Any]] = {
                 "query": {"type": "string", "description": "Natural-language query. Min 2 chars."},
                 "top_k": {"type": "integer", "description": "Number of hits to return, 1-20. Default 5."},
                 "min_score": {"type": "number", "description": "Optional cosine-similarity floor 0-1. Cuts off weak matches. Default 0."},
+                "filters": {
+                    "type": "object",
+                    "description": (
+                        "Optional metadata narrowing, matched against each file's YAML "
+                        "frontmatter (AND across keys). Keys: model, type, status, session, "
+                        "source, tag (or tags), dir, and after/before (ISO-date bounds on the "
+                        "file's date). Example: {\"type\": \"position\", \"tag\": \"governance\", "
+                        "\"after\": \"2026-05\"}. Files missing a filtered field are excluded."
+                    ),
+                },
+                "hybrid": {
+                    "type": "boolean",
+                    "description": (
+                        "When true, blend a keyword (substring) signal into the score so "
+                        "chunks whose exact wording matches surface even if their embedding "
+                        "drifted. Vectors still lead. Default false."
+                    ),
+                },
             },
             "required": ["query"],
         },

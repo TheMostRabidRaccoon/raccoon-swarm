@@ -83,7 +83,46 @@ MAX_FILE_BYTES = 1_000_000  # skip files >1MB; embedding token limits are real
 INDEX_DIR_NAME = "_semantic_index"
 INDEX_FILE_NAME = "index.json"
 
+# Bumped to 2 when per-chunk `meta` (parsed frontmatter) was added. Old v1
+# indexes still load fine — chunks simply have no meta until the next reindex,
+# and search() treats a missing meta as an empty dict.
+INDEX_VERSION = 2
+
+# Hybrid search: how much a keyword (substring) match nudges a chunk's score
+# above its raw cosine. Small on purpose — vectors lead, keywords rescue the
+# cases where wording matches but the meaning-embedding drifted.
+HYBRID_KEYWORD_WEIGHT = 0.2
+
+# Fallback map so `type` filtering works even for files without a `type:` in
+# their frontmatter — the filestore's top-level dir already encodes the type.
+_DIR_TO_TYPE = {
+    "positions": "position", "questions": "question", "pursuits": "pursuit",
+    "tasks": "task", "frameworks": "framework", "artifacts": "artifact",
+    "logs": "log",
+}
+
 _lock = threading.Lock()
+
+# ------------------------------------------------------------------
+# In-process search cache. search() used to call _load_index() every
+# time, re-reading and JSON-parsing the ENTIRE index (chunk text + all
+# 1536-float embeddings) off disk per query — that reparse, not the
+# cosine matmul, is what actually gets slow as the corpus grows. We
+# cache the parsed chunks + a prebuilt (N, D) numpy matrix and its row
+# norms, keyed on the index file's (mtime_ns, size). A writer in any
+# process bumps mtime, so cross-process invalidation stays correct.
+#
+# EXIT RAMP (when this cache stops being the right answer and a real
+# vector store earns its keep): ~1e5-1e6 chunks where even a cached
+# matmul hurts, OR the day the swarm runs MULTIPLE reader processes
+# against one index — whichever lands first. In the multi-process case
+# the cache is no longer free: each process holds its own copy of the
+# matrix in RAM and re-parses on every mtime change. That's an
+# architecture decision away, not a corpus-growth away. At that point
+# the swap to Chroma/LanceDB is the mechanical one the module header
+# already describes.
+_cache_lock = threading.Lock()
+_SEARCH_CACHE: dict = {"key": None, "chunks": [], "matrix": None, "dnorms": None}
 
 
 # ============================================================
@@ -166,6 +205,152 @@ def _embed_batch(texts: list[str]) -> list[list[float]]:
 
 def _embed_one(text: str) -> list[float]:
     return _embed_batch([text])[0]
+
+
+# ============================================================
+# Frontmatter / metadata
+# ============================================================
+
+_FM_FENCE_RE = re.compile(r"^﻿?---\s*\n(.*?)\n---\s*(?:\n|$)", re.DOTALL)
+
+
+def _parse_frontmatter(text: str) -> dict:
+    """Parse a leading YAML-ish `--- ... ---` frontmatter block.
+
+    Deliberately tiny and stdlib-only (no PyYAML dep — keeping the
+    dependency surface small is the whole point of this layer). Handles:
+      key: value
+      key: [a, b, c]          # inline list
+      key:                    # block list
+        - a
+        - b
+    Keys are lowercased; quotes stripped; unknown/garbage lines skipped.
+    Returns {} when there's no frontmatter.
+    """
+    if not text:
+        return {}
+    m = _FM_FENCE_RE.match(text)
+    if not m:
+        return {}
+    body = m.group(1)
+    meta: dict = {}
+    pending_key: str | None = None
+    for raw in body.split("\n"):
+        line = raw.rstrip()
+        if not line.strip():
+            continue
+        # Block-list continuation line ("  - item") for the previous key.
+        stripped = line.strip()
+        if stripped.startswith("- ") and pending_key:
+            meta.setdefault(pending_key, [])
+            if isinstance(meta[pending_key], list):
+                meta[pending_key].append(_strip_scalar(stripped[2:]))
+            continue
+        if ":" not in line:
+            continue
+        key, _, val = line.partition(":")
+        key = key.strip().lower()
+        val = val.strip()
+        if not key:
+            continue
+        if val == "":
+            # Either a block list follows, or an empty value.
+            meta[key] = []
+            pending_key = key
+            continue
+        pending_key = None
+        if val.startswith("[") and val.endswith("]"):
+            items = [_strip_scalar(x) for x in val[1:-1].split(",")]
+            meta[key] = [x for x in items if x]
+        else:
+            meta[key] = _strip_scalar(val)
+    # Drop keys left as empty lists with no items (bare "key:" and nothing).
+    return {k: v for k, v in meta.items() if v != []}
+
+
+def _strip_scalar(s: str) -> str:
+    s = s.strip()
+    if len(s) >= 2 and s[0] == s[-1] and s[0] in "\"'":
+        s = s[1:-1]
+    return s.strip()
+
+
+def _derive_meta(rel_path: str, text: str) -> dict:
+    """Build the per-chunk metadata dict from a file's path + frontmatter.
+
+    Always includes `dir` (top-level filestore directory) and a `type`
+    (explicit frontmatter `type:` wins; otherwise derived from `dir`).
+    Tags are normalized to a lowercased list.
+    """
+    meta = _parse_frontmatter(text)
+    top = rel_path.replace("\\", "/").split("/")[0] if rel_path else ""
+    meta.setdefault("dir", top)
+    if "type" not in meta and top in _DIR_TO_TYPE:
+        meta["type"] = _DIR_TO_TYPE[top]
+    # Normalize tags to a lowercased list regardless of how they were written.
+    tags = meta.get("tags", meta.get("tag"))
+    if tags is not None:
+        if isinstance(tags, str):
+            tags = [t.strip() for t in tags.split(",") if t.strip()]
+        meta["tags"] = [str(t).lower() for t in tags]
+        meta.pop("tag", None)
+    return meta
+
+
+def _meta_date(meta: dict) -> str | None:
+    """The most relevant date on a chunk's meta, for after/before filtering."""
+    for k in ("date", "updated", "created"):
+        v = meta.get(k)
+        if v:
+            return str(v)
+    return None
+
+
+def _chunk_matches_filters(meta: dict, filters: dict | None) -> bool:
+    """AND-match a chunk's meta against a filter dict. Empty filters -> True.
+
+    Supported keys:
+      after / before  -> lexicographic ISO-date compare on the chunk's date
+      tag / tags       -> every requested tag must be present (case-insensitive)
+      anything else    -> case-insensitive exact match on meta[key]
+    A chunk missing the field a filter needs does NOT match (fail-closed).
+    """
+    if not filters:
+        return True
+    meta = meta or {}
+    for key, want in filters.items():
+        k = key.lower()
+        if k in ("after", "before"):
+            d = _meta_date(meta)
+            if d is None:
+                return False
+            if k == "after" and not (d >= str(want)):
+                return False
+            if k == "before" and not (d <= str(want)):
+                return False
+        elif k in ("tag", "tags"):
+            have = {str(t).lower() for t in (meta.get("tags") or [])}
+            wants = want if isinstance(want, (list, tuple, set)) else [want]
+            if not all(str(w).lower() in have for w in wants):
+                return False
+        else:
+            got = meta.get(k)
+            if got is None or str(got).lower() != str(want).lower():
+                return False
+    return True
+
+
+def _keyword_frac(query: str, text: str) -> float:
+    """Fraction of the query's word-tokens that appear (substring) in text.
+
+    The keyword half of hybrid search — cheap, case-insensitive, no index.
+    """
+    terms = [t for t in re.findall(r"[a-z0-9]+", (query or "").lower()) if len(t) > 1]
+    if not terms:
+        return 0.0
+    low = (text or "").lower()
+    hits = sum(1 for t in set(terms) if t in low)
+    return hits / len(set(terms))
 
 
 # ============================================================
@@ -331,13 +516,34 @@ def reindex(force: bool = False) -> dict:
                 row["embedding"] = vec
                 keep_chunks.append(row)
 
+    # Metadata enrichment pass (API-free): attach parsed-frontmatter `meta`
+    # to every chunk. Decoupled from embedding so unchanged files still get
+    # fresh metadata each reindex without re-embedding. One read per distinct
+    # path, not per chunk.
+    meta_by_path: dict = {}
+    for c in keep_chunks:
+        rel = c.get("path")
+        if rel not in meta_by_path:
+            fp = root / rel
+            try:
+                ftext = fp.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                ftext = ""
+            meta_by_path[rel] = _derive_meta(rel, ftext)
+        c["meta"] = meta_by_path[rel]
+
     index["files"] = existing_files
     index["chunks"] = keep_chunks
     index["model"] = EMBED_MODEL
+    index["version"] = INDEX_VERSION
     index["built_at"] = datetime.now().isoformat(timespec="seconds")
 
     with _lock:
         _save_index(index)
+    # New index on disk → drop the in-process search cache so the next query
+    # rebuilds from fresh content (the mtime key would catch this too; this is
+    # just immediate and explicit).
+    _invalidate_search_cache()
 
     elapsed = round(time.monotonic() - started, 1)
     summary = {
@@ -356,42 +562,129 @@ def reindex(force: bool = False) -> dict:
 
 
 # ============================================================
+# Search cache
+# ============================================================
+
+def _index_file_key():
+    """Cache key = (mtime_ns, size) of the index file, or None if absent.
+
+    Any writer (this or another process) bumps mtime, so comparing this key
+    is a correct cross-process staleness check without holding the file open.
+    """
+    p = _index_path()
+    try:
+        st = p.stat()
+        return (st.st_mtime_ns, st.st_size)
+    except OSError:
+        return None
+
+
+def _get_search_cache() -> dict:
+    """Return {chunks, matrix, dnorms} for the current index, rebuilding the
+    parsed chunks + numpy matrix only when the index file changes.
+
+    This is the fix for the per-query full-index reparse: on a cache hit we do
+    zero disk I/O and zero JSON parsing — just an in-memory matmul in search().
+    """
+    key = _index_file_key()
+    with _cache_lock:
+        if key is not None and _SEARCH_CACHE["key"] == key:
+            return _SEARCH_CACHE
+        index = _load_index()
+        chunks = index.get("chunks") or []
+        matrix = dnorms = None
+        if chunks:
+            import numpy as np
+            matrix = np.asarray([c["embedding"] for c in chunks], dtype=np.float32)
+            dnorms = np.linalg.norm(matrix, axis=1).clip(min=1e-12)
+        _SEARCH_CACHE.update(key=key, chunks=chunks, matrix=matrix, dnorms=dnorms)
+        return _SEARCH_CACHE
+
+
+def _invalidate_search_cache() -> None:
+    with _cache_lock:
+        _SEARCH_CACHE.update(key=None, chunks=[], matrix=None, dnorms=None)
+
+
+# ============================================================
 # Search
 # ============================================================
 
-def search(query: str, top_k: int = 5, min_score: float = 0.0) -> dict:
-    """Run a semantic search. Embeds the query, scores it against every
-    chunk in the index, returns the top_k highest cosines.
+def search(query: str, top_k: int = 5, min_score: float = 0.0,
+           filters: dict | None = None, hybrid: bool = False) -> dict:
+    """Run a semantic search. Embeds the query, scores it against the indexed
+    chunks, returns the top_k highest-scoring.
 
-    Returns {ok, query, results: [{path, chunk_index, snippet, score}]}.
-    Snippet is the first ~300 chars of the chunk so the model gets
-    context without flooding the prompt.
+    Args:
+      filters: optional metadata narrowing, matched against each chunk's parsed
+               frontmatter (AND across keys). E.g.
+               {"model": "claude", "type": "position", "tag": "governance",
+                "after": "2026-05"}. Chunks are filtered BEFORE scoring, so a
+               tight filter also makes the search cheaper.
+      hybrid:  when True, blend a cheap keyword (substring) signal into the
+               score so chunks whose wording matches the query surface even if
+               their embedding drifted. Vectors still lead (see
+               HYBRID_KEYWORD_WEIGHT).
+
+    Returns {ok, query, results: [{path, chunk_index, snippet, score, meta}]}.
+    Snippet is the first ~300 chars so the model gets context without flooding
+    the prompt.
     """
     if not query or len(query.strip()) < 2:
         return {"ok": False, "error": "query too short"}
 
-    index = _load_index()
-    chunks = index.get("chunks") or []
+    cache = _get_search_cache()
+    chunks = cache["chunks"]
     if not chunks:
         return {"ok": False, "error": "index is empty — run reindex() or POST /semantic/reindex"}
+
+    # Metadata pre-filter: restrict to candidate chunk indices before we spend
+    # an embedding call or touch the matrix.
+    if filters:
+        candidates = [i for i, c in enumerate(chunks)
+                      if _chunk_matches_filters(c.get("meta"), filters)]
+        if not candidates:
+            return {"ok": True, "query": query, "results": [], "total_returned": 0,
+                    "index_size_chunks": len(chunks), "filtered_candidates": 0,
+                    "model": EMBED_MODEL}
+    else:
+        candidates = None  # all
 
     try:
         q_vec = _embed_one(query)
     except RuntimeError as e:
         return {"ok": False, "error": str(e)}
 
-    doc_vecs = [c["embedding"] for c in chunks]
-    sims = _cosine_similarity(q_vec, doc_vecs)
-
-    # Argsort descending; numpy sorts ascending so we negate.
     import numpy as np
-    order = np.argsort(-sims)[:max(1, top_k)]
+    q = np.asarray(q_vec, dtype=np.float32)
+    q_norm = float(np.linalg.norm(q)) or 1e-12
+    matrix, dnorms = cache["matrix"], cache["dnorms"]
+
+    if candidates is None:
+        sims = (matrix @ q) / (dnorms * q_norm)
+        idxs = np.arange(len(chunks))
+    else:
+        sub = matrix[candidates]
+        sub_norms = dnorms[candidates]
+        sims = (sub @ q) / (sub_norms * q_norm)
+        idxs = np.asarray(candidates)
+
+    scores = sims.astype(float)
+    if hybrid:
+        # Blend in the keyword fraction per candidate chunk.
+        bonus = np.asarray(
+            [_keyword_frac(query, chunks[int(i)]["text"]) for i in idxs],
+            dtype=np.float64,
+        )
+        scores = scores + HYBRID_KEYWORD_WEIGHT * bonus
+
+    order = np.argsort(-scores)[:max(1, top_k)]
     results = []
-    for rank, idx in enumerate(order):
-        score = float(sims[int(idx)])
+    for rank, pos in enumerate(order):
+        score = float(scores[int(pos)])
         if score < min_score:
             break
-        c = chunks[int(idx)]
+        c = chunks[int(idxs[int(pos)])]
         snippet = c["text"][:300].replace("\n", " ").strip()
         results.append({
             "rank": rank + 1,
@@ -399,15 +692,21 @@ def search(query: str, top_k: int = 5, min_score: float = 0.0) -> dict:
             "chunk_index": c["chunk_index"],
             "snippet": snippet,
             "score": round(score, 4),
+            "meta": c.get("meta", {}),
         })
-    return {
+    out = {
         "ok": True,
         "query": query,
         "results": results,
         "total_returned": len(results),
         "index_size_chunks": len(chunks),
-        "model": index.get("model", EMBED_MODEL),
+        "model": EMBED_MODEL,
     }
+    if filters:
+        out["filtered_candidates"] = len(candidates)
+    if hybrid:
+        out["hybrid"] = True
+    return out
 
 
 def status() -> dict:
