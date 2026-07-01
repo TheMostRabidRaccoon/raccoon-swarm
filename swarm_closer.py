@@ -216,7 +216,7 @@ def build_digest(
 SCORECARD_VERSION = 1
 
 
-def find_phantom_claims(all_rounds: list[dict], synthesis: str) -> list[str]:
+def find_phantom_claims(all_rounds: list[dict], synthesis: str) -> "list[str] | None":
     """The DISTINCT filestore paths claimed-as-written across the rounds +
     synthesis that do NOT exist on disk — verify-then-emit, not trust-then-emit.
 
@@ -225,6 +225,11 @@ def find_phantom_claims(all_rounds: list[dict], synthesis: str) -> list[str]:
     (read_file — an exact existence check, stronger than a substring search).
     The returned list IS the claimed-vs-found diff, and its length IS
     persistence_gap. Announcing a write is not a write.
+
+    Returns None (NOT an empty list) if the detector itself fails — an empty
+    list means "we checked and found none", None means "the flashlight dropped".
+    The scorecard must not report persistence_gap 0 when it never actually
+    measured.
 
     Call after writes have been persisted (the closer runs post-session). The
     returned paths are NAMED in the scorecard so the gap is actionable, not just
@@ -244,10 +249,10 @@ def find_phantom_claims(all_rounds: list[dict], synthesis: str) -> list[str]:
         return sorted({p["path"] for p in phantoms})
     except Exception as e:  # never let telemetry break the closer
         logger.warning(f"[closer] phantom-claim check failed: {type(e).__name__}: {e}")
-        return []
+        return None  # unknown, not zero
 
 
-def build_scorecard(digest: dict, *, phantom_paths: list) -> dict:
+def build_scorecard(digest: dict, *, phantom_paths: "list[str] | None") -> dict:
     """Pure function: map a closer digest + verified phantom paths to the v0
     scorecard.
 
@@ -255,12 +260,18 @@ def build_scorecard(digest: dict, *, phantom_paths: list) -> dict:
     `phantom_paths` is the claimed-vs-found diff from find_phantom_claims — its
     length is persistence_gap, and the paths themselves are recorded so the gap
     is actionable (which claims went unpersisted), not just a magnitude.
-    Fields that need deeper plumbing (cost, structured tool-call counts,
-    citations) are emitted as null with a reason rather than guessed.
+
+    If `phantom_paths` is None the detector failed to run: the scorecard reports
+    the gap as UNKNOWN (null + status "unavailable"), never as 0 — 0 would
+    falsely certify "we checked and found none". Fields that need deeper
+    plumbing (cost, structured tool-call counts, citations) are likewise emitted
+    as null with a reason rather than guessed.
     """
     rounds = digest.get("rounds") or []
     models_active = sorted({m for r in rounds for m in (r.get("models") or [])})
-    phantom_paths = list(phantom_paths or [])
+    measured = phantom_paths is not None
+    pp = list(phantom_paths) if measured else []
+    gap = len(pp) if measured else None
     return {
         "scorecard_version": SCORECARD_VERSION,
         "session_id": digest.get("session_id"),
@@ -273,13 +284,16 @@ def build_scorecard(digest: dict, *, phantom_paths: list) -> dict:
             "writes": len(digest.get("fs_writes") or []),
             "appends": len(digest.get("fs_appends") or []),
             "rejected": len(digest.get("fs_rejected") or []),
-            "phantom_write_claims": len(phantom_paths),
+            # null (not 0) when the detector couldn't run — see status below.
+            "phantom_write_claims": gap,
+            "phantom_write_claims_status": "ok" if measured else "unavailable",
             # The named diff — verify-then-emit made visible (capped for size).
-            "phantom_paths": phantom_paths[:20],
+            "phantom_paths": pp[:20],
         },
         # persistence_gap v0 == distinct claimed-but-unpersisted writes: the exact
         # failure mode the swarm demonstrated while discussing phantom artifacts.
-        "persistence_gap": len(phantom_paths),
+        # null when unmeasured — "unknown" is not the same as "none".
+        "persistence_gap": gap,
         "mail": {
             "sent": len(digest.get("mail_sent") or []),
             "rejected": len(digest.get("mail_rejected") or []),
@@ -515,12 +529,18 @@ def run_post_session_closer(
                 phantom_paths = find_phantom_claims(all_rounds, synthesis)
                 scorecard = build_scorecard(digest, phantom_paths=phantom_paths)
                 scorecard_path = logs_dir / f"scorecard-{session_id}.json"
-                scorecard_path.write_text(json.dumps(scorecard, indent=2))
+                # Atomic write (temp + os.replace), same discipline as the
+                # dispatch queue — a crash mid-write can't leave a torn scorecard.
+                tmp = scorecard_path.with_suffix(".json.tmp")
+                tmp.write_text(json.dumps(scorecard, indent=2))
+                os.replace(tmp, scorecard_path)
+                gap = scorecard["persistence_gap"]
                 logger.info(
                     f"[closer] scorecard written: {scorecard_path} "
-                    f"(rounds={scorecard['rounds']}, persistence_gap={len(phantom_paths)})"
+                    f"(rounds={scorecard['rounds']}, persistence_gap="
+                    f"{gap if gap is not None else 'unknown'})"
                 )
-                if phantom_paths:
+                if phantom_paths:  # None (unknown) is falsy but has no paths to name
                     logger.warning(f"[closer] phantom write claims (unpersisted): {phantom_paths}")
             except Exception as e:
                 logger.error(f"[closer] scorecard emit failed for session {session_id}: "

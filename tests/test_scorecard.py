@@ -47,6 +47,7 @@ def test_scorecard_counts_and_shape():
     assert sc["filestore"]["writes"] == 1
     assert sc["filestore"]["rejected"] == 1
     assert sc["filestore"]["phantom_write_claims"] == 2
+    assert sc["filestore"]["phantom_write_claims_status"] == "ok"
     assert sc["filestore"]["phantom_paths"] == ["positions/ghost.md", "questions/vapor.md"]
     assert sc["persistence_gap"] == 2
     assert sc["mail"] == {"sent": 1, "rejected": 0}
@@ -88,6 +89,18 @@ def test_empty_digest_is_safe():
     sc = closer.build_scorecard({}, phantom_paths=[])
     assert sc["rounds"] == 0 and sc["models_active"] == []
     assert sc["persistence_gap"] == 0
+
+
+def test_detector_failure_reports_unknown_not_zero():
+    # phantom_paths=None means the detector couldn't run. The gap must be
+    # null/"unavailable", never 0 — 0 would falsely certify "checked, found none".
+    sc = closer.build_scorecard(_digest(), phantom_paths=None)
+    assert sc["persistence_gap"] is None
+    assert sc["filestore"]["phantom_write_claims"] is None
+    assert sc["filestore"]["phantom_write_claims_status"] == "unavailable"
+    assert sc["filestore"]["phantom_paths"] == []
+    # still JSON-serializable
+    json.dumps(sc)
 
 
 # ---- find_phantom_claims (uses the real filestore) -----------------------
