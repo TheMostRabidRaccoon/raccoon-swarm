@@ -216,13 +216,20 @@ def build_digest(
 SCORECARD_VERSION = 1
 
 
-def count_phantom_claims(all_rounds: list[dict], synthesis: str) -> int:
-    """Number of DISTINCT filestore paths claimed-as-written across the rounds +
-    synthesis that do NOT exist on disk (reusing swarm_filestore's phantom-write
-    detector from #66). This is the concrete, computable-today core of
-    persistence_gap: announcing a write is not a write.
+def find_phantom_claims(all_rounds: list[dict], synthesis: str) -> list[str]:
+    """The DISTINCT filestore paths claimed-as-written across the rounds +
+    synthesis that do NOT exist on disk — verify-then-emit, not trust-then-emit.
 
-    Call after writes have been persisted (the closer runs post-session).
+    Reuses swarm_filestore's phantom-write detector from #66: it finds every
+    path a model claimed near a persistence cue, then checks the actual floor
+    (read_file — an exact existence check, stronger than a substring search).
+    The returned list IS the claimed-vs-found diff, and its length IS
+    persistence_gap. Announcing a write is not a write.
+
+    Call after writes have been persisted (the closer runs post-session). The
+    returned paths are NAMED in the scorecard so the gap is actionable, not just
+    a magnitude — this is what would have caught all three phantoms in the review
+    session without anyone having to notice.
     """
     import swarm_filestore
     combined: dict = {}
@@ -234,21 +241,26 @@ def count_phantom_claims(all_rounds: list[dict], synthesis: str) -> int:
         combined["synthesis"] = synthesis
     try:
         phantoms = swarm_filestore.verify_round_claims(combined).get("phantoms") or []
-        return len({p["path"] for p in phantoms})
+        return sorted({p["path"] for p in phantoms})
     except Exception as e:  # never let telemetry break the closer
         logger.warning(f"[closer] phantom-claim check failed: {type(e).__name__}: {e}")
-        return 0
+        return []
 
 
-def build_scorecard(digest: dict, *, phantom_write_claims: int) -> dict:
-    """Pure function: map a closer digest + phantom count to the v0 scorecard.
+def build_scorecard(digest: dict, *, phantom_paths: list) -> dict:
+    """Pure function: map a closer digest + verified phantom paths to the v0
+    scorecard.
 
     Everything here is an objective counter derived from what actually happened.
+    `phantom_paths` is the claimed-vs-found diff from find_phantom_claims — its
+    length is persistence_gap, and the paths themselves are recorded so the gap
+    is actionable (which claims went unpersisted), not just a magnitude.
     Fields that need deeper plumbing (cost, structured tool-call counts,
     citations) are emitted as null with a reason rather than guessed.
     """
     rounds = digest.get("rounds") or []
     models_active = sorted({m for r in rounds for m in (r.get("models") or [])})
+    phantom_paths = list(phantom_paths or [])
     return {
         "scorecard_version": SCORECARD_VERSION,
         "session_id": digest.get("session_id"),
@@ -261,11 +273,13 @@ def build_scorecard(digest: dict, *, phantom_write_claims: int) -> dict:
             "writes": len(digest.get("fs_writes") or []),
             "appends": len(digest.get("fs_appends") or []),
             "rejected": len(digest.get("fs_rejected") or []),
-            "phantom_write_claims": phantom_write_claims,
+            "phantom_write_claims": len(phantom_paths),
+            # The named diff — verify-then-emit made visible (capped for size).
+            "phantom_paths": phantom_paths[:20],
         },
         # persistence_gap v0 == distinct claimed-but-unpersisted writes: the exact
         # failure mode the swarm demonstrated while discussing phantom artifacts.
-        "persistence_gap": phantom_write_claims,
+        "persistence_gap": len(phantom_paths),
         "mail": {
             "sent": len(digest.get("mail_sent") or []),
             "rejected": len(digest.get("mail_rejected") or []),
@@ -498,14 +512,16 @@ def run_post_session_closer(
             # Session scorecard (mechanical counters). Fail-loud: a scorecard
             # write failure is logged but never aborts the closer or the session.
             try:
-                phantom_count = count_phantom_claims(all_rounds, synthesis)
-                scorecard = build_scorecard(digest, phantom_write_claims=phantom_count)
+                phantom_paths = find_phantom_claims(all_rounds, synthesis)
+                scorecard = build_scorecard(digest, phantom_paths=phantom_paths)
                 scorecard_path = logs_dir / f"scorecard-{session_id}.json"
                 scorecard_path.write_text(json.dumps(scorecard, indent=2))
                 logger.info(
                     f"[closer] scorecard written: {scorecard_path} "
-                    f"(rounds={scorecard['rounds']}, persistence_gap={phantom_count})"
+                    f"(rounds={scorecard['rounds']}, persistence_gap={len(phantom_paths)})"
                 )
+                if phantom_paths:
+                    logger.warning(f"[closer] phantom write claims (unpersisted): {phantom_paths}")
             except Exception as e:
                 logger.error(f"[closer] scorecard emit failed for session {session_id}: "
                              f"{type(e).__name__}: {e}")
