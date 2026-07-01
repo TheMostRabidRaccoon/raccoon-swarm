@@ -169,6 +169,25 @@ def run_code(
     Outputs over 100KB are truncated; the full content lives in the persisted
     artifact directory.
     """
+    # Deployment-profile gate: on a public profile this homelab-grade sandbox
+    # must not run unless a real sandbox is declared (or the operator explicitly
+    # accepts the risk). Fail closed with an error result, not an exception.
+    import swarm_deploy
+    _profile = swarm_deploy.resolve_profile(os.getenv("RRI_DEPLOYMENT_PROFILE"))
+    _ok, _reason = swarm_deploy.codeexec_allowed(_profile, os.environ)
+    if not _ok:
+        logger.warning(f"swarm_codeexec: {_reason}")
+        return {
+            "ok": False,
+            "error": _reason,
+            "stdout": "",
+            "stderr": _reason,
+            "exit_code": 126,  # "command cannot execute"
+            "execution_time_ms": 0,
+            "generated_files": [],
+            "blocked_by_profile": _profile,
+        }
+
     timeout = max(1, min(timeout, MAX_TIMEOUT))
     started = time.monotonic()
     timestamp = datetime.now()
