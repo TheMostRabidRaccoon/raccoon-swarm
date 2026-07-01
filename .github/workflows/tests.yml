@@ -35,5 +35,13 @@ jobs:
       - name: Install dev deps
         run: python -m pip install --upgrade pip && pip install -r requirements-dev.txt
 
+      # Cheap syntax guard. pytest only imports the modules tests touch — the
+      # 5k-line server module needs the full model-client stack and is never
+      # imported in CI, so a bare syntax break there would slip past the suite.
+      # py_compile checks syntax without executing imports, so it catches that
+      # for every tracked .py file (server, scripts, tests) with no heavy deps.
+      - name: Syntax check (py_compile)
+        run: git ls-files '*.py' | xargs python -m py_compile
+
       - name: Run unit suite
         run: python -m pytest
