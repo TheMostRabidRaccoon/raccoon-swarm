@@ -28,7 +28,14 @@ Client init sites (as of current server):
 ## Call functions
 
 All live in `raccoon_swarm_server.py`. Signature:
-`call_<model>(query, max_tokens=2000, images=None)`.
+`call_<model>(query, max_tokens=MAX_OUTPUT_TOKENS, images=None)`.
+
+`MAX_OUTPUT_TOKENS` (default 8000, env `RRI_MAX_OUTPUT_TOKENS`) is the per-call
+output ceiling for every seat and for synthesis. You pay only for tokens
+actually generated, so raising it just prevents truncation of long outputs.
+**Keep it ≤16000** — `call_*` use non-streaming `messages.create`, and the
+Anthropic SDK refuses non-streaming requests above ~16K (HTTP-timeout guard);
+going higher means converting `call_claude` to streaming.
 
 Dispatch dict (both lowercase and capitalized keys, around `:822`):
 `call_claude`, `call_gpt`, `call_gemini`, `call_grok`, `call_perplexity`.

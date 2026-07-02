@@ -173,6 +173,15 @@ GROK_MODEL       = os.getenv("RRI_GROK_MODEL", "grok-4.3")
 GEMINI_MODEL     = os.getenv("RRI_GEMINI_MODEL", "gemini-3.1-pro-preview")
 PERPLEXITY_MODEL = os.getenv("RRI_PERPLEXITY_MODEL", "sonar-pro")
 
+# Per-call output-token ceiling for every seat + synthesis. Was 2000 (rounds) /
+# 3000 (synthesis), which truncated long table-read / synthesis output. You only
+# pay for tokens actually generated, so a higher cap permits longer answers
+# without raising baseline cost. CEILING: call_* use non-streaming
+# messages.create, and the Anthropic SDK refuses non-streaming requests above
+# ~16K max_tokens (HTTP-timeout guard) — keep this <=16000 unless call_claude is
+# converted to streaming.
+MAX_OUTPUT_TOKENS = int(os.getenv("RRI_MAX_OUTPUT_TOKENS", "8000"))
+
 VOICE_CAST = {
     "claude":      {"voice_id": "JBFqnCBsd6RMkjVDRZzb", "name": "George",  "label": "The Snooty Librarian"},
     "grok":        {"voice_id": "N2lVS1w4EtoT3dr4eOWO", "name": "Callum",  "label": "Flame-Bearer"},
@@ -1156,7 +1165,7 @@ def _extract_claude_text(content_blocks) -> str:
     return "\n".join(p for p in parts if p)
 
 
-def call_claude(query, max_tokens=2000, images=None, session_id="unknown"):
+def call_claude(query, max_tokens=MAX_OUTPUT_TOKENS, images=None, session_id="unknown"):
     """Call Claude. If MCP tools are enabled, runs the tool-use loop —
     Claude can invoke filestore_search, code_exec, image_generate, etc.
     mid-response. Otherwise reverts to a single-shot text completion."""
@@ -1320,7 +1329,7 @@ def _openai_chat_with_tools(
     return f"[{label} tool-use loop exhausted at {max_iters} iterations without producing any text]"
 
 
-def call_gpt(query, max_tokens=2000, images=None, session_id="unknown"):
+def call_gpt(query, max_tokens=MAX_OUTPUT_TOKENS, images=None, session_id="unknown"):
     try:
         return _openai_chat_with_tools(
             client=get_gpt_client(),
@@ -1339,7 +1348,7 @@ def call_gpt(query, max_tokens=2000, images=None, session_id="unknown"):
         return f"[GPT error: {str(e)}]"
 
 
-def call_grok(query, max_tokens=2000, images=None, session_id="unknown"):
+def call_grok(query, max_tokens=MAX_OUTPUT_TOKENS, images=None, session_id="unknown"):
     try:
         return _openai_chat_with_tools(
             client=get_grok_client(),
@@ -1358,7 +1367,7 @@ def call_grok(query, max_tokens=2000, images=None, session_id="unknown"):
         return f"[Grok error: {str(e)}]"
 
 
-def call_gemini(query, max_tokens=2000, images=None, session_id="unknown"):
+def call_gemini(query, max_tokens=MAX_OUTPUT_TOKENS, images=None, session_id="unknown"):
     if not GEMINI_AVAILABLE:
         return "[Gemini SDK not available]"
     try:
@@ -1466,7 +1475,7 @@ def call_gemini(query, max_tokens=2000, images=None, session_id="unknown"):
         logger.error(f"Gemini Error: {e}")
         return f"[Gemini error: {str(e)}]"
 
-def call_perplexity(query, max_tokens=2000, images=None):
+def call_perplexity(query, max_tokens=MAX_OUTPUT_TOKENS, images=None):
     try:
         sys_prompt = get_system_prompt("perplexity")
         if images:
@@ -1683,8 +1692,8 @@ You are NOT grading as a participant — you are grading as a judge.
 {SYNTHESIS_RUBRIC}"""
 
     # Run both graders in parallel
-    claude_future = executor.submit(call_claude, synthesis_prompt, max_tokens=3000)
-    gpt_future = executor.submit(call_gpt, synthesis_prompt, max_tokens=3000)
+    claude_future = executor.submit(call_claude, synthesis_prompt, max_tokens=MAX_OUTPUT_TOKENS)
+    gpt_future = executor.submit(call_gpt, synthesis_prompt, max_tokens=MAX_OUTPUT_TOKENS)
 
     try:
         claude_synthesis = claude_future.result(timeout=180)
@@ -1753,7 +1762,7 @@ The counts at the top of section 6 and the Postmaster close-out directives
 are non-optional. Emit them even if the count is zero (write "gap: 0,
 nothing owed" — the audit must be auditable)."""
 
-    return call_claude(merge_prompt, max_tokens=3000)
+    return call_claude(merge_prompt, max_tokens=MAX_OUTPUT_TOKENS)
 
 MODEL_COLORS_DOCX = {
     "Claude": RGBColor(0xE6, 0x7E, 0x22) if DOCX_AVAILABLE else None,
