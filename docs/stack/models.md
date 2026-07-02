@@ -33,11 +33,29 @@ All live in `raccoon_swarm_server.py`. Signature:
 Dispatch dict (both lowercase and capitalized keys, around `:822`):
 `call_claude`, `call_gpt`, `call_gemini`, `call_grok`, `call_perplexity`.
 
-## Grok model ID
+## Model IDs — one place to bump
 
-- `grok-4-0709` (`raccoon_swarm_server.py:759`)
+All five seats resolve from env-overridable constants near the top of
+`raccoon_swarm_server.py` (search `MODEL IDS`). Defaults as of the latest bump:
 
-When xAI releases a newer Grok model, update that line and this doc.
+| Seat       | Constant           | Env override            | Default                    |
+|------------|--------------------|-------------------------|----------------------------|
+| Claude     | `CLAUDE_MODEL`     | `RRI_CLAUDE_MODEL`      | `claude-opus-4-8`          |
+| GPT        | `GPT_MODEL`        | `RRI_GPT_MODEL`         | `gpt-5.5`                  |
+| Grok       | `GROK_MODEL`       | `RRI_GROK_MODEL`        | `grok-4.3`                 |
+| Gemini     | `GEMINI_MODEL`     | `RRI_GEMINI_MODEL`      | `gemini-3.1-pro-preview`   |
+| Perplexity | `PERPLEXITY_MODEL` | `RRI_PERPLEXITY_MODEL`  | `sonar-pro`                |
+
+To bump a seat: change the default in that one constant, **or** set the env
+var and restart — no code change, no redeploy. When a provider ships a newer
+id, this table + the constant are the only two places to touch.
+
+**Verify on the floor after any bump.** A wrong id 404s at call time, not at
+boot. Hit `/ping-swarm` (or a quick round) and confirm each seat responds; if
+one fails, flip its `RRI_*_MODEL` env back to a known-good id and restart. Only
+`claude-opus-4-8` is verified against a first-party catalog here; the others
+track each provider's current docs and may drift — the env override is the
+rollback.
 
 ## Personas / modes
 

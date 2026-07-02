@@ -157,6 +157,22 @@ def get_perplexity_client():
 ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY", "")
 ELEVENLABS_MODEL = "eleven_flash_v2_5"
 
+# ============================================================
+# MODEL IDS — the single place to bump each seat.
+# Env-overridable on purpose: if a provider ships a newer id (or one of
+# these turns out wrong), it's a config flip / restart, not a redeploy and
+# grep across this file. VERIFY ON THE FLOOR after any change — call each
+# model once (a wrong id 404s); the swarm can only confirm what it can reach.
+#   Claude:     authoritative current Opus (Anthropic model catalog)
+#   GPT/Gemini/Grok: current per each provider's July-2026 docs — override via
+#                    env if a provider id drifts.
+# ============================================================
+CLAUDE_MODEL     = os.getenv("RRI_CLAUDE_MODEL", "claude-opus-4-8")
+GPT_MODEL        = os.getenv("RRI_GPT_MODEL", "gpt-5.5")
+GROK_MODEL       = os.getenv("RRI_GROK_MODEL", "grok-4.3")
+GEMINI_MODEL     = os.getenv("RRI_GEMINI_MODEL", "gemini-3.1-pro-preview")
+PERPLEXITY_MODEL = os.getenv("RRI_PERPLEXITY_MODEL", "sonar-pro")
+
 VOICE_CAST = {
     "claude":      {"voice_id": "JBFqnCBsd6RMkjVDRZzb", "name": "George",  "label": "The Snooty Librarian"},
     "grok":        {"voice_id": "N2lVS1w4EtoT3dr4eOWO", "name": "Callum",  "label": "Flame-Bearer"},
@@ -447,7 +463,7 @@ def extract_memory_delta(query, all_rounds, synthesis):
     raw = ""
     try:
         msg = get_claude_client().messages.create(
-            model="claude-opus-4-6",
+            model=CLAUDE_MODEL,
             max_tokens=4000,
             system="You extract structured memory from AI swarm transcripts. Your only output is valid JSON matching the schema in the user message. No prose, no preamble, no tool use, no markdown fences.",
             messages=[{"role": "user", "content": user_content}],
@@ -1151,7 +1167,7 @@ def call_claude(query, max_tokens=2000, images=None, session_id="unknown"):
 
         if not _mcp_tools_enabled():
             msg = client.messages.create(
-                model="claude-opus-4-6",
+                model=CLAUDE_MODEL,
                 max_tokens=max_tokens,
                 system=system,
                 messages=messages,
@@ -1163,7 +1179,7 @@ def call_claude(query, max_tokens=2000, images=None, session_id="unknown"):
         accumulated_text: list[str] = []  # collected across iterations
         for iteration in range(max_iters):
             msg = client.messages.create(
-                model="claude-opus-4-6",
+                model=CLAUDE_MODEL,
                 max_tokens=max_tokens,
                 system=system,
                 messages=messages,
@@ -1308,7 +1324,7 @@ def call_gpt(query, max_tokens=2000, images=None, session_id="unknown"):
     try:
         return _openai_chat_with_tools(
             client=get_gpt_client(),
-            model_name="gpt-5.2",
+            model_name=GPT_MODEL,
             max_tokens=max_tokens,
             tokens_param="max_completion_tokens",
             sys_prompt=get_system_prompt("gpt"),
@@ -1327,7 +1343,7 @@ def call_grok(query, max_tokens=2000, images=None, session_id="unknown"):
     try:
         return _openai_chat_with_tools(
             client=get_grok_client(),
-            model_name="grok-4-0709",
+            model_name=GROK_MODEL,
             max_tokens=max_tokens,
             tokens_param="max_tokens",
             sys_prompt=get_system_prompt("grok"),
@@ -1369,7 +1385,7 @@ def call_gemini(query, max_tokens=2000, images=None, session_id="unknown"):
         if not _mcp_tools_enabled():
             config = genai_types.GenerateContentConfig(system_instruction=sys_prompt)
             resp = client.models.generate_content(
-                model="gemini-2.5-pro",
+                model=GEMINI_MODEL,
                 contents=contents,
                 config=config,
             )
@@ -1387,7 +1403,7 @@ def call_gemini(query, max_tokens=2000, images=None, session_id="unknown"):
         last_resp = None
         for iteration in range(max_iters):
             resp = client.models.generate_content(
-                model="gemini-2.5-pro",
+                model=GEMINI_MODEL,
                 contents=contents,
                 config=config,
             )
@@ -1461,7 +1477,7 @@ def call_perplexity(query, max_tokens=2000, images=None):
                 {"role": "user", "content": query}
             ]
         resp = get_perplexity_client().chat.completions.create(
-            model="sonar-pro",
+            model=PERPLEXITY_MODEL,
             max_tokens=max_tokens,
             messages=messages
         )
