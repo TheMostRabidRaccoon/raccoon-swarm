@@ -59,7 +59,13 @@ closed + fail loud**. Full table and rationale in [`stack/auth.md`](stack/auth.m
   (mechanical counters). Watch `persistence_gap`: it's the count of distinct
   paths a model *claimed* to write that don't exist on disk. `null` +
   `phantom_write_claims_status: "unavailable"` means the detector couldn't run
-  (unknown ≠ zero).
+  (unknown ≠ zero). `filestore.honest_verb_violations` is the strict subset of
+  that gap asserted with **strong completion language** ("written and verified,
+  read back, byte matches") — active deception, not an incidental mention.
+  Existence is the gate; the completion cues only *sort severity* — this is a
+  count, never a self-graded verdict. It's the fail-LOUD **measurement** of the
+  read-back invariant; turning it into a fail-CLOSED consequence (voiding a
+  turn) is deferred until this count shows the real false-positive rate.
 - **Closer digests** — `logs/closer-digest-<id>.md`, emailed to the Conductor.
 
 ### Doctrine: the synthesis is the product; the scorecard is the instrument
