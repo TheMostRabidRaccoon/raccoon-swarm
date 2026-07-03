@@ -80,3 +80,50 @@ def test_no_match_returns_empty(storage):
 def test_short_query_rejected(storage):
     fs.write_file("positions/x.md", "a pricing doc")
     assert fs.search_files("p") == []
+
+
+# ---- nested directory listing (joy/metrics enumeration bug) --------------
+
+def test_list_files_scopes_to_nested_dir(storage):
+    fs.write_file("joy/runs/2026-07-03/scorecard.json", "{}")
+    fs.write_file("joy/metrics/calibration.json", "{}")
+    fs.write_file("joy/activities.md", "roster")
+
+    # Nested path lists ONLY that subtree (previously it listed all of joy/).
+    metrics = fs.list_files("joy/metrics")
+    assert metrics == ["joy/metrics/calibration.json"]
+
+    runs = fs.list_files("joy/runs")
+    assert runs == ["joy/runs/2026-07-03/scorecard.json"]
+
+    # Top lane still lists everything under it.
+    assert set(fs.list_files("joy")) == {
+        "joy/runs/2026-07-03/scorecard.json",
+        "joy/metrics/calibration.json",
+        "joy/activities.md",
+    }
+
+
+def test_is_safe_subdir():
+    assert fs.is_safe_subdir("") is True
+    assert fs.is_safe_subdir("joy") is True
+    assert fs.is_safe_subdir("joy/metrics") is True
+    assert fs.is_safe_subdir("joy/runs/2026-07-03") is True     # dated run dir allowed
+    # Traversal / junk always rejected.
+    assert fs.is_safe_subdir("../etc") is False
+    assert fs.is_safe_subdir("joy/../positions") is False
+    assert fs.is_safe_subdir("9lane/x") is False                # lane must be letter-led
+    assert fs.is_safe_subdir("joy/.") is False
+
+
+def test_list_files_reaches_dated_run_dir(storage):
+    fs.write_file("joy/runs/2026-07-03/scorecard.json", "{}")
+    fs.write_file("joy/runs/2026-07-04/scorecard.json", "{}")
+    assert fs.list_files("joy/runs/2026-07-03") == ["joy/runs/2026-07-03/scorecard.json"]
+
+
+def test_search_scopes_to_nested_dir(storage):
+    fs.write_file("joy/metrics/calibration.json", "pricing appears in metrics")
+    fs.write_file("joy/runs/r.md", "pricing appears in a run")
+    res = fs.search_files("pricing", subdir="joy/metrics")
+    assert [r["path"] for r in res] == ["joy/metrics/calibration.json"]

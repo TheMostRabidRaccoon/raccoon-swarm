@@ -39,10 +39,10 @@ logger = logging.getLogger("SwarmVault")
 # ============================================================
 
 def _dispatch_filestore_search(query: str, directory: str = "", max_results: int = 10) -> dict:
-    if directory and not swarm_filestore._SAFE_DIR_RE.match(directory.strip("/")):
+    if directory and not swarm_filestore.is_safe_subdir(directory):
         return {
             "query": query,
-            "error": f"invalid directory name '{directory}' (must be kebab-case starting with a letter)",
+            "error": f"invalid directory '{directory}' (each segment must be kebab-case starting with a letter)",
             "results": [],
             "total_matches": 0,
         }
@@ -62,10 +62,10 @@ def _dispatch_filestore_read(path: str) -> dict:
 
 
 def _dispatch_filestore_list(directory: str = "") -> dict:
-    if directory and not swarm_filestore._SAFE_DIR_RE.match(directory.strip("/")):
+    if directory and not swarm_filestore.is_safe_subdir(directory):
         return {
             "directory": directory,
-            "error": f"invalid directory name '{directory}' (must be kebab-case starting with a letter)",
+            "error": f"invalid directory '{directory}' (each segment must be kebab-case starting with a letter)",
             "files": [],
         }
     files = swarm_filestore.list_files(directory)

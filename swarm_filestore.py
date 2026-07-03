@@ -32,6 +32,10 @@ _WORK_CONTEXT_EXCLUDE = ("joy",)
 
 # Regex for dir-name-only validation (kebab/snake case, must start with a letter).
 _SAFE_DIR_RE = re.compile(r"^[a-z][a-z0-9_-]*$")
+# A non-lane path segment (e.g. a dated run dir "2026-07-03"): may start with a
+# digit and contain dots, but is never ".." / "." (those fail the leading class),
+# so it can't be used for traversal. Used by is_safe_subdir for nested listing.
+_SAFE_SEG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 
 
 def _storage_root() -> Path:
@@ -164,16 +168,41 @@ def append_file(rel_path: str, content: str) -> bool:
         return False
 
 
+def is_safe_subdir(rel_dir: str) -> bool:
+    """True if rel_dir is empty or a safe (possibly nested) directory path.
+
+    Mirrors the write-path rule so anything you can write to, you can also list:
+    the FIRST segment is a lane (letter-led kebab, _SAFE_DIR_RE); later segments
+    may start with a digit or contain dots (e.g. a dated run dir
+    "joy/runs/2026-07-03"), but ".." / "." / empty segments are always rejected,
+    so no traversal slips through.
+    """
+    rel = (rel_dir or "").strip("/")
+    if not rel:
+        return True
+    parts = rel.split("/")
+    if not _SAFE_DIR_RE.match(parts[0]):
+        return False
+    return all(_SAFE_SEG_RE.match(seg) for seg in parts[1:])
+
+
 def list_files(rel_dir: str = "") -> list[str]:
-    """List files in a subdirectory. Empty string lists all subdirs flat."""
+    """List files in a subdirectory (nested paths like "joy/metrics" allowed).
+    Empty string lists all subdirs flat.
+
+    Previously this truncated rel_dir to its first segment, so listing
+    "joy/metrics" silently listed all of "joy/" — and the tool layer rejected
+    nested paths outright (a model couldn't enumerate joy/metrics or joy/runs).
+    Now it scopes to the full nested path.
+    """
     root = _storage_root()
     if not root.exists():
         return []
     if rel_dir:
-        sub = rel_dir.strip("/").split("/")[0]
-        if not _SAFE_DIR_RE.match(sub):
+        rel = rel_dir.strip("/")
+        if not is_safe_subdir(rel):
             return []
-        target = root / sub
+        target = root / rel
         if not target.exists():
             return []
     else:
