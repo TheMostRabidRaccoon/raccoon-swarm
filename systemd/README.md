@@ -44,6 +44,35 @@ Runs land under `swarm/joy/runs/<date>/` (prompt, transcript, artifact,
 reflection, scorecard). The scorecard is mechanical-only by design — no
 self-graded "joy score."
 
+## Tool proposals (the autonomy handoff)
+
+When a `tiny-tool-invention` run designs a tool, Joy Mode queues a structured
+proposal under `swarm/joy/proposals/queued/`. Two units file it for review:
+
+- `swarm-proposals.path` — watches `joy/proposals/queued/` for new proposals.
+- `swarm-proposals.service` — oneshot filer (`scripts/file_proposals.py`).
+  Opens a **GitHub issue** if `RRI_GITHUB_PROPOSAL_TOKEN` +
+  `RRI_GITHUB_PROPOSAL_REPO` are set (fine-grained token, Issues: write on one
+  repo); otherwise emails the Conductor the ready-to-paste issue.
+
+Filing an issue is free and changes nothing that runs — **merging the proposed
+tool into the live registry stays a human-reviewed PR** (the one gated step).
+Every filed issue carries that gate banner.
+
+```bash
+sudo cp systemd/swarm-proposals.path systemd/swarm-proposals.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now swarm-proposals.path
+
+# See what would be filed without touching the queue:
+./scripts/file_proposals.py --dry-run
+sudo journalctl -u swarm-proposals.service -f
+```
+
+Proposals move `queued/ → filed/` on success, or `queued/ → failed/` only when
+GitHub rejects the request (HTTP 4xx). Transport errors leave the proposal in
+`queued/` so the next trigger retries — nothing is lost.
+
 ## Install
 
 Both units assume the swarm runs as user `theconductor` from

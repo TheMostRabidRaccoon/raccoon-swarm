@@ -1,0 +1,13 @@
+[Unit]
+Description=Watch swarm/joy/proposals/queued/ for autonomous tool proposals
+After=swarm.service
+
+[Path]
+# Resolve $RRI_STORAGE_DIR/swarm/joy/proposals/queued at install time.
+# Edit these lines if your storage root differs from the swarm.service default.
+PathChanged=/home/theconductor/raccoon-swarm/swarm/joy/proposals/queued
+PathExistsGlob=/home/theconductor/raccoon-swarm/swarm/joy/proposals/queued/*.json
+Unit=swarm-proposals.service
+
+[Install]
+WantedBy=multi-user.target
