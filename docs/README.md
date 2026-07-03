@@ -15,6 +15,7 @@ These three are the entry layer. For subsystem detail, the `stack/` notes go dee
 - [`stack/storage.md`](stack/storage.md) — filestore layout on the volume
 - [`stack/models.md`](stack/models.md) — the five models and their roles
 - [`stack/joy.md`](stack/joy.md) — **Joy Mode** daily ritual + the tool-proposal autonomy handoff
+- [`stack/evidence.md`](stack/evidence.md) — **Evidence catalog** — provenance-carrying source index ("prove it", not just "remember it")
 - [`stack/ci.md`](stack/ci.md), [`stack/runtime.md`](stack/runtime.md), [`stack/hooks.md`](stack/hooks.md)
 
 ## The one-sentence version
