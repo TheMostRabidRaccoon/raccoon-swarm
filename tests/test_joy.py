@@ -236,17 +236,57 @@ def test_run_joy_session_falls_back_to_synthesis_when_no_artifact_tag(storage):
     assert art.startswith("just a plain synthesis")
 
 
-def test_run_joy_session_marks_new_tool_for_tiny_tool(storage):
+_TINY_TOOL_SYNTH = (
+    "[ARTIFACT] a tool schema [/ARTIFACT] [REFLECTION] proposed a tool [/REFLECTION]\n"
+    "[TOOL_PROPOSAL]\n"
+    "name: word-counter\n"
+    "description: count words in a filestore doc\n"
+    "```json\n"
+    '{"name": "word_counter", "description": "count words", "input_schema": {"type": "object"}}\n'
+    "```\n"
+    "risks: reads only within the filestore sandbox; no writes.\n"
+    "```python\n"
+    "def test_word_counter(): assert True\n"
+    "```\n"
+    "[/TOOL_PROPOSAL]"
+)
+
+
+def test_run_joy_session_queues_proposal_for_tiny_tool(storage):
     # Seed a registry with ONLY tiny-tool-invention so the pick is forced.
     fs.write_file(
         "joy/activities.md",
         "## Accepted\n\n### tiny-tool-invention — Tiny Tool Invention\nInvent one tool.\n",
     )
-    rr, sr, _ = _fake_runners("[ARTIFACT] a tool schema [/ARTIFACT] [REFLECTION] proposed a tool [/REFLECTION]")
+    rr, sr, _ = _fake_runners(_TINY_TOOL_SYNTH)
     res = joy.run_joy_session(rr, sr, core4_models={}, date_str="2026-07-05")
     assert res["activity"] == "tiny-tool-invention"
+
+    # Scorecard flags a real proposal (parsed + queued), not just a tiny-tool day.
     sc = json.loads(fs.read_file("joy/runs/2026-07-05/scorecard.json"))
     assert sc["new_tool_proposed"] is True
+
+    # The proposal was queued for the filer, and a human-readable doc written.
+    assert res["proposal"]["ok"] is True
+    import swarm_proposals as sp
+    assert len(sp.list_state(sp.QUEUED)) == 1
+    doc = fs.read_file("joy/runs/2026-07-05/tool-proposal.md")
+    assert doc and "AUTONOMY GATE" in doc and "word-counter" in doc
+
+
+def test_run_joy_session_no_proposal_when_block_absent(storage):
+    # Tiny-tool day but the models emitted no [TOOL_PROPOSAL] -> nothing queued,
+    # and new_tool_proposed stays honest (False).
+    fs.write_file(
+        "joy/activities.md",
+        "## Accepted\n\n### tiny-tool-invention — Tiny Tool Invention\nInvent one tool.\n",
+    )
+    rr, sr, _ = _fake_runners("[ARTIFACT] just an artifact [/ARTIFACT]")
+    res = joy.run_joy_session(rr, sr, core4_models={}, date_str="2026-07-07")
+    sc = json.loads(fs.read_file("joy/runs/2026-07-07/scorecard.json"))
+    assert sc["new_tool_proposed"] is False
+    import swarm_proposals as sp
+    assert sp.list_state(sp.QUEUED) == []
 
 
 def test_run_joy_session_errors_with_no_activities(storage, monkeypatch):

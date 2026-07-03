@@ -26,9 +26,11 @@ human can work on one subsystem without loading the whole stack into context.
 | `swarm_orchestrator.py` | Round Orchestrator — winds down runaway tool loops, detects truncations. |
 | `swarm_closer.py` | Post-session Closer — emails a digest **and** writes the mechanical `scorecard-<id>.json` (incl. `persistence_gap`). |
 | `swarm_joy.py` | **Joy Mode** — a bounded daily Core-4 play ritual with receipts (one activity → artifact → reflection → **mechanical** scorecard, persisted under `joy/`). Server-free (round runner injected); own personal-data-free context; invented tools are *proposed*, never auto-installed. |
+| `swarm_proposals.py` | **Tool-proposal queue** — the Joy Mode autonomy handoff. A `tiny-tool-invention` run parses a `[TOOL_PROPOSAL]` block and queues it (`joy/proposals/queued/ → filed/ → failed/`, atomic transitions like `swarm_dispatch`). Stdlib-only, no network. The filer opens a GitHub issue; **merging into the live registry stays a human-reviewed PR** (the one gated step). |
 | `raccoon_mcp_server.py` | Exposes the filestore + code_exec / image_generate / web_search as MCP tools for external clients. |
 | `scripts/run_dispatch.py` | The dispatch **runner** — executes the video pipeline for queued payloads. |
 | `scripts/run_joy.py` | The Joy Mode **runner** — wires the server engine into `swarm_joy` and runs one ritual as a systemd oneshot (isolates persona-mode globals). Fired daily by `swarm-joy.timer`. |
+| `scripts/file_proposals.py` | The proposal **filer** — opens a GitHub issue per queued tool proposal (fine-grained token, else emails the Conductor). Fired by `swarm-proposals.path` when a proposal lands. |
 | `scripts/swarm_observer.py` | Cross-session observer (reads across sessions; never writes to the swarm filestore). |
 
 ## Request → response data flow

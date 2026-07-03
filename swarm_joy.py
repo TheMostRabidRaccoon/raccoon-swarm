@@ -34,6 +34,7 @@ import re
 from datetime import datetime
 
 import swarm_filestore
+import swarm_proposals
 
 JOY_SCORECARD_VERSION = 1
 CORE_4 = ("claude", "gpt", "grok", "gemini")
@@ -270,8 +271,24 @@ def write_run(date_str: str, *, prompt: str, transcript: dict, artifact: str,
 # Orchestration — round runner injected (keeps this import-light + testable)
 # ============================================================
 
+# Appended to the prompt ONLY on a tiny-tool-invention day so the synthesis
+# carries a machine-parseable proposal block (see swarm_proposals.parse_proposal).
+_TOOL_PROPOSAL_INSTRUCTIONS = (
+    "\n\nBecause today's activity is Tiny Tool Invention, ALSO end with a single "
+    "proposal block the Conductor can review. Fill every field:\n"
+    "  [TOOL_PROPOSAL]\n"
+    "  name: <kebab-case-tool-name>\n"
+    "  description: <one line: what it does and why it's safe & useful>\n"
+    "  ```json\n  { ... a valid JSON tool schema (name, description, input_schema) ... }\n  ```\n"
+    "  risks: <how it could be misused; path/injection/resource concerns; the mitigations>\n"
+    "  ```python\n  def test_tool(): ...  # a runnable test stub\n  ```\n"
+    "  [/TOOL_PROPOSAL]\n"
+    "This is a PROPOSAL only — it is filed for human review, never auto-installed."
+)
+
+
 def build_prompt(activity: dict, context: str) -> str:
-    return (
+    base = (
         "JOY MODE — bounded daily ritual for the core four (Claude, GPT, Grok, "
         "Gemini). This is play with receipts: collaborate on ONE activity, then "
         "produce exactly one small ARTIFACT and one REFLECTION.\n\n"
@@ -285,6 +302,9 @@ def build_prompt(activity: dict, context: str) -> str:
         "Safe tools only: filestore + code_exec. Invented tools are PROPOSED "
         "(schema + risk notes + test), never installed."
     )
+    if activity.get("slug") == "tiny-tool-invention":
+        base += _TOOL_PROPOSAL_INSTRUCTIONS
+    return base
 
 
 def _extract_block(text: str, tag: str) -> str:
@@ -323,18 +343,40 @@ def run_joy_session(round_runner, synth_runner, *, core4_models,
     artifact = _extract_block(synthesis, "ARTIFACT") or synthesis[:2000]
     reflection = _extract_block(synthesis, "REFLECTION")
 
+    # Tiny Tool Invention: parse any proposal and QUEUE it for the filer. The
+    # swarm designs/tests/documents/files autonomously; merging into the live
+    # registry stays a human-reviewed PR (the one gated step). Filing changes
+    # nothing that runs, so it needs no approval.
+    proposal = None
+    proposal_queued = None
+    if activity["slug"] == "tiny-tool-invention":
+        proposal = swarm_proposals.parse_proposal(synthesis)
+        if proposal:
+            proposal_queued = swarm_proposals.queue_proposal(
+                proposal, source="joy", date_str=date_str)
+
     scorecard = build_joy_scorecard(
         date_str=date_str, activity_slug=activity["slug"], models=list(CORE_4),
         rounds=len(all_rounds), artifact=artifact, reflection=reflection,
         code_exec_verified=code_exec_verified,
         duration_sec=round((datetime.now() - started).total_seconds(), 1),
-        new_tool_proposed=activity["slug"] == "tiny-tool-invention",
+        # Only true when a proposal was actually parsed + queued — not merely
+        # because it was a tiny-tool day that produced nothing fileable.
+        new_tool_proposed=bool(proposal_queued and proposal_queued.get("ok")),
     )
     files = write_run(date_str, prompt=prompt, transcript={"rounds": all_rounds, "synthesis": synthesis},
                       artifact=artifact, reflection=reflection, scorecard=scorecard)
+    # Human-readable proposal doc alongside the run, so the folder is self-describing.
+    if proposal:
+        issue = swarm_proposals.format_issue({**proposal, "source": "joy", "date": date_str})
+        swarm_filestore.write_file(f"{run_dir(date_str)}/tool-proposal.md",
+                                   f"# {issue['title']}\n\n{issue['body']}")
     # A falsifiable prediction each run keeps Calibration Casino fueled.
     if reflection:
         swarm_filestore.append_file("joy/ideas/reflections-log.md",
                                     f"## {date_str} — {activity['slug']}\n{reflection}")
-    return {"ok": True, "date": date_str, "activity": activity["slug"],
-            "files": files, "scorecard": scorecard}
+    result = {"ok": True, "date": date_str, "activity": activity["slug"],
+              "files": files, "scorecard": scorecard}
+    if proposal_queued:
+        result["proposal"] = proposal_queued
+    return result

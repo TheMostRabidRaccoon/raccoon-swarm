@@ -1,0 +1,23 @@
+[Unit]
+Description=File queued Joy Mode tool proposals as GitHub issues (oneshot)
+After=swarm.service
+# Fired by swarm-proposals.path when a proposal lands; safe to run manually.
+RefuseManualStart=no
+
+[Service]
+Type=oneshot
+User=theconductor
+WorkingDirectory=/home/theconductor/raccoon-swarm
+EnvironmentFile=-/home/theconductor/raccoon-swarm/.env
+ExecStart=/home/theconductor/raccoon-swarm/venv/bin/python3 /home/theconductor/raccoon-swarm/scripts/file_proposals.py
+StandardOutput=journal
+StandardError=journal
+# Needs network for the GitHub API (or SMTP for the email fallback) and read
+# access to swarm/joy/proposals/. No new privileges required.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+TimeoutStartSec=120
+
+[Install]
+WantedBy=multi-user.target
