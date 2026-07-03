@@ -23,7 +23,12 @@ logger = logging.getLogger("SwarmVault")
 # Canonical subdirs we always create at boot. Models are NOT limited to these —
 # any kebab/snake_case dir name under swarm/ is allowed (see _SAFE_PATH_RE).
 # This list is for the bootstrap layout, not validation.
-SUBDIRS = ("positions", "questions", "pursuits", "tasks", "frameworks", "artifacts", "logs")
+SUBDIRS = ("positions", "questions", "pursuits", "tasks", "frameworks", "artifacts", "logs", "joy")
+# Lanes kept OUT of the normal worker's auto-injected context. `joy/` is Joy
+# Mode's private ritual lane (see swarm_joy.py); it stays canonical + indexable
+# but must not bleed into ordinary work sessions — symmetric with Joy Mode not
+# pulling work/personal files into playtime. Still findable via explicit search.
+_WORK_CONTEXT_EXCLUDE = ("joy",)
 
 # Regex for dir-name-only validation (kebab/snake case, must start with a letter).
 _SAFE_DIR_RE = re.compile(r"^[a-z][a-z0-9_-]*$")
@@ -533,6 +538,8 @@ def recent_files_context(max_per_dir: int = 3) -> str:
         return ""
     parts = []
     for sub in SUBDIRS:
+        if sub in _WORK_CONTEXT_EXCLUDE:
+            continue
         target = root / sub
         if not target.exists():
             continue

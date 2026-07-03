@@ -4,8 +4,9 @@ Wraps the existing swarm_filestore module as Model Context Protocol tools so
 external MCP clients (Claude Desktop, Anthropic API tool_use, mcp inspector,
 etc.) can read/write/search the swarm's persistent memory directly.
 
-Phase A: filestore tools only. Code execution and image generation come in
-later phases.
+Exposed tools: filestore (search/read/list/write/append), code_exec (+status),
+image_generate (+status), and web_search (+status). Each capability has a
+matching *_status tool so a client can probe availability before calling.
 
 Transport modes:
   stdio (default) — for Claude Desktop, mcp inspector, local dev
