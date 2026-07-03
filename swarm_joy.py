@@ -65,7 +65,9 @@ repaired artifact + a note on the invariant that prevents recurrence.
 Each core-4 model makes 2-3 FALSIFIABLE predictions with confidence percentages
 about something checkable (the swarm, tech, whatever resolves later). A future
 Joy run resolves prior predictions via code_exec/filestore and records Brier
-scores to joy/metrics/calibration.json. The one activity that compounds.
+scores to joy/metrics/calibration.json. RESOLVE-AND-ADD in the same run: every
+calibration run both resolves any due predictions AND adds new ones, so the loop
+never runs dry. The one activity that compounds.
 
 ### puzzle-relay — Puzzle Relay
 One model designs a puzzle, another formalizes constraints, another tries to
@@ -146,6 +148,19 @@ def ensure_activities() -> list[dict]:
 # Deterministic daily pick (auditable, not random)
 # ============================================================
 
+def _ordered_eligible(activities: list[dict], date_str: str,
+                      recent_slugs: "list[str] | None", cooldown: int) -> list[dict]:
+    """The cooldown-filtered activities, rotated to a deterministic start index
+    derived from the date. Element 0 is the day's first-choice pick; the rest is
+    the fall-through order (used when a choice has no fuel).
+    """
+    recent = set((recent_slugs or [])[:cooldown])
+    eligible = [a for a in activities if a["slug"] not in recent] or activities
+    # Stable hash of the date → start index. Deterministic across processes/runs.
+    start = int(hashlib.sha256(date_str.encode("utf-8")).hexdigest(), 16) % len(eligible)
+    return [eligible[(start + i) % len(eligible)] for i in range(len(eligible))]
+
+
 def pick_activity(activities: list[dict], date_str: str,
                   recent_slugs: "list[str] | None" = None,
                   cooldown: int = DEFAULT_COOLDOWN) -> "dict | None":
@@ -153,15 +168,52 @@ def pick_activity(activities: list[dict], date_str: str,
     the same day is reproducible and auditable — no surprise recursion), while
     skipping activities used within the last `cooldown` runs.
 
-    Falls back to the full set if cooldown would exclude everything.
+    Falls back to the full set if cooldown would exclude everything. This is the
+    fuel-blind pick (element 0 of the rotation); `select_activity` layers the
+    no-fuel fall-through on top.
     """
     if not activities:
         return None
-    recent = set((recent_slugs or [])[:cooldown])
-    eligible = [a for a in activities if a["slug"] not in recent] or activities
-    # Stable hash of the date → index. Deterministic across processes/runs.
-    h = int(hashlib.sha256(date_str.encode("utf-8")).hexdigest(), 16)
-    return eligible[h % len(eligible)]
+    return _ordered_eligible(activities, date_str, recent_slugs, cooldown)[0]
+
+
+# --- Fuel checks: don't run a rep with no substance to work on --------------
+# Cheap, filesystem-only (no model calls). A slug with no registered check is
+# always considered fuelled. Only activities that genuinely need a backlog
+# declare one, so the ritual skips (e.g.) swarm-kata on a system with nothing
+# broken to repair and falls through to the next eligible activity.
+
+def _fuel_swarm_kata() -> bool:
+    """Swarm Kata repairs a prior failure — needs a backlog (closer digests,
+    scorecards, logged truncations, or saved artifacts) to pull one from."""
+    return bool(swarm_filestore.list_files("logs")) or bool(swarm_filestore.list_files("artifacts"))
+
+
+DEFAULT_FUEL_CHECKS = {
+    "swarm-kata": _fuel_swarm_kata,
+}
+
+
+def select_activity(activities: list[dict], date_str: str,
+                    recent_slugs: "list[str] | None" = None,
+                    cooldown: int = DEFAULT_COOLDOWN,
+                    fuel_checks: "dict | None" = None) -> "tuple[dict | None, list[dict]]":
+    """Deterministic pick, but skip activities that have no fuel and fall through
+    to the next in the rotation. Returns (chosen | None, skipped) where `skipped`
+    is [{activity, reason}] — recorded in the scorecard so a no-fuel skip is a
+    logged fact, never invisible. None only when the whole roster is out of fuel
+    (or empty).
+    """
+    if not activities:
+        return None, []
+    checks = DEFAULT_FUEL_CHECKS if fuel_checks is None else fuel_checks
+    skipped: list[dict] = []
+    for activity in _ordered_eligible(activities, date_str, recent_slugs, cooldown):
+        check = checks.get(activity["slug"])
+        if check is None or check():
+            return activity, skipped
+        skipped.append({"activity": activity["slug"], "reason": "no fuel"})
+    return None, skipped
 
 
 def recent_run_slugs(limit: int = 10) -> list[str]:
@@ -218,9 +270,14 @@ def _count_falsifiable(reflection: str) -> int:
 def build_joy_scorecard(*, date_str: str, activity_slug: str, models: list[str],
                         rounds: int, artifact: str, reflection: str,
                         code_exec_verified: "bool | None", duration_sec: "float | None",
-                        new_tool_proposed: bool = False, generated_at: str = "") -> dict:
+                        new_tool_proposed: bool = False, generated_at: str = "",
+                        reflection_floor_applied: bool = False,
+                        activities_skipped_no_fuel: "list[dict] | None" = None) -> dict:
     """Map a joy run to mechanical counters. Everything here is objectively
     countable or a ground-truth result — never a self-assessed 'joy score'.
+
+    `reflection` here is the model-produced reflection (NOT the stub), so
+    `reflection_present` stays honest — False when the floor had to fire.
     """
     return {
         "joy_scorecard_version": JOY_SCORECARD_VERSION,
@@ -231,11 +288,16 @@ def build_joy_scorecard(*, date_str: str, activity_slug: str, models: list[str],
         "duration_sec": duration_sec,
         "artifact_present": bool((artifact or "").strip()),
         "reflection_present": bool((reflection or "").strip()),
+        # True when the session omitted the required reflection and a stub was
+        # written in its place — a floored run is a logged fact, not invisible.
+        "reflection_floor_applied": bool(reflection_floor_applied),
         # true/false only when the activity had a code_exec ground-truth check;
         # null when the activity isn't verification-shaped. Never self-graded.
         "code_exec_verified": code_exec_verified,
         "falsifiable_claims": _count_falsifiable(reflection),
         "new_tool_proposed": bool(new_tool_proposed),
+        # Activities the fuel check skipped before landing on this one. Factual.
+        "activities_skipped_no_fuel": list(activities_skipped_no_fuel or []),
         "generated_at": generated_at or datetime.now().isoformat(timespec="seconds"),
     }
 
@@ -312,14 +374,26 @@ def _extract_block(text: str, tag: str) -> str:
     return m.group(1).strip() if m else ""
 
 
+# Written in place of a missing reflection so a floored run is never silent.
+_REFLECTION_STUB = (
+    "- WORKED: (not provided — reflection floor fired)\n"
+    "- DIDN'T: the session omitted the required WORKED/DIDN'T/FOLLOW-UP reflection\n"
+    "- FOLLOW-UP: enforce the Required Close next run\n"
+)
+
+
 def run_joy_session(round_runner, synth_runner, *, core4_models,
                     date_str: "str | None" = None,
-                    code_exec_verified: "bool | None" = None) -> dict:
+                    code_exec_verified: "bool | None" = None,
+                    force: bool = False,
+                    fuel_checks: "dict | None" = None) -> dict:
     """Run one bounded Joy session and persist it.
 
     round_runner(prompt, models, mode, order) -> {model: text}
     synth_runner(query, all_rounds) -> synthesis text
     core4_models: the model-dict subset to pass to the runner (core four only)
+    force: run even if this date already has a scorecard (else it's a no-op —
+           the date-lock that makes timer retries idempotent).
 
     Injecting the runners keeps this module free of the Flask/model stack, so it
     unit-tests with fakes and runs live from scripts/run_joy.py.
@@ -327,10 +401,18 @@ def run_joy_session(round_runner, synth_runner, *, core4_models,
     started = datetime.now()
     date_str = date_str or started.strftime("%Y-%m-%d")
 
+    # Date-lock: one run per day. A timer retry (or a double-fire) must not
+    # re-run a day that already produced a scorecard. `force` overrides for
+    # manual re-runs / testing.
+    if not force and swarm_filestore.read_file(f"{run_dir(date_str)}/scorecard.json"):
+        return {"ok": True, "skipped": "already ran", "date": date_str}
+
     activities = ensure_activities()
-    activity = pick_activity(activities, date_str, recent_run_slugs())
+    activity, skipped_no_fuel = select_activity(
+        activities, date_str, recent_run_slugs(), fuel_checks=fuel_checks)
     if activity is None:
-        return {"ok": False, "error": "no accepted activities"}
+        reason = "no accepted activities" if not activities else "no fuel across roster"
+        return {"ok": False, "error": reason, "skipped_no_fuel": skipped_no_fuel}
 
     context = joy_context(activity)
     prompt = build_prompt(activity, context)
@@ -341,7 +423,11 @@ def run_joy_session(round_runner, synth_runner, *, core4_models,
     synthesis = synth_runner(activity["title"], all_rounds) or ""
 
     artifact = _extract_block(synthesis, "ARTIFACT") or synthesis[:2000]
-    reflection = _extract_block(synthesis, "REFLECTION")
+    # Keep the model-produced reflection separate from the stub so the scorecard
+    # reports the honest truth (reflection_present=False when the floor fired).
+    model_reflection = _extract_block(synthesis, "REFLECTION")
+    reflection_floor_applied = not model_reflection.strip()
+    reflection = _REFLECTION_STUB if reflection_floor_applied else model_reflection
 
     # Tiny Tool Invention: parse any proposal and QUEUE it for the filer. The
     # swarm designs/tests/documents/files autonomously; merging into the live
@@ -357,12 +443,14 @@ def run_joy_session(round_runner, synth_runner, *, core4_models,
 
     scorecard = build_joy_scorecard(
         date_str=date_str, activity_slug=activity["slug"], models=list(CORE_4),
-        rounds=len(all_rounds), artifact=artifact, reflection=reflection,
+        rounds=len(all_rounds), artifact=artifact, reflection=model_reflection,
         code_exec_verified=code_exec_verified,
         duration_sec=round((datetime.now() - started).total_seconds(), 1),
         # Only true when a proposal was actually parsed + queued — not merely
         # because it was a tiny-tool day that produced nothing fileable.
         new_tool_proposed=bool(proposal_queued and proposal_queued.get("ok")),
+        reflection_floor_applied=reflection_floor_applied,
+        activities_skipped_no_fuel=skipped_no_fuel,
     )
     files = write_run(date_str, prompt=prompt, transcript={"rounds": all_rounds, "synthesis": synthesis},
                       artifact=artifact, reflection=reflection, scorecard=scorecard)
@@ -371,10 +459,11 @@ def run_joy_session(round_runner, synth_runner, *, core4_models,
         issue = swarm_proposals.format_issue({**proposal, "source": "joy", "date": date_str})
         swarm_filestore.write_file(f"{run_dir(date_str)}/tool-proposal.md",
                                    f"# {issue['title']}\n\n{issue['body']}")
-    # A falsifiable prediction each run keeps Calibration Casino fueled.
-    if reflection:
+    # A falsifiable prediction each run keeps Calibration Casino fueled. Only the
+    # real reflection is logged — never the floor stub (it carries no signal).
+    if not reflection_floor_applied:
         swarm_filestore.append_file("joy/ideas/reflections-log.md",
-                                    f"## {date_str} — {activity['slug']}\n{reflection}")
+                                    f"## {date_str} — {activity['slug']}\n{model_reflection}")
     result = {"ok": True, "date": date_str, "activity": activity["slug"],
               "files": files, "scorecard": scorecard}
     if proposal_queued:

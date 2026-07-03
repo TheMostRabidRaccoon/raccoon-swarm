@@ -129,6 +129,9 @@ def main() -> int:
                         "The activity pick is deterministic from this date.")
     parser.add_argument("--dry-run", action="store_true",
                         help="Pick and print today's activity, then exit without running.")
+    parser.add_argument("--force", action="store_true",
+                        help="Run even if this date already has a scorecard (overrides "
+                             "the once-per-day date lock). Useful for manual re-runs.")
     args = parser.parse_args()
 
     activities = swarm_joy.ensure_activities()
@@ -140,9 +143,13 @@ def main() -> int:
         date_str = args.date or None
         import datetime as _dt  # local: only the dry-run path needs a clock
         date_str = date_str or _dt.date.today().isoformat()
-        activity = swarm_joy.pick_activity(
+        activity, skipped = swarm_joy.select_activity(
             activities, date_str, swarm_joy.recent_run_slugs())
-        logger.info(f"[dry-run] {date_str} would run: {activity['slug']} — {activity['title']}")
+        if activity is None:
+            logger.info(f"[dry-run] {date_str}: no fuel across the roster — would skip")
+            return 0
+        note = f" (skipped no-fuel: {[s['activity'] for s in skipped]})" if skipped else ""
+        logger.info(f"[dry-run] {date_str} would run: {activity['slug']} — {activity['title']}{note}")
         return 0
 
     # Lazy-import the server only for a real run; it pulls heavy deps.
@@ -154,7 +161,13 @@ def main() -> int:
         server.run_synthesis,
         core4_models=_core4_models(server),
         date_str=args.date,
+        force=args.force,
     )
+
+    # Date-lock no-op: already ran today. Log quietly, don't email.
+    if result.get("skipped"):
+        logger.info(f"joy: {result.get('date')} already ran ({result['skipped']}) — exiting clean")
+        return 0
 
     if result.get("ok"):
         logger.info(f"joy run complete: {result['activity']} ({result['date']})")
