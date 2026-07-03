@@ -89,3 +89,50 @@ def test_process_then_verify_end_to_end(storage):
     fs.process_round_writes({"claude": output})
     assert fs.read_file("positions/legit.md") == "body"
     assert fs.verify_round_claims({"claude": output})["phantoms"] == []
+
+
+# ---- ghost verification (read-back invariant) ----------------------------
+
+def test_detect_ghost_claim_near_absence_cue():
+    text = "I re-read it: `positions/anansi.md` returned not found, so it's a ghost."
+    assert "positions/anansi.md" in fs.detect_ghost_claims(text)
+
+
+def test_detect_ghost_ignores_path_without_absence_cue():
+    text = "See positions/anansi.md for the full argument."
+    assert fs.detect_ghost_claims(text) == []
+
+
+def test_false_ghost_flagged_when_file_exists(storage):
+    # The exact Joy Mode failure: a live file declared a ghost.
+    fs.write_file("positions/conclusion.md", "four immutable laws" * 20)
+    round_results = {"gpt": "positions/conclusion.md not found — declaring it void."}
+    result = fs.verify_ghost_claims(round_results)
+    assert len(result["false_ghosts"]) == 1
+    g = result["false_ghosts"][0]
+    assert g["model"] == "gpt" and g["path"] == "positions/conclusion.md" and g["size"] > 0
+
+
+def test_true_absence_not_flagged(storage):
+    # "not found" about a genuinely missing file is correct — no correction.
+    round_results = {"gpt": "positions/never-written.md does not exist."}
+    assert fs.verify_ghost_claims(round_results)["false_ghosts"] == []
+
+
+def test_ghost_meta_and_non_str_ignored(storage):
+    fs.write_file("positions/real.md", "x")
+    round_results = {
+        "_meta": "positions/real.md not found",
+        "gemini": {"not": "a string"},
+    }
+    assert fs.verify_ghost_claims(round_results)["false_ghosts"] == []
+
+
+def test_ghost_verification_context_corrects(storage):
+    fs.write_file("positions/conclusion.md", "content here")
+    v = fs.verify_ghost_claims({"gpt": "positions/conclusion.md returned nothing — a phantom."})
+    ctx = fs.ghost_verification_context(v)
+    assert "READ-BACK CORRECTION" in ctx
+    assert "positions/conclusion.md" in ctx and "EXISTS" in ctx
+    # Clean when nothing was falsely convicted.
+    assert fs.ghost_verification_context({"false_ghosts": []}) == ""

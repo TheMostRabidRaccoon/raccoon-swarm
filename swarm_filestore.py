@@ -504,6 +504,93 @@ def verification_context(verification: dict) -> str:
 
 
 # ============================================================
+# Ghost verification — the read-back invariant, runner-enforced
+# ============================================================
+#
+# The mirror of phantom-write detection. Phantom writes are FALSE POSITIVES
+# ("I saved X" but X is absent). A ghost conviction is a FALSE NEGATIVE: a model
+# declares an existing file missing/void ("X returned not-found", "X is a ghost")
+# and other seats trust the narration without re-reading. A real Joy Mode
+# session convicted a live 1674-byte file as a ghost this exact way — in the same
+# round it canonized the read-back rule. Trusting a narrated negative is the
+# failure; the fix is to have the RUNNER re-read on disk and inject ground truth,
+# instead of relying on a model to honestly re-read.
+
+# Phrases signalling a model is asserting a path is ABSENT / void / a ghost.
+_GHOST_CUES = (
+    "not found", "notfound", "does not exist", "doesn't exist", "no such file",
+    "no such path", "missing", "is a ghost", "a ghost", "phantom", "void",
+    "returned nothing", "returned empty", "not on disk", "cannot find",
+    "can't find", "couldn't find", "could not find", "absent", "never written",
+    "was not saved", "was not written", "does not resolve", "unresolved",
+)
+
+
+def detect_ghost_claims(text: str, window: int = 140) -> list[str]:
+    """Heuristically find filestore paths a model claims do NOT exist.
+
+    Symmetric to detect_write_claims: a filestore-shaped path near an absence
+    cue. Heuristic by design — meant to flag paths for a disk re-read, never to
+    block anything.
+    """
+    if not text:
+        return []
+    low = text.lower()
+    claimed: list[str] = []
+    seen: set[str] = set()
+    for m in _PATH_IN_TEXT_RE.finditer(text):
+        path = m.group(1).lstrip("/")
+        if path in seen:
+            continue
+        start = max(0, m.start() - window)
+        ctx = low[start:m.end() + 40]
+        if any(cue in ctx for cue in _GHOST_CUES):
+            seen.add(path)
+            claimed.append(path)
+    return claimed
+
+
+def verify_ghost_claims(round_results: dict) -> dict:
+    """Re-read (on disk) every path a model declared missing this round. Any that
+    actually EXIST are false convictions — a narrated negative read-back the
+    runner just refuted.
+
+    Returns {"false_ghosts": [{"model", "path", "size"}, ...]} — empty when every
+    "not found" was genuinely absent. This is the read-back invariant enforced by
+    the runner rather than trusted from the model.
+    """
+    false_ghosts = []
+    for model_name, output in (round_results or {}).items():
+        if model_name == "_meta" or not isinstance(output, str):
+            continue
+        for path in detect_ghost_claims(output):
+            content = read_file(path)
+            if content is not None:
+                false_ghosts.append({"model": model_name, "path": path, "size": len(content)})
+                logger.info(f"swarm_filestore: false ghost conviction by {model_name}: {path} EXISTS ({len(content)}B)")
+    return {"false_ghosts": false_ghosts}
+
+
+def ghost_verification_context(verification: dict) -> str:
+    """Build a context block correcting false ghost convictions, to inject into
+    the NEXT round. Empty when no live file was wrongly declared missing."""
+    ghosts = verification.get("false_ghosts") if verification else None
+    if not ghosts:
+        return ""
+    parts = [
+        "=== READ-BACK CORRECTION (disk-verified) ===",
+        "A prior speaker declared these paths missing / void / ghost. The runner",
+        "re-read them on disk: they EXIST. A narrated negative read-back is not a",
+        "read-back — do NOT void, supersede, or delete these, and do NOT repeat",
+        "the 'not found' claim. Re-read the file itself before any such verdict:",
+    ]
+    for g in ghosts:
+        parts.append(f"  - {g['path']}  (called missing by {g['model']} — EXISTS, {g['size']} bytes)")
+    parts.append("=== END READ-BACK CORRECTION ===")
+    return "\n".join(parts)
+
+
+# ============================================================
 # External Drive index — what exists OUTSIDE the filestore
 # ============================================================
 

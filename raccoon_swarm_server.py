@@ -3288,12 +3288,19 @@ def start_loop():
                 fs_summary = swarm_filestore.process_round_writes(round_results)
                 if fs_summary["writes"] or fs_summary["appends"] or fs_summary["rejected"]:
                     q.put(("filestore_activity", fs_summary))
-                # Verify prose claims of having saved files actually landed on disk;
-                # surface any phantoms to the next round (anti performative-archiving).
+                # Verify prose claims of having saved files actually landed on disk
+                # (phantom writes), AND re-read any file a model called missing to
+                # catch false ghost convictions (the read-back invariant, enforced
+                # by the runner, not trusted from the model). Both feed the next round.
                 fs_verify = swarm_filestore.verify_round_claims(round_results)
-                filestore_verify_context = swarm_filestore.verification_context(fs_verify)
+                fs_ghosts = swarm_filestore.verify_ghost_claims(round_results)
+                filestore_verify_context = "\n\n".join(c for c in (
+                    swarm_filestore.verification_context(fs_verify),
+                    swarm_filestore.ghost_verification_context(fs_ghosts)) if c)
                 if fs_verify["phantoms"]:
                     q.put(("filestore_phantom_writes", fs_verify))
+                if fs_ghosts["false_ghosts"]:
+                    q.put(("filestore_false_ghosts", fs_ghosts))
                 # Build query context for next round (empty string if no queries issued)
                 filestore_query_context = swarm_filestore.process_round_queries(round_results)
 
@@ -3793,9 +3800,14 @@ def run_headless_session(query, source, num_rounds=3, active_loop_models=None, s
                 if fs_summary["writes"] or fs_summary["appends"] or fs_summary["rejected"]:
                     q.put(("filestore_activity", fs_summary))
                 fs_verify = swarm_filestore.verify_round_claims(round_results)
-                filestore_verify_context = swarm_filestore.verification_context(fs_verify)
+                fs_ghosts = swarm_filestore.verify_ghost_claims(round_results)
+                filestore_verify_context = "\n\n".join(c for c in (
+                    swarm_filestore.verification_context(fs_verify),
+                    swarm_filestore.ghost_verification_context(fs_ghosts)) if c)
                 if fs_verify["phantoms"]:
                     q.put(("filestore_phantom_writes", fs_verify))
+                if fs_ghosts["false_ghosts"]:
+                    q.put(("filestore_false_ghosts", fs_ghosts))
                 filestore_query_context = swarm_filestore.process_round_queries(round_results)
 
                 mail_summary = swarm_mail.process_round_emails(round_results, session_id)
