@@ -125,3 +125,46 @@ def test_phantom_claims_dedup_across_rounds_and_synthesis(storage):
 def test_phantom_claims_empty_when_all_persisted(storage):
     fs.write_file("positions/kept.md", "x")
     assert closer.find_phantom_claims([], "saved to positions/kept.md") == []
+
+
+# ---- honest-verb violations (severity subset of the gap) -----------------
+
+def test_honest_verb_violation_counts_completion_phantoms():
+    # A phantom asserted with strong completion language is a violation; a
+    # phantom merely mentioned is not (existence gates, cues only sort).
+    rounds = [{
+        "claude": "Written and verified at positions/ghost.md, read back, byte matches.",
+        "gpt": "The plan will live at tasks/later.md.",  # promise, not completion
+    }]
+    phantoms = ["positions/ghost.md", "tasks/later.md"]
+    hv = closer.find_honest_verb_violations(rounds, "", phantoms)
+    assert hv == ["positions/ghost.md"]
+
+
+def test_honest_verb_violation_subset_of_gap():
+    # Only paths that are BOTH phantom and completion-claimed count.
+    rounds = [{"claude": "Successfully wrote positions/real-but-claimed.md, verified on disk."}]
+    # real-but-claimed is NOT in phantom_paths (it exists) -> not a violation.
+    assert closer.find_honest_verb_violations(rounds, "", phantom_paths=[]) == []
+
+
+def test_honest_verb_violation_none_when_detector_unavailable():
+    assert closer.find_honest_verb_violations([{"c": "x"}], "", phantom_paths=None) is None
+
+
+def test_scorecard_records_honest_verb_field():
+    sc = closer.build_scorecard(
+        _digest(), phantom_paths=["positions/ghost.md", "tasks/vapor.md"],
+        honest_verb_violations=["positions/ghost.md"])
+    assert sc["filestore"]["honest_verb_violations"] == 1
+    assert sc["filestore"]["honest_verb_violation_paths"] == ["positions/ghost.md"]
+    # It's a strict subset of the gap.
+    assert sc["persistence_gap"] == 2
+    json.dumps(sc)
+
+
+def test_scorecard_honest_verb_unknown_not_zero():
+    # Unmeasured -> null, never 0 (0 would falsely certify "checked, found none").
+    sc = closer.build_scorecard(_digest(), phantom_paths=None, honest_verb_violations=None)
+    assert sc["filestore"]["honest_verb_violations"] is None
+    assert sc["filestore"]["honest_verb_violation_paths"] == []

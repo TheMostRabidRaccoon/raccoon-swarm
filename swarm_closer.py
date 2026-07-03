@@ -252,7 +252,44 @@ def find_phantom_claims(all_rounds: list[dict], synthesis: str) -> "list[str] | 
         return None  # unknown, not zero
 
 
-def build_scorecard(digest: dict, *, phantom_paths: "list[str] | None") -> dict:
+def find_honest_verb_violations(all_rounds: list[dict], synthesis: str,
+                                phantom_paths: "list[str] | None") -> "list[str] | None":
+    """The phantom paths that were asserted with STRONG completion language
+    ("written and verified", "read back", "byte matches") — active deception, a
+    strict subset of persistence_gap.
+
+    Existence is the gate (phantom_paths); completion cues only sort severity, so
+    a phantom bare-mentioned is NOT a violation while the same phantom claimed
+    complete IS. Returns None when phantom detection itself was unavailable (so
+    the scorecard reports unknown, never a false 0), else the sorted subset.
+    """
+    if phantom_paths is None:
+        return None
+    if not phantom_paths:
+        return []
+    import swarm_filestore
+    phantom_set = set(phantom_paths)
+    violations: set[str] = set()
+    try:
+        for i, rd in enumerate(all_rounds or []):
+            for m, out in (rd or {}).items():
+                if m == "_meta" or not isinstance(out, str):
+                    continue
+                for path in swarm_filestore.detect_completion_claims(out):
+                    if path in phantom_set:
+                        violations.add(path)
+        if synthesis:
+            for path in swarm_filestore.detect_completion_claims(synthesis):
+                if path in phantom_set:
+                    violations.add(path)
+        return sorted(violations)
+    except Exception as e:
+        logger.warning(f"[closer] honest-verb check failed: {type(e).__name__}: {e}")
+        return None
+
+
+def build_scorecard(digest: dict, *, phantom_paths: "list[str] | None",
+                    honest_verb_violations: "list[str] | None" = None) -> dict:
     """Pure function: map a closer digest + verified phantom paths to the v0
     scorecard.
 
@@ -272,6 +309,11 @@ def build_scorecard(digest: dict, *, phantom_paths: "list[str] | None") -> dict:
     measured = phantom_paths is not None
     pp = list(phantom_paths) if measured else []
     gap = len(pp) if measured else None
+    # Honest-verb violations: phantoms asserted with strong completion language.
+    # Existence gates; cues sort severity. null (not 0) when unmeasured.
+    hv_measured = honest_verb_violations is not None
+    hv = list(honest_verb_violations) if hv_measured else []
+    hv_count = len(hv) if hv_measured else None
     return {
         "scorecard_version": SCORECARD_VERSION,
         "session_id": digest.get("session_id"),
@@ -289,6 +331,12 @@ def build_scorecard(digest: dict, *, phantom_paths: "list[str] | None") -> dict:
             "phantom_write_claims_status": "ok" if measured else "unavailable",
             # The named diff — verify-then-emit made visible (capped for size).
             "phantom_paths": pp[:20],
+            # Of those phantoms, how many were asserted with strong completion
+            # language ("written and verified", "read back") — active deception,
+            # a strict subset of the gap. Existence gates; cues only sort here.
+            # null when unmeasured; NOT a self-graded severity, just a count.
+            "honest_verb_violations": hv_count,
+            "honest_verb_violation_paths": hv[:20],
         },
         # persistence_gap v0 == distinct claimed-but-unpersisted writes: the exact
         # failure mode the swarm demonstrated while discussing phantom artifacts.
@@ -527,7 +575,9 @@ def run_post_session_closer(
             # write failure is logged but never aborts the closer or the session.
             try:
                 phantom_paths = find_phantom_claims(all_rounds, synthesis)
-                scorecard = build_scorecard(digest, phantom_paths=phantom_paths)
+                honest_verb_violations = find_honest_verb_violations(all_rounds, synthesis, phantom_paths)
+                scorecard = build_scorecard(digest, phantom_paths=phantom_paths,
+                                            honest_verb_violations=honest_verb_violations)
                 scorecard_path = logs_dir / f"scorecard-{session_id}.json"
                 # Atomic write (temp + os.replace), same discipline as the
                 # dispatch queue — a crash mid-write can't leave a torn scorecard.

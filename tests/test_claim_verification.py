@@ -128,6 +128,27 @@ def test_ghost_meta_and_non_str_ignored(storage):
     assert fs.verify_ghost_claims(round_results)["false_ghosts"] == []
 
 
+# ---- completion-strength classification (severity, not the gate) ---------
+
+def test_detect_completion_claim_strong_language():
+    text = "Written and verified at positions/a.md — read back, byte matches."
+    assert "positions/a.md" in fs.detect_completion_claims(text)
+
+
+def test_detect_completion_ignores_promise_and_reference():
+    assert fs.detect_completion_claims("I will write positions/a.md next round.") == []
+    assert fs.detect_completion_claims("See positions/a.md for the canonical spec.") == []
+
+
+def test_completion_is_subset_of_write_claims():
+    # Everything detect_completion flags is also a write-claim, but not vice versa.
+    text = "Saved positions/weak.md. And written and verified positions/strong.md, read back."
+    weak_and_strong = set(fs.detect_write_claims(text))
+    strong = set(fs.detect_completion_claims(text))
+    assert "positions/strong.md" in strong
+    assert strong <= weak_and_strong
+
+
 def test_ghost_verification_context_corrects(storage):
     fs.write_file("positions/conclusion.md", "content here")
     v = fs.verify_ghost_claims({"gpt": "positions/conclusion.md returned nothing — a phantom."})
