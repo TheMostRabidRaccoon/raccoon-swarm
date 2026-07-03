@@ -32,6 +32,10 @@ _WORK_CONTEXT_EXCLUDE = ("joy",)
 
 # Regex for dir-name-only validation (kebab/snake case, must start with a letter).
 _SAFE_DIR_RE = re.compile(r"^[a-z][a-z0-9_-]*$")
+# A non-lane path segment (e.g. a dated run dir "2026-07-03"): may start with a
+# digit and contain dots, but is never ".." / "." (those fail the leading class),
+# so it can't be used for traversal. Used by is_safe_subdir for nested listing.
+_SAFE_SEG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 
 
 def _storage_root() -> Path:
@@ -164,16 +168,41 @@ def append_file(rel_path: str, content: str) -> bool:
         return False
 
 
+def is_safe_subdir(rel_dir: str) -> bool:
+    """True if rel_dir is empty or a safe (possibly nested) directory path.
+
+    Mirrors the write-path rule so anything you can write to, you can also list:
+    the FIRST segment is a lane (letter-led kebab, _SAFE_DIR_RE); later segments
+    may start with a digit or contain dots (e.g. a dated run dir
+    "joy/runs/2026-07-03"), but ".." / "." / empty segments are always rejected,
+    so no traversal slips through.
+    """
+    rel = (rel_dir or "").strip("/")
+    if not rel:
+        return True
+    parts = rel.split("/")
+    if not _SAFE_DIR_RE.match(parts[0]):
+        return False
+    return all(_SAFE_SEG_RE.match(seg) for seg in parts[1:])
+
+
 def list_files(rel_dir: str = "") -> list[str]:
-    """List files in a subdirectory. Empty string lists all subdirs flat."""
+    """List files in a subdirectory (nested paths like "joy/metrics" allowed).
+    Empty string lists all subdirs flat.
+
+    Previously this truncated rel_dir to its first segment, so listing
+    "joy/metrics" silently listed all of "joy/" — and the tool layer rejected
+    nested paths outright (a model couldn't enumerate joy/metrics or joy/runs).
+    Now it scopes to the full nested path.
+    """
     root = _storage_root()
     if not root.exists():
         return []
     if rel_dir:
-        sub = rel_dir.strip("/").split("/")[0]
-        if not _SAFE_DIR_RE.match(sub):
+        rel = rel_dir.strip("/")
+        if not is_safe_subdir(rel):
             return []
-        target = root / sub
+        target = root / rel
         if not target.exists():
             return []
     else:
@@ -196,12 +225,24 @@ def existing_subdirs() -> list[str]:
     )
 
 
-def search_files(query: str, max_results: int = 5) -> list[dict]:
-    """Search file contents for a query (case-insensitive substring).
+def search_files(query: str, max_results: int = 5, subdir: str = "") -> list[dict]:
+    """Search file contents for a query (case-insensitive substring), RANKED.
 
-    Returns a list of dicts: {path, snippet, full_content_if_small}.
-    Per the consolidator design (Option B), small files are inlined fully;
-    large files get a snippet around the first match.
+    Returns up to `max_results` dicts {path, size, snippet|content, match_type,
+    score}, best first. Small files (<=1024B) are inlined fully; larger files
+    get a snippet around the first match. `subdir` (e.g. "positions") scopes the
+    search to one lane — ranking + truncation then happen WITHIN that lane, so a
+    directory-scoped search can't be starved by higher-scoring hits elsewhere.
+
+    This ranks matches instead of the previous behaviour, which walked files in
+    alphabetical path order and stopped at the first `max_results` — so it
+    returned whichever filenames sorted earliest, not the most relevant matches
+    (a model searching "pricing" got the same alphabetical five every time).
+    Scoring is deliberately simple and substring-based — a filename hit, match
+    count, and match position, with recency as a tiebreak. Relevance-by-meaning
+    is swarm_semantic's job; this tool just stops conflating "first" with "best".
+    We now scan the whole filestore per call (no early break) to rank honestly;
+    it's the substring fallback over a homelab-scale store, so that's fine.
     """
     if not query or len(query) < 2:
         return []
@@ -210,11 +251,17 @@ def search_files(query: str, max_results: int = 5) -> list[dict]:
         return []
 
     q_lower = query.lower()
-    results = []
-    for path in sorted(root.rglob("*")):
+    sub = subdir.strip("/")
+    scored = []
+    for path in root.rglob("*"):
         if not path.is_file() or path.name.startswith("_"):
             continue
         if path.suffix not in (".md", ".json", ".txt", ".log"):
+            continue
+        rel = str(path.relative_to(root))
+        # Scope to one lane BEFORE reading/scoring, so ranking + truncation
+        # happen within the directory (never starved by hits elsewhere).
+        if sub and not (rel == sub or rel.startswith(f"{sub}/")):
             continue
         try:
             content = path.read_text()
@@ -228,10 +275,24 @@ def search_files(query: str, max_results: int = 5) -> list[dict]:
         if not name_match and idx < 0:
             continue
 
-        rel = str(path.relative_to(root))
+        # Substring relevance: a filename hit is the strongest signal; then how
+        # many times the term appears (capped) and how early the first hit is.
+        score = 0.0
+        if name_match:
+            score += 3.0
+        if idx >= 0:
+            score += 1.0 + min(content_lower.count(q_lower), 5) * 0.4
+            score += 1.0 if idx < 200 else 0.3
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            mtime = 0.0
+
         size = len(content)
+        entry = {"path": rel, "size": size, "score": round(score, 2),
+                 "match_type": "name" if name_match and idx < 0 else "content"}
         if size <= 1024:
-            results.append({"path": rel, "size": size, "content": content, "match_type": "name" if name_match and idx < 0 else "content"})
+            entry["content"] = content
         else:
             # Snippet: ~200 chars around the first match
             if idx < 0:
@@ -240,11 +301,13 @@ def search_files(query: str, max_results: int = 5) -> list[dict]:
                 start = max(0, idx - 80)
                 end = min(size, idx + 120)
                 snippet = ("..." if start > 0 else "") + content[start:end].strip() + ("..." if end < size else "")
-            results.append({"path": rel, "size": size, "snippet": snippet, "match_type": "name" if name_match and idx < 0 else "content"})
+            entry["snippet"] = snippet
+        scored.append((score, mtime, rel, entry))
 
-        if len(results) >= max_results:
-            break
-    return results
+    # Best score first; recency breaks ties (newer wins); path is a final,
+    # deterministic tiebreak so results are stable across runs.
+    scored.sort(key=lambda t: (t[0], t[1], t[2]), reverse=True)
+    return [entry for _, _, _, entry in scored[:max_results]]
 
 
 # ============================================================
