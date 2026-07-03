@@ -71,10 +71,22 @@ work. Making the product invalid because an *observer* failed to write
 telemetry would invert the system's authority hierarchy — the same class of
 mistake as letting self-graded usefulness scores become the product.
 
+## Joy Mode (daily play ritual)
+
+A bounded daily Core-4 ritual, run as a **systemd oneshot** (isolates the
+server's persona-mode globals). Fired by `swarm-joy.timer`; runs land under
+`swarm/joy/runs/<date>/` with a mechanical scorecard. Its `tiny-tool-invention`
+activity queues tool proposals that `swarm-proposals.path` files as GitHub
+issues — the swarm designs/tests/files autonomously, **merging into the live
+registry stays a human PR** (the one gated step). Full first-run + enable +
+token setup runbook: [`stack/joy.md`](stack/joy.md).
+
 ## Recovery
 
 - **Dispatch stuck in `processing/`** (runner crashed mid-pipeline):
   `./scripts/run_dispatch.py --requeue` (see [`../systemd/README.md`](../systemd/README.md)).
+- **Joy proposal stuck in `queued/`/`failed/`:** inspect it, fix the cause, then
+  `./scripts/file_proposals.py <proposal_id>` (see [`stack/joy.md`](stack/joy.md)).
 - **Semantic index stale/empty:** `POST /semantic/reindex` or
   `scripts/build_semantic_index.py`.
 - **Single worker is deliberate** — the daemon, in-memory session state, and
