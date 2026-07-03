@@ -13,7 +13,7 @@ human can work on one subsystem without loading the whole stack into context.
 |--------|----------------|
 | `raccoon_swarm_server.py` | The hub. Flask routes, deliberation loops (loop / round-table / attention-lab / woodland-council), synthesis, UI, auth, the swarm daemon, SSE streams. |
 | `swarm_tools.py` | Unified tool registry — the tool schemas + dispatch the models call (`filestore_*`, `code_exec`, `web_search`, `web_verify`, `image_generate`, `mail`, `dispatch_queue_write`). |
-| `swarm_filestore.py` | Persistent shared memory (`positions/`, `questions/`, `pursuits/`, `tasks/`, `frameworks/`, `artifacts/`, `logs/`). Path safety, atomic writes, and **write verification** (phantom-claim detection). |
+| `swarm_filestore.py` | Persistent shared memory (`positions/`, `questions/`, `pursuits/`, `tasks/`, `frameworks/`, `artifacts/`, `logs/`, `joy/`). Path safety, atomic writes, and **write verification** (phantom-claim detection). The `joy/` lane is kept out of the normal worker's auto-injected context (still indexable/searchable). |
 | `swarm_semantic.py` | Semantic search over the filestore — OpenAI embeddings, an mtime-keyed in-process cache, metadata filters + hybrid keyword/vector. No vector DB (see OPERATIONS). |
 | `swarm_auth.py` | Stdlib-only auth primitives: constant-time token/password comparison, trusted-CIDR parsing. |
 | `swarm_deploy.py` | Stdlib-only deployment profiles (`local`/`lan`/`public`) — fail closed, fail loud. |
@@ -25,8 +25,10 @@ human can work on one subsystem without loading the whole stack into context.
 | `swarm_mail.py` | The swarm's one outbound channel: email the Conductor. |
 | `swarm_orchestrator.py` | Round Orchestrator — winds down runaway tool loops, detects truncations. |
 | `swarm_closer.py` | Post-session Closer — emails a digest **and** writes the mechanical `scorecard-<id>.json` (incl. `persistence_gap`). |
-| `raccoon_mcp_server.py` | Exposes the filestore as MCP tools for external clients. |
+| `swarm_joy.py` | **Joy Mode** — a bounded daily Core-4 play ritual with receipts (one activity → artifact → reflection → **mechanical** scorecard, persisted under `joy/`). Server-free (round runner injected); own personal-data-free context; invented tools are *proposed*, never auto-installed. |
+| `raccoon_mcp_server.py` | Exposes the filestore + code_exec / image_generate / web_search as MCP tools for external clients. |
 | `scripts/run_dispatch.py` | The dispatch **runner** — executes the video pipeline for queued payloads. |
+| `scripts/run_joy.py` | The Joy Mode **runner** — wires the server engine into `swarm_joy` and runs one ritual as a systemd oneshot (isolates persona-mode globals). Fired daily by `swarm-joy.timer`. |
 | `scripts/swarm_observer.py` | Cross-session observer (reads across sessions; never writes to the swarm filestore). |
 
 ## Request → response data flow

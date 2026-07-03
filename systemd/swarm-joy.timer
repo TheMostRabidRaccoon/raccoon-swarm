@@ -1,0 +1,15 @@
+[Unit]
+Description=Fire Joy Mode once a day (the Core-4 play ritual)
+
+[Timer]
+# Daily, late morning. The activity pick is deterministic from the date, so the
+# exact minute doesn't matter — only that it runs once per day.
+OnCalendar=*-*-* 11:00:00
+# If the box was asleep/off at 11:00, still run when it next wakes.
+Persistent=true
+# Small jitter so a fleet of swarms doesn't stampede the model APIs at :00.
+RandomizedDelaySec=600
+Unit=swarm-joy.service
+
+[Install]
+WantedBy=timers.target

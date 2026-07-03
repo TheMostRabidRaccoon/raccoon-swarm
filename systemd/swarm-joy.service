@@ -1,0 +1,24 @@
+[Unit]
+Description=Joy Mode — daily bounded Core-4 play ritual (oneshot)
+After=swarm.service
+# Fired by swarm-joy.timer once a day; safe to trigger manually for a test run.
+RefuseManualStart=no
+
+[Service]
+Type=oneshot
+User=theconductor
+WorkingDirectory=/home/theconductor/raccoon-swarm
+EnvironmentFile=-/home/theconductor/raccoon-swarm/.env
+ExecStart=/home/theconductor/raccoon-swarm/venv/bin/python3 /home/theconductor/raccoon-swarm/scripts/run_joy.py
+StandardOutput=journal
+StandardError=journal
+# The ritual needs filesystem access to swarm/ and the network for model calls.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+# One session = two rounds + dual-grader synthesis across four seats. Give it
+# room; the runner exits as soon as the artifact + scorecard are persisted.
+TimeoutStartSec=1800
+
+[Install]
+WantedBy=multi-user.target
