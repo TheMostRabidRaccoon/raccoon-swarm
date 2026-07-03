@@ -113,16 +113,17 @@ def filestore_search(query: str, directory: str = "", max_results: int = 10) -> 
         {"query": str, "results": [...], "total_matches": int}
         Each result has: path, size, snippet OR content, match_type.
     """
-    if directory and not swarm_filestore._SAFE_DIR_RE.match(directory.strip("/")):
+    if directory and not swarm_filestore.is_safe_subdir(directory):
         return {
             "query": query,
-            "error": f"invalid directory name '{directory}' (must be kebab-case starting with a letter)",
+            "error": f"invalid directory '{directory}' (each segment must be kebab-case starting with a letter)",
             "results": [],
             "total_matches": 0,
         }
-    results = swarm_filestore.search_files(query, max_results=max_results)
-    if directory:
-        results = [r for r in results if r["path"].startswith(f"{directory.strip('/')}/")]
+    # Scope inside search_files so ranking + truncation happen WITHIN the lane
+    # (filtering after truncation would starve a lane below the global top-N).
+    results = swarm_filestore.search_files(query, max_results=max_results,
+                                           subdir=directory.strip("/"))
     return {"query": query, "results": results, "total_matches": len(results)}
 
 
@@ -160,10 +161,10 @@ def filestore_list(directory: str = "") -> dict:
     Returns:
         {"directory": str, "files": [list of relative paths], "subdirs": [...]}
     """
-    if directory and not swarm_filestore._SAFE_DIR_RE.match(directory.strip("/")):
+    if directory and not swarm_filestore.is_safe_subdir(directory):
         return {
             "directory": directory,
-            "error": f"invalid directory name '{directory}' (must be kebab-case starting with a letter)",
+            "error": f"invalid directory '{directory}' (each segment must be kebab-case starting with a letter)",
             "files": [],
         }
     files = swarm_filestore.list_files(directory)
