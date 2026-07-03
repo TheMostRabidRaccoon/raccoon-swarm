@@ -16,9 +16,15 @@ reflection → one **mechanical** scorecard, persisted under the filestore's
 ## What a run does
 
 1. **Pick** — one activity, chosen *deterministically from the date* (auditable,
-   reproducible on re-run) with a cooldown so activities rotate. Only entries
-   under `## Accepted` in `joy/activities.md` are eligible; `## Proposed` is
-   quarantined until the council promotes them.
+   reproducible) with a cooldown so activities rotate, then a **fuel check**:
+   if the day's first pick has no substance to work on (e.g. swarm-kata with an
+   empty failure backlog), it's skipped — logged in the scorecard's
+   `activities_skipped_no_fuel` — and the next activity in the rotation runs.
+   Only entries under `## Accepted` in `joy/activities.md` are eligible;
+   `## Proposed` is quarantined until the council promotes them. (Fuel makes the
+   pick depend on filestore state, so re-running an old date can differ if the
+   fuel changed — a deliberate trade of strict reproducibility for not
+   performing empty reps.)
 2. **Play** — two rounds across the core four: round 1 parallel (ideate), round
    2 daisy (converge + build), then a dual-grader synthesis.
 3. **Persist** — everything lands under `swarm/joy/runs/<date>/`:
@@ -53,6 +59,16 @@ same trap the session closer avoids). Fields:
   (Calibration Casino fuel)
 - `new_tool_proposed` — `true` only when a proposal was actually parsed **and**
   queued, not merely because it was a tiny-tool day
+- `reflection_floor_applied` — `true` when the session omitted the required
+  reflection and a stub was written in its place (a floored run is a logged
+  fact; `reflection_present` stays `false`, honestly)
+- `activities_skipped_no_fuel` — the activities the fuel check passed over before
+  landing on this one, with reasons
+
+Note: there is deliberately **no** self-graded "definition of done met" field.
+A model declaring its own work complete is self-assessment — the exact thing the
+mechanical scorecard exists to avoid. Completion is inferred from countable
+facts (`artifact_present`, `code_exec_verified`), never self-report.
 
 ## First run (do this before enabling the timer)
 
@@ -137,8 +153,9 @@ needs contents/PR scope — promotion is a human PR, not the swarm's job.
 - **Re-file a stuck/failed proposal** — inspect it, fix the cause, then:
   `./scripts/file_proposals.py <proposal_id>` (or `--dry-run` to preview the
   backend + title without transitioning anything).
-- **Re-run a specific day** — `./scripts/run_joy.py --date YYYY-MM-DD`
-  (deterministic; overwrites that day's run folder).
+- **Re-run a specific day** — a day that already has a scorecard is a no-op
+  (the date-lock that makes timer retries idempotent). To force a fresh run,
+  add `--force`: `./scripts/run_joy.py --date YYYY-MM-DD --force`.
 
 ## Extending the activity registry
 

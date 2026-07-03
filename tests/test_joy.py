@@ -293,3 +293,114 @@ def test_run_joy_session_errors_with_no_activities(storage, monkeypatch):
     monkeypatch.setattr(joy, "ensure_activities", lambda: [])
     res = joy.run_joy_session(lambda *a: {}, lambda *a: "", core4_models={}, date_str="2026-07-06")
     assert res["ok"] is False
+
+
+# ---- fuel checks + fall-through ------------------------------------------
+
+_ACTS = [
+    {"slug": "aaa", "title": "A", "prompt": "a"},
+    {"slug": "bbb", "title": "B", "prompt": "b"},
+    {"slug": "ccc", "title": "C", "prompt": "c"},
+]
+
+
+def test_select_activity_skips_no_fuel_and_records_it():
+    # Force the day's first pick to have no fuel; it should fall through and
+    # log the skip.
+    chosen, skipped = joy.select_activity(
+        _ACTS, "2026-07-03", fuel_checks={"aaa": lambda: False, "bbb": lambda: False})
+    assert chosen["slug"] not in ("aaa", "bbb")
+    logged = {s["activity"] for s in skipped}
+    assert "aaa" in logged or "bbb" in logged  # whichever preceded the pick
+
+
+def test_select_activity_none_when_whole_roster_dry():
+    chosen, skipped = joy.select_activity(
+        _ACTS, "2026-07-03", fuel_checks={s["slug"]: (lambda: False) for s in _ACTS})
+    assert chosen is None
+    assert len(skipped) == len(_ACTS)
+
+
+def test_select_activity_no_checks_is_pure_pick():
+    # With no fuel checks, select_activity's choice == the fuel-blind pick_activity.
+    chosen, skipped = joy.select_activity(_ACTS, "2026-07-03", fuel_checks={})
+    assert skipped == []
+    assert chosen["slug"] == joy.pick_activity(_ACTS, "2026-07-03")["slug"]
+
+
+def test_swarm_kata_fuel_depends_on_backlog(storage):
+    assert joy._fuel_swarm_kata() is False          # empty filestore -> no backlog
+    fs.write_file("logs/closer-digest-x.md", "a prior failure to repair")
+    assert joy._fuel_swarm_kata() is True
+
+
+def test_run_joy_session_records_skipped_no_fuel(storage):
+    # swarm-kata (dry, empty logs/) first-picked -> skipped, logged, fall through.
+    fs.write_file(
+        "joy/activities.md",
+        "## Accepted\n\n### swarm-kata — Swarm Kata\nRepair a failure.\n"
+        "### constraint-art — Constraint Art\nMake something small.\n",
+    )
+    acts = joy.parse_activities(fs.read_file("joy/activities.md"))
+    # Find a date whose fuel-blind first pick IS swarm-kata (deterministic).
+    day = next(f"2026-08-{d:02d}" for d in range(1, 32)
+               if joy.pick_activity(acts, f"2026-08-{d:02d}")["slug"] == "swarm-kata")
+
+    rr, sr, _ = _fake_runners("[ARTIFACT] art [/ARTIFACT] [REFLECTION] done [/REFLECTION]")
+    res = joy.run_joy_session(rr, sr, core4_models={}, date_str=day)
+    assert res["activity"] == "constraint-art"           # fell through past dry swarm-kata
+    sc = json.loads(fs.read_file(f"joy/runs/{day}/scorecard.json"))
+    assert any(s["activity"] == "swarm-kata" for s in sc["activities_skipped_no_fuel"])
+
+
+# ---- reflection floor ----------------------------------------------------
+
+def test_reflection_floor_fires_and_is_honest(storage):
+    fs.write_file(
+        "joy/activities.md",
+        "## Accepted\n\n### constraint-art — Constraint Art\nMake something small.\n",
+    )
+    rr, sr, _ = _fake_runners("[ARTIFACT] a drawing [/ARTIFACT]")  # no REFLECTION block
+    res = joy.run_joy_session(rr, sr, core4_models={}, date_str="2026-07-09")
+
+    # A stub reflection is written so the omission is never silent...
+    refl = fs.read_file("joy/runs/2026-07-09/reflection.md")
+    assert refl and "reflection floor fired" in refl
+    # ...but the scorecard stays honest about it.
+    sc = json.loads(fs.read_file("joy/runs/2026-07-09/scorecard.json"))
+    assert sc["reflection_present"] is False
+    assert sc["reflection_floor_applied"] is True
+    # The stub is NOT logged as Calibration Casino fuel.
+    assert fs.read_file("joy/ideas/reflections-log.md") is None
+
+
+# ---- date-lock idempotency -----------------------------------------------
+
+def test_date_lock_skips_second_run(storage):
+    fs.write_file(
+        "joy/activities.md",
+        "## Accepted\n\n### constraint-art — Constraint Art\nMake something small.\n",
+    )
+    rr, sr, _ = _fake_runners("[ARTIFACT] one [/ARTIFACT] [REFLECTION] r [/REFLECTION]")
+    first = joy.run_joy_session(rr, sr, core4_models={}, date_str="2026-07-10")
+    assert first["ok"] and "skipped" not in first
+
+    rr2, sr2, seen2 = _fake_runners("[ARTIFACT] two [/ARTIFACT] [REFLECTION] r2 [/REFLECTION]")
+    second = joy.run_joy_session(rr2, sr2, core4_models={}, date_str="2026-07-10")
+    assert second.get("skipped") == "already ran"
+    assert seen2.get("modes") is None  # no rounds ran the second time
+    # The artifact from the first run is untouched.
+    assert fs.read_file("joy/runs/2026-07-10/artifact.md") == "one"
+
+
+def test_date_lock_force_reruns(storage):
+    fs.write_file(
+        "joy/activities.md",
+        "## Accepted\n\n### constraint-art — Constraint Art\nMake something small.\n",
+    )
+    rr, sr, _ = _fake_runners("[ARTIFACT] one [/ARTIFACT] [REFLECTION] r [/REFLECTION]")
+    joy.run_joy_session(rr, sr, core4_models={}, date_str="2026-07-11")
+    rr2, sr2, _ = _fake_runners("[ARTIFACT] two [/ARTIFACT] [REFLECTION] r2 [/REFLECTION]")
+    forced = joy.run_joy_session(rr2, sr2, core4_models={}, date_str="2026-07-11", force=True)
+    assert forced["ok"] and "skipped" not in forced
+    assert fs.read_file("joy/runs/2026-07-11/artifact.md") == "two"
