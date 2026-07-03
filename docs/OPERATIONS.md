@@ -71,6 +71,22 @@ work. Making the product invalid because an *observer* failed to write
 telemetry would invert the system's authority hierarchy — the same class of
 mistake as letting self-graded usefulness scores become the product.
 
+## Read-back verification (runner-enforced, both directions)
+
+Between rounds the runner re-reads the filestore on disk and injects ground
+truth into the next round — the model is never trusted to self-verify:
+
+- **Phantom writes** (`verify_round_claims`): a model narrates a save it never
+  actually persisted → the claimed-but-absent path is surfaced as a phantom.
+- **False ghosts** (`verify_ghost_claims`): a model declares a live file
+  missing/void ("not found", "a ghost") → the runner re-reads it; if it exists,
+  a `READ-BACK CORRECTION` is injected. This closes the failure a real Joy Mode
+  session hit — the seats convicted a live 1674-byte file as a ghost off one
+  narrated negative read-back, in the same round they canonized the rule against
+  it. A narrated negative read-back is not a read-back; the disk is the arbiter.
+
+Both emit SSE events (`filestore_phantom_writes`, `filestore_false_ghosts`).
+
 ## Joy Mode (daily play ritual)
 
 A bounded daily Core-4 ritual, run as a **systemd oneshot** (isolates the
