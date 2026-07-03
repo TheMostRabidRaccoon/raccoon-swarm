@@ -46,9 +46,11 @@ def _dispatch_filestore_search(query: str, directory: str = "", max_results: int
             "results": [],
             "total_matches": 0,
         }
-    results = swarm_filestore.search_files(query, max_results=max_results)
-    if directory:
-        results = [r for r in results if r["path"].startswith(f"{directory.strip('/')}/")]
+    # Scope inside search_files so ranking + truncation happen WITHIN the
+    # directory — filtering after truncation would starve a lane whose matches
+    # didn't crack the global top-N.
+    results = swarm_filestore.search_files(query, max_results=max_results,
+                                           subdir=directory.strip("/"))
     return {"query": query, "results": results, "total_matches": len(results)}
 
 
@@ -213,10 +215,12 @@ TOOL_DEFINITIONS: dict[str, dict[str, Any]] = {
     "filestore_search": {
         "description": (
             "Search the swarm's persistent filestore by query. Searches both "
-            "filenames and contents (case-insensitive substring). Small files "
-            "(<1KB) return full content; larger files return a snippet around "
-            "the first match. Use this BEFORE writing new memory to avoid "
-            "duplicating prior decisions."
+            "filenames and contents (case-insensitive substring), returning the "
+            "most relevant matches first (filename hit, match count/position, "
+            "recency). Small files (<1KB) return full content; larger files "
+            "return a snippet around the first match. Optional 'directory' scopes "
+            "and ranks within one lane. Use this BEFORE writing new memory to "
+            "avoid duplicating prior decisions."
         ),
         "input_schema": {
             "type": "object",
