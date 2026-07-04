@@ -146,3 +146,59 @@ def test_format_issue_falls_back_to_raw():
     body = sp.format_issue(p)["body"]
     assert "## Raw proposal" in body
     assert "AUTONOMY GATE" in body
+
+
+# ---- process_round_proposals — the any-session bridge ----------------------
+
+_BLOCK_B = """[TOOL_PROPOSAL]
+name: Path Verifier
+description: batch existence checks for filestore paths
+[/TOOL_PROPOSAL]"""
+
+
+def test_round_proposals_queued_from_any_seat(storage):
+    round_results = {
+        "claude": f"Some deliberation.\n{_FULL_BLOCK}\nMore text.",
+        "gpt": "no proposal here",
+        "_meta": {"round": 1},
+    }
+    summary = sp.process_round_proposals(round_results, source="session:test123")
+    assert len(summary["queued"]) == 1
+    assert summary["queued"][0]["model"] == "claude"
+    assert summary["rejected"] == []
+    pid = summary["queued"][0]["proposal_id"]
+    rec = sp.read_proposal(sp.QUEUED, pid)
+    assert rec["source"] == "session:test123"
+
+
+def test_round_proposals_multiple_blocks_one_output(storage):
+    round_results = {"gemini": f"{_FULL_BLOCK}\n\ninterlude\n\n{_BLOCK_B}"}
+    summary = sp.process_round_proposals(round_results, source="session:x")
+    slugs = {qd["slug"] for qd in summary["queued"]}
+    assert slugs == {"word-counter", "path-verifier"}
+
+
+def test_round_proposals_dedupes_echoed_slug(storage):
+    round_results = {"claude": _FULL_BLOCK, "grok": _FULL_BLOCK}
+    summary = sp.process_round_proposals(round_results, source="session:x")
+    assert len(summary["queued"]) == 1
+    assert len(summary["skipped_duplicates"]) == 1
+
+
+def test_round_proposals_invalid_block_rejected_not_raised(storage):
+    # A named block with neither schema nor description fails validation
+    bad = "[TOOL_PROPOSAL]\nname: Bare Name Only\n[/TOOL_PROPOSAL]"
+    summary = sp.process_round_proposals({"grok": bad}, source="session:x")
+    assert summary["queued"] == []
+    assert len(summary["rejected"]) == 1
+    assert summary["rejected"][0]["error"]
+
+
+def test_round_proposals_no_blocks_is_noop(storage):
+    summary = sp.process_round_proposals({"claude": "just words"}, source="s")
+    assert summary == {"queued": [], "rejected": [], "skipped_duplicates": []}
+
+
+def test_parse_proposals_returns_all_blocks():
+    text = f"{_FULL_BLOCK}\n{_BLOCK_B}"
+    assert [p["slug"] for p in sp.parse_proposals(text)] == ["word-counter", "path-verifier"]

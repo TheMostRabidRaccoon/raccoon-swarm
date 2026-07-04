@@ -76,6 +76,7 @@ import swarm_closer
 import swarm_filestore
 import swarm_mail
 import swarm_orchestrator
+import swarm_proposals
 import swarm_tools
 import swarm_version
 import swarm_websearch
@@ -324,98 +325,15 @@ def save_boot_context(text):
 # ============================================
 # PERSISTENT SWARM MEMORY (cross-session state)
 # ============================================
-MEMORY_FILE = (STORAGE_DIR if os.getenv("RAILWAY_ENVIRONMENT") or os.getenv("RRI_STORAGE_DIR") else Path(".")) / "swarm_memory.json"
-MEMORY_SEED_FILE = Path(__file__).parent / "swarm_memory_seed.json"
-
-_EMPTY_MEMORY = {
-    "last_updated": None,
-    "session_count": 0,
-    "resolved_positions": [],
-    "unresolved_questions": [],
-    "next_pursuits": [],
-    "evolving_frameworks": [],
-    "session_log": []
-}
-
-# Max items to keep in each memory category before pruning old entries
-MEMORY_MAX_RESOLVED = 50
-MEMORY_MAX_UNRESOLVED = 30
-MEMORY_MAX_PURSUITS = 15
-MEMORY_MAX_FRAMEWORKS = 20
-MEMORY_MAX_SESSION_LOG = 100
-
-def load_swarm_memory():
-    """Load the swarm's persistent memory from disk.
-
-    Bootstrap order: swarm_memory.json (runtime) > swarm_memory_seed.json (repo) > empty.
-    """
-    target = MEMORY_FILE
-    if not target.exists() and MEMORY_SEED_FILE.exists():
-        # First run: bootstrap from seed
-        import shutil
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(MEMORY_SEED_FILE, target)
-        logger.info(f"Bootstrapped swarm memory from seed: {MEMORY_SEED_FILE}")
-
-    if target.exists():
-        try:
-            with open(target, "r") as f:
-                mem = json.load(f)
-            # Ensure all keys exist (forward-compat)
-            for key, default in _EMPTY_MEMORY.items():
-                if key not in mem:
-                    mem[key] = default if not isinstance(default, list) else []
-            return mem
-        except (json.JSONDecodeError, IOError) as e:
-            logger.error(f"Failed to load swarm memory: {e}")
-            return dict(_EMPTY_MEMORY)
-    return dict(_EMPTY_MEMORY)
-
-def save_swarm_memory(memory):
-    """Write the swarm's persistent memory to disk."""
-    MEMORY_FILE.parent.mkdir(parents=True, exist_ok=True)
-    memory["last_updated"] = datetime.now().isoformat()
-    # Prune oldest entries to keep memory bounded
-    memory["resolved_positions"] = memory["resolved_positions"][-MEMORY_MAX_RESOLVED:]
-    memory["unresolved_questions"] = memory["unresolved_questions"][-MEMORY_MAX_UNRESOLVED:]
-    memory["next_pursuits"] = memory["next_pursuits"][-MEMORY_MAX_PURSUITS:]
-    memory["evolving_frameworks"] = memory["evolving_frameworks"][-MEMORY_MAX_FRAMEWORKS:]
-    memory["session_log"] = memory["session_log"][-MEMORY_MAX_SESSION_LOG:]
-    with open(MEMORY_FILE, "w") as f:
-        json.dump(memory, f, indent=2)
-
-def format_memory_context(memory):
-    """Format swarm memory into a prompt-injectable string."""
-    if memory["session_count"] == 0:
-        return ""
-
-    parts = [f"=== SWARM PERSISTENT MEMORY (Session #{memory['session_count']}) ==="]
-    parts.append(f"Last active: {memory['last_updated']}")
-
-    if memory["resolved_positions"]:
-        parts.append("\n## RESOLVED POSITIONS (what the swarm has settled)")
-        for pos in memory["resolved_positions"][-10:]:  # inject last 10
-            conf = pos.get("confidence", "unknown")
-            parts.append(f"- [{conf}] {pos.get('topic', 'unknown')}: {pos.get('consensus', '')}")
-
-    if memory["unresolved_questions"]:
-        parts.append("\n## UNRESOLVED QUESTIONS (still open)")
-        for q in memory["unresolved_questions"][-8:]:
-            attempts = q.get("attempts", 0)
-            parts.append(f"- {q.get('question', '')} (raised by {q.get('raised_by', 'unknown')}, {attempts} attempts)")
-
-    if memory["next_pursuits"]:
-        parts.append("\n## NEXT PURSUITS (self-directed goals)")
-        for p in memory["next_pursuits"][-5:]:
-            parts.append(f"- [{p.get('priority', 'medium')}] {p.get('direction', '')}")
-
-    if memory["evolving_frameworks"]:
-        parts.append("\n## EVOLVING FRAMEWORKS")
-        for fw in memory["evolving_frameworks"][-5:]:
-            parts.append(f"- {fw.get('name', 'unnamed')} (v{fw.get('version', 1)}): {fw.get('description', '')}")
-
-    parts.append("\n=== END SWARM MEMORY ===")
-    return "\n".join(parts)
+# Load/save/format/merge live in swarm_memory.py (stdlib-only, unit-tested).
+# The server keeps only extract_memory_delta — it needs the Claude client.
+import swarm_memory
+from swarm_memory import (
+    load_swarm_memory,
+    save_swarm_memory,
+    format_memory_context,
+    update_swarm_memory,
+)
 
 MEMORY_EXTRACTION_PROMPT = """You are the swarm's memory curator. You just observed a multi-round AI conversation.
 Your job is to extract what should be REMEMBERED for future sessions.
@@ -425,6 +343,9 @@ Your job is to extract what should be REMEMBERED for future sessions.
 === FINAL SYNTHESIS ===
 {synthesis}
 
+=== PREVIOUSLY OPEN QUESTIONS (from persistent memory) ===
+{open_questions}
+
 Extract the following as JSON (and ONLY valid JSON, no markdown fences):
 {{
   "resolved_positions": [
@@ -432,6 +353,9 @@ Extract the following as JSON (and ONLY valid JSON, no markdown fences):
   ],
   "unresolved_questions": [
     {{"question": "what remains open", "raised_by": "model name or 'swarm'"}}
+  ],
+  "resolved_questions": [
+    "exact text of a PREVIOUSLY OPEN question (from the list above) that this session answered"
   ],
   "next_pursuits": [
     {{"direction": "what should be explored next", "priority": "high|medium|low", "proposed_by": "model name or 'swarm'"}}
@@ -445,6 +369,9 @@ RULES:
 - Only include genuinely new positions, not restatements of the prompt.
 - Resolved positions must have actual consensus, not just "they discussed it."
 - Unresolved questions should be specific enough to drive a future session.
+- resolved_questions must quote a previously-open question VERBATIM from the
+  list above, and only when this session actually answered it. Empty list if
+  none were answered (or the list above is empty).
 - Next pursuits should be actionable — what would the swarm investigate if it woke up again?
 - Evolving frameworks are mental models, taxonomies, or conceptual tools the swarm invented.
 - Keep each field to 5 items max. Quality over quantity.
@@ -468,7 +395,13 @@ def extract_memory_delta(query, all_rounds, synthesis):
     than a bare "Expecting value: line 1 column 1 (char 0)".
     """
     transcript = _build_transcript(query, all_rounds)
-    user_content = MEMORY_EXTRACTION_PROMPT.format(transcript=transcript, synthesis=synthesis)
+    # Show the curator what's currently open so it can name questions this
+    # session ANSWERED (delta["resolved_questions"]) — the explicit half of
+    # question closure; swarm_memory has the mechanical fallback.
+    open_qs = load_swarm_memory().get("unresolved_questions", [])
+    open_questions = "\n".join(f"- {q.get('question', '')}" for q in open_qs) or "(none)"
+    user_content = MEMORY_EXTRACTION_PROMPT.format(
+        transcript=transcript, synthesis=synthesis, open_questions=open_questions)
 
     raw = ""
     try:
@@ -503,74 +436,6 @@ def extract_memory_delta(query, all_rounds, synthesis):
     except Exception as e:
         logger.error(f"Memory extraction failed: {type(e).__name__}: {e}")
         return None
-
-def update_swarm_memory(query, delta):
-    """Merge extracted delta into persistent memory."""
-    if not delta:
-        return
-
-    memory = load_swarm_memory()
-    memory["session_count"] += 1
-    ts = datetime.now().isoformat()
-
-    # Append new resolved positions
-    for pos in delta.get("resolved_positions", []):
-        pos["session"] = ts
-        memory["resolved_positions"].append(pos)
-
-    # Merge unresolved questions (increment attempts if question already exists)
-    existing_qs = {q.get("question", "").lower(): q for q in memory["unresolved_questions"]}
-    for q in delta.get("unresolved_questions", []):
-        key = q.get("question", "").lower()
-        if key in existing_qs:
-            existing_qs[key]["attempts"] = existing_qs[key].get("attempts", 1) + 1
-        else:
-            q["session"] = ts
-            q["attempts"] = 1
-            memory["unresolved_questions"].append(q)
-
-    # Replace next pursuits (these are forward-looking, not cumulative)
-    new_pursuits = delta.get("next_pursuits", [])
-    if new_pursuits:
-        for p in new_pursuits:
-            p["session"] = ts
-        memory["next_pursuits"] = new_pursuits
-
-    # Evolving frameworks: update version if name matches, else add
-    existing_fw = {fw.get("name", "").lower(): fw for fw in memory["evolving_frameworks"]}
-    for fw in delta.get("evolving_frameworks", []):
-        key = fw.get("name", "").lower()
-        if key in existing_fw:
-            existing_fw[key]["version"] = existing_fw[key].get("version", 1) + 1
-            existing_fw[key]["description"] = fw.get("description", existing_fw[key].get("description", ""))
-        else:
-            fw["version"] = 1
-            fw["session"] = ts
-            memory["evolving_frameworks"].append(fw)
-
-    # Mark resolved questions as no longer unresolved
-    resolved_topics = {pos.get("topic", "").lower() for pos in delta.get("resolved_positions", [])}
-    if resolved_topics:
-        memory["unresolved_questions"] = [
-            q for q in memory["unresolved_questions"]
-            if q.get("question", "").lower() not in resolved_topics
-        ]
-
-    # Session log
-    memory["session_log"].append({
-        "timestamp": ts,
-        "query": query[:200],
-        "resolved_count": len(delta.get("resolved_positions", [])),
-        "unresolved_count": len(delta.get("unresolved_questions", [])),
-        "pursuits_count": len(delta.get("next_pursuits", []))
-    })
-
-    save_swarm_memory(memory)
-    logger.info(f"Swarm memory updated: session #{memory['session_count']}, "
-                f"+{len(delta.get('resolved_positions', []))} resolved, "
-                f"+{len(delta.get('unresolved_questions', []))} unresolved, "
-                f"{len(delta.get('next_pursuits', []))} pursuits")
-    return memory
 
 # ============================================
 # FILE UPLOAD CONSTANTS
@@ -3324,6 +3189,17 @@ def start_loop():
                 if mail_summary["sent"] or mail_summary["rejected"]:
                     q.put(("mail_activity", mail_summary))
 
+                # Queue [TOOL_PROPOSAL] blocks from ANY session (not just Joy
+                # runs) so designed tools reach GitHub as issues instead of
+                # stranding in the filestore. Filing is free; merge stays gated.
+                try:
+                    prop_summary = swarm_proposals.process_round_proposals(
+                        round_results, source=f"session:{session_id}")
+                    if prop_summary["queued"] or prop_summary["rejected"]:
+                        q.put(("tool_proposals", prop_summary))
+                except Exception as e:
+                    logger.error(f"round proposal processing failed (non-fatal): {e}")
+
                 # In daisy mode each turn was already streamed via speaker_complete,
                 # so don't resend them here (avoids double-render and double bandwidth).
                 q.put(("round_complete", {"round": round_num,
@@ -3377,11 +3253,16 @@ def start_loop():
                 synth_pseudo = {"synthesizer": synthesis}
                 fs_synth = swarm_filestore.process_round_writes(synth_pseudo)
                 mail_synth = swarm_mail.process_round_emails(synth_pseudo, session_id)
+                prop_synth = swarm_proposals.process_round_proposals(
+                    synth_pseudo, source=f"session:{session_id}")
                 if fs_synth.get("writes") or fs_synth.get("appends"):
                     logger.info(f"synthesis directives: filestore {fs_synth}")
                 if mail_synth.get("sent") or mail_synth.get("rejected"):
                     logger.info(f"synthesis directives: mail {mail_synth}")
-                q.put(("synthesis_directives", {"filestore": fs_synth, "mail": mail_synth}))
+                if prop_synth.get("queued"):
+                    logger.info(f"synthesis directives: proposals {prop_synth}")
+                q.put(("synthesis_directives", {"filestore": fs_synth, "mail": mail_synth,
+                                                "proposals": prop_synth}))
             except Exception as e:
                 logger.error(f"synthesis directive parse failed (non-fatal): {e}")
 
@@ -3545,12 +3426,13 @@ def get_memory():
 @require_auth
 def clear_memory():
     """Reset swarm memory (keeps a backup)."""
-    if MEMORY_FILE.exists():
-        backup = MEMORY_FILE.with_suffix(".backup.json")
+    mem_file = swarm_memory.memory_file()
+    if mem_file.exists():
+        backup = mem_file.with_suffix(".backup.json")
         import shutil
-        shutil.copy2(MEMORY_FILE, backup)
-    save_swarm_memory(dict(_EMPTY_MEMORY))
-    return jsonify({"status": "cleared", "backup": str(MEMORY_FILE.with_suffix(".backup.json"))})
+        shutil.copy2(mem_file, backup)
+    save_swarm_memory(swarm_memory.empty_memory())
+    return jsonify({"status": "cleared", "backup": str(mem_file.with_suffix(".backup.json"))})
 
 @app.route("/memory/pursuits", methods=["GET"])
 @require_auth
@@ -3829,6 +3711,14 @@ def run_headless_session(query, source, num_rounds=3, active_loop_models=None, s
                 if mail_summary["sent"] or mail_summary["rejected"]:
                     q.put(("mail_activity", mail_summary))
 
+                try:
+                    prop_summary = swarm_proposals.process_round_proposals(
+                        round_results, source=f"session:{session_id}")
+                    if prop_summary["queued"] or prop_summary["rejected"]:
+                        q.put(("tool_proposals", prop_summary))
+                except Exception as e:
+                    logger.error(f"round proposal processing failed [headless] (non-fatal): {e}")
+
                 q.put(("round_complete", {"round": round_num,
                         "responses": {k: v for k, v in round_results.items() if k != "_meta"}}))
 
@@ -3846,11 +3736,16 @@ def run_headless_session(query, source, num_rounds=3, active_loop_models=None, s
                 synth_pseudo = {"synthesizer": synthesis}
                 fs_synth = swarm_filestore.process_round_writes(synth_pseudo)
                 mail_synth = swarm_mail.process_round_emails(synth_pseudo, session_id)
+                prop_synth = swarm_proposals.process_round_proposals(
+                    synth_pseudo, source=f"session:{session_id}")
                 if fs_synth.get("writes") or fs_synth.get("appends"):
                     logger.info(f"synthesis directives [headless]: filestore {fs_synth}")
                 if mail_synth.get("sent") or mail_synth.get("rejected"):
                     logger.info(f"synthesis directives [headless]: mail {mail_synth}")
-                q.put(("synthesis_directives", {"filestore": fs_synth, "mail": mail_synth}))
+                if prop_synth.get("queued"):
+                    logger.info(f"synthesis directives [headless]: proposals {prop_synth}")
+                q.put(("synthesis_directives", {"filestore": fs_synth, "mail": mail_synth,
+                                                "proposals": prop_synth}))
             except Exception as e:
                 logger.error(f"synthesis directive parse failed (non-fatal): {e}")
 
@@ -5059,7 +4954,7 @@ if __name__ == "__main__":
     if is_auth_enabled() and TRUSTED_CIDRS:
         print(f"Trusted:     {', '.join(str(n) for n in TRUSTED_CIDRS)} (bypass login)")
     print(f"Storage:     {OUTPUTS_DIR}")
-    print(f"Memory:      {MEMORY_FILE}")
+    print(f"Memory:      {swarm_memory.memory_file()}")
     print(f"Daemon:      interval={swarm_daemon.interval_seconds}s, max_daily={swarm_daemon.max_daily_sessions}")
     if swarm_imagegen is not None:
         try:
