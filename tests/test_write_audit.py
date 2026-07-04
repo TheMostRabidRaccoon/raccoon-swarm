@@ -7,8 +7,13 @@ now a storable extension so Tiny Tool Invention can persist a test_stub.py.
 """
 import json
 
+import pytest
+
 import swarm_filestore as fs
-import swarm_tools
+
+# swarm_tools pulls the websearch/imagegen stack (requests, etc.) which the
+# stdlib-only CI doesn't install — import it lazily so the tool-channel tests
+# skip there while the directive-channel + .py tests (pure stdlib) still run.
 
 
 def _audit_lines(storage):
@@ -60,6 +65,7 @@ def test_directive_writes_audited(storage):
 # ---- audit log: tool channel ---------------------------------------------
 
 def test_tool_writes_audited(storage):
+    swarm_tools = pytest.importorskip("swarm_tools")
     swarm_tools.dispatch("filestore_write",
                          {"path": "positions/via-tool.md", "content": "hi"},
                          calling_model="claude")
@@ -77,6 +83,7 @@ def test_tool_writes_audited(storage):
 def test_both_channels_distinguishable(storage):
     # The whole point: the same path written two ways is tagged by channel, so
     # phantom rates stay comparable across seats.
+    swarm_tools = pytest.importorskip("swarm_tools")
     swarm_tools.dispatch("filestore_write", {"path": "positions/x.md", "content": "a"},
                          calling_model="claude")
     fs.process_round_writes({"grok": "[MEMORY_WRITE: positions/y.md]\nb\n[/MEMORY_WRITE]"})
