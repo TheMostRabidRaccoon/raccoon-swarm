@@ -77,6 +77,7 @@ import swarm_filestore
 import swarm_mail
 import swarm_orchestrator
 import swarm_tools
+import swarm_version
 import swarm_websearch
 try:
     import swarm_imagegen
@@ -3065,6 +3066,20 @@ def get_ideas():
 # ============================================
 # SINGLE SWARM
 # ============================================
+@app.route("/version", methods=["GET"])
+def version():
+    """The commit the RUNNING process booted with vs. what's checked out now.
+
+    `up_to_date: false` means the working tree was advanced (e.g. a merge)
+    without restarting the server — the swarm is operating pre-merge code. This
+    is the runtime clause the Existence Criterion was missing: a fix "merged to
+    main" is not live until this endpoint reports it. Unauthenticated on purpose:
+    it's a deploy-health primitive (a commit SHA, no secrets) any seat or ops
+    check can hit — the point is that verifying the deployed code is trivial.
+    """
+    return jsonify(swarm_version.version_info())
+
+
 @app.route("/ping-swarm", methods=["POST"])
 @require_auth
 def ping_swarm():

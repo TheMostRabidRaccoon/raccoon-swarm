@@ -50,6 +50,22 @@ closed + fail loud**. Full table and rationale in [`stack/auth.md`](stack/auth.m
   (`RRI_ALLOW_UNSAFE_PUBLIC_CODEEXEC=true`). Re-enabling the CIDR bypass on
   public requires the explicit `RRI_ALLOW_PUBLIC_TRUSTED_CIDRS=true`.
 
+## Merged ≠ deployed — restart after every merge
+
+The swarm is **governed by `main` but operated by the loaded process.** A fix
+merged to `main` is not live until the service restarts — until then the running
+server executes pre-merge code, and a seat's "verified against main" says
+nothing about the runtime it actually lives in. Session 133 hit this: a
+nested-directory fix that was on `main` still failed in the running server.
+
+- **Ritual:** restart the swarm service after every merge that touches server
+  code (`sudo systemctl restart swarm.service`, or your process manager).
+- **Detector:** `GET /version` reports `boot_commit` (what the running process
+  loaded) vs `head_commit` (what's checked out now). `up_to_date: false` means
+  the working tree advanced past the process — **restart to deploy.** Pin claims
+  about deployed behaviour to `boot_commit`, not to `main`. Unauthenticated (a
+  commit SHA, no secrets) so any seat or health check can hit it.
+
 ## Monitoring
 
 - **Status endpoints** — `/websearch/status`, `/prosody/status`,
