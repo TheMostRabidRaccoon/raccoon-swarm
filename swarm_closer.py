@@ -34,6 +34,8 @@ from email.mime.text import MIMEText
 from pathlib import Path
 from typing import Optional
 
+import swarm_corpus
+
 import swarm_orchestrator
 
 logger = logging.getLogger("SwarmVault")
@@ -573,6 +575,7 @@ def run_post_session_closer(
 
             # Session scorecard (mechanical counters). Fail-loud: a scorecard
             # write failure is logged but never aborts the closer or the session.
+            scorecard = None
             try:
                 phantom_paths = find_phantom_claims(all_rounds, synthesis)
                 honest_verb_violations = find_honest_verb_violations(all_rounds, synthesis, phantom_paths)
@@ -594,6 +597,28 @@ def run_post_session_closer(
                     logger.warning(f"[closer] phantom write claims (unpersisted): {phantom_paths}")
             except Exception as e:
                 logger.error(f"[closer] scorecard emit failed for session {session_id}: "
+                             f"{type(e).__name__}: {e}")
+
+            # Corpus event (research-as-exhaust). Also fail-loud — never aborts
+            # the closer. SHA-anchored so a claim about this session is checkable
+            # against the exact commit it ran on.
+            try:
+                event = swarm_corpus.build_corpus_event(
+                    session_id=session_id, query=query, all_rounds=all_rounds,
+                    digest=digest, scorecard=scorecard or {},
+                    repo_sha=swarm_corpus.resolve_repo_sha())
+                corpus_dir = logs_dir / "corpus"
+                corpus_dir.mkdir(parents=True, exist_ok=True)
+                corpus_path = corpus_dir / f"corpus-{session_id}.json"
+                ctmp = corpus_path.with_suffix(".json.tmp")
+                ctmp.write_text(json.dumps(event, indent=2))
+                os.replace(ctmp, corpus_path)
+                ip = event["interaction_proxies"]
+                logger.info(f"[closer] corpus event written: {corpus_path} "
+                            f"(sha={event['repo_sha']}, dissent~{ip['dissent_markers']}, "
+                            f"convergence~{ip['convergence_markers']})")
+            except Exception as e:
+                logger.error(f"[closer] corpus emit failed for session {session_id}: "
                              f"{type(e).__name__}: {e}")
 
             sent, reason = _send_via_smtp(subject, body, session_id)

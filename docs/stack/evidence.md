@@ -65,11 +65,24 @@ res  = swarm_evidence.resolve_citation(conn, source_id, hash, chunk_index)
 
 ## Roadmap
 
-- **M1b** — `scripts/build_source_catalog.py`: the Drive ingest over the
-  allowlisted folder (Docs/text/markdown extraction), plus `evidence_search` /
-  `evidence_fetch` in the tool registry with excerpts wrapped in the
-  `untrusted_content` envelope. Seed the 10 known-answer eval questions and wire
-  a recall@k harness *before* trusting retrieval.
+- **M1b** — *ingest shipped* (`scripts/build_source_catalog.py`): auth-light
+  `rclone lsjson` → origin-classed, deduped catalog, same contract as
+  `build_drive_index.py`. Its **`--dry-run` emits a metadata-only manifest** —
+  every file that *would* be ingested, with its origin class, reading **no**
+  document bodies. That manifest is the personal-content review surface: skim
+  it, confirm nothing personal, then `--ingest` reads bodies. Still to do:
+  `evidence_search` / `evidence_fetch` in the tool registry (excerpts wrapped in
+  the `untrusted_content` envelope), and the 10 known-answer eval questions +
+  recall@k harness *before* trusting retrieval.
+
+  ```bash
+  # review (reads nothing):
+  rclone lsjson gdrive:'RRI Research' --recursive | \
+      scripts/build_source_catalog.py --dry-run -
+  # ingest (after review):
+  rclone lsjson gdrive:'RRI Research' --recursive | \
+      scripts/build_source_catalog.py --ingest --remote gdrive: -
+  ```
 - **M2** — citation verification in the Closer: re-fetch every cite in a
   synthesis, compute `citation_gap` (parallel to `persistence_gap`); enforce the
   independent-origin corroboration rule; staleness detection on re-sync.

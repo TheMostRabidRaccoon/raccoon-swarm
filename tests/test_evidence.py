@@ -157,6 +157,83 @@ def test_independence_primitive():
 
 # ---- LIKE fallback (no FTS5) still works ---------------------------------
 
+# ---- ingest planning (Drive folder → catalog) ----------------------------
+
+_LSJSON = [
+    {"Path": "Paper 2/taxonomy.md", "Name": "taxonomy.md", "MimeType": "text/markdown",
+     "Size": 900, "ModTime": "2026-04-18T00:00:00Z", "ID": "id-a", "IsDir": False},
+    {"Path": "_Notes & Sessions/loop_synthesis_96.docx", "Name": "loop_synthesis_96.docx",
+     "MimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+     "Size": 5000, "ID": "id-b", "IsDir": False},
+    {"Path": "Paper 2", "Name": "Paper 2", "MimeType": "application/vnd.google-apps.folder",
+     "IsDir": True},
+    {"Path": "images/diagram.png", "Name": "diagram.png", "MimeType": "image/png",
+     "Size": 12000, "ID": "id-c", "IsDir": False},
+]
+
+
+def test_classify_origin():
+    assert ev.classify_origin("Paper 2/x.md", "x.md") == ev.CONDUCTOR
+    assert ev.classify_origin("_Notes & Sessions/s.md", "s.md") == ev.SWARM
+    assert ev.classify_origin("Paper 2/loop_synthesis_5.docx", "loop_synthesis_5.docx") == ev.SWARM
+    # Shared-with-me or foreign owner → third-party (untrusted, independent).
+    assert ev.classify_origin("x/y.md", "y.md", shared_with_me=True) == ev.THIRD_PARTY
+    assert ev.classify_origin("x/y.md", "y.md", owner="someone@else.org",
+                              conductor_email="kad@rri.org") == ev.THIRD_PARTY
+
+
+def test_is_ingestable():
+    assert ev.is_ingestable("text/markdown")
+    assert ev.is_ingestable("application/vnd.google-apps.document")
+    assert ev.is_ingestable("", "notes.txt")
+    assert not ev.is_ingestable("image/png", "diagram.png")
+    assert not ev.is_ingestable("application/vnd.google-apps.folder")
+
+
+def test_plan_ingest_drops_dirs_and_classifies():
+    recs = ev.plan_ingest(_LSJSON)
+    # Folder dropped; 3 files remain.
+    assert len(recs) == 3
+    by_path = {r["path"]: r for r in recs}
+    assert by_path["Paper 2/taxonomy.md"]["origin"] == ev.CONDUCTOR
+    assert by_path["Paper 2/taxonomy.md"]["ingestable"] is True
+    assert by_path["_Notes & Sessions/loop_synthesis_96.docx"]["origin"] == ev.SWARM
+    assert by_path["images/diagram.png"]["ingestable"] is False   # png not text
+    assert by_path["Paper 2/taxonomy.md"]["external_id"] == "id-a"
+
+
+def test_build_manifest_is_metadata_only():
+    manifest = ev.build_manifest(ev.plan_ingest(_LSJSON))
+    assert manifest["total_files"] == 3
+    assert manifest["ingestable"] == 2                # md + docx, not the png
+    assert manifest["skipped_non_text"] == 1
+    assert manifest["by_origin"] == {ev.CONDUCTOR: 1, ev.SWARM: 1}
+    # The manifest names files but carries NO body content (review surface).
+    assert all(set(f) == {"path", "origin", "mime_type", "size"} for f in manifest["files"])
+
+
+def test_ingest_records_with_injected_reader(db):
+    recs = ev.plan_ingest(_LSJSON)
+    bodies = {
+        "Paper 2/taxonomy.md": "# Taxonomy\n\nEmergent behaviors under pricing governance.",
+        "_Notes & Sessions/loop_synthesis_96.docx": "Session 96 synthesis: the swarm decided X.",
+    }
+    summary = ev.ingest_records(db, recs, lambda r: bodies.get(r["path"], ""))
+    assert summary["created"] == 2
+    assert summary["skipped"] == 1                    # the png (non-ingestable)
+    # Origin survived into the catalog: the session doc is swarm-authored.
+    hits = ev.search(db, "synthesis", k=5, origins=(ev.SWARM,))
+    assert hits and hits[0]["origin"] == ev.SWARM
+    # And it's excluded when we ask only for independent (conductor) evidence.
+    assert ev.search(db, "synthesis", k=5, origins=(ev.CONDUCTOR,)) == []
+
+
+def test_ingest_records_skips_empty_bodies(db):
+    recs = ev.plan_ingest(_LSJSON)
+    summary = ev.ingest_records(db, recs, lambda r: "")   # reader returns nothing
+    assert summary["created"] == 0 and summary["skipped"] == 3
+
+
 def test_search_like_fallback(monkeypatch):
     # Force the FTS5-free path end to end (schema + index + search).
     monkeypatch.setattr(ev, "_fts5_available", lambda: False)
