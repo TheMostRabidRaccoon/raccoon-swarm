@@ -67,6 +67,15 @@ closed + fail loud**. Full table and rationale in [`stack/auth.md`](stack/auth.m
   read-back invariant; turning it into a fail-CLOSED consequence (voiding a
   turn) is deferred until this count shows the real false-positive rate.
 - **Closer digests** — `logs/closer-digest-<id>.md`, emailed to the Conductor.
+- **Corpus events** — every session close also writes `logs/corpus/corpus-<id>.json`
+  (`swarm_corpus`): a structured, **SHA-anchored** record of the session —
+  participation, governance signals (directives + phantom / honest-verb
+  violations, read from the scorecard), and mechanical **interaction proxies**
+  (disagreement / convergence keyword counts, explicitly labelled a heuristic,
+  never ground-truth dissent). Research-data collection as a byproduct of
+  running; the `repo_sha` field pins each record to a commit you can check out
+  and re-verify (a claim "verified against live main" is worthless once main
+  moves). Fail-loud like the scorecard — a write failure never aborts a session.
 
 ### Doctrine: the synthesis is the product; the scorecard is the instrument
 
