@@ -80,17 +80,30 @@ def _slugify(name: str) -> str:
 
 
 def parse_proposal(text: str) -> "dict | None":
-    """Extract a tool proposal from a synthesis containing a [TOOL_PROPOSAL]
+    """Extract the FIRST tool proposal from text containing a [TOOL_PROPOSAL]
     block. Returns {name, slug, description, json_schema, risk_notes,
     test_stub, raw} or None if there's no parseable block with a name.
 
     Best-effort on the structured fields; `raw` always preserves the full block
     so nothing the models wrote is lost even if a sub-field doesn't parse.
     """
-    m = _BLOCK_RE.search(text or "")
-    if not m:
-        return None
-    block = m.group(1).strip()
+    for p in parse_proposals(text):
+        return p
+    return None
+
+
+def parse_proposals(text: str) -> "list[dict]":
+    """All parseable [TOOL_PROPOSAL] blocks in a text, in order. Blocks with
+    no name are skipped (same rule as parse_proposal)."""
+    out = []
+    for m in _BLOCK_RE.finditer(text or ""):
+        p = _parse_block(m.group(1).strip())
+        if p is not None:
+            out.append(p)
+    return out
+
+
+def _parse_block(block: str) -> "dict | None":
 
     def _line(field: str) -> str:
         mm = re.search(rf"^\s*{field}\s*:\s*(.+?)\s*$", block, re.IGNORECASE | re.MULTILINE)
@@ -132,6 +145,43 @@ def parse_proposal(text: str) -> "dict | None":
         "test_stub": test_stub,
         "raw": block,
     }
+
+
+def process_round_proposals(round_results: dict, *, source: str) -> dict:
+    """Queue every [TOOL_PROPOSAL] block any seat emitted this round.
+
+    The bridge that generalizes proposal-filing beyond Joy Mode: deliberation
+    sessions kept designing tools (Session-134's allowlist, memory-core) as
+    plain filestore files that never reached GitHub, because only the Joy
+    runner fed the queue. Same autonomy split as ever — designing and FILING
+    is free (an issue changes nothing that runs); MERGING stays a human-
+    reviewed PR.
+
+    `source` should identify the emitting session (e.g. "session:20260704_1")
+    so the filed issue can cite provenance. Duplicate slugs within one round
+    are queued once (first seat wins; echoes are recorded as skipped).
+    """
+    summary = {"queued": [], "rejected": [], "skipped_duplicates": []}
+    seen_slugs: set[str] = set()
+    for model_name, output in (round_results or {}).items():
+        if model_name == "_meta" or not isinstance(output, str):
+            continue
+        for proposal in parse_proposals(output):
+            slug = proposal.get("slug") or ""
+            if slug in seen_slugs:
+                summary["skipped_duplicates"].append(
+                    {"model": model_name, "slug": slug})
+                continue
+            res = queue_proposal(proposal, source=source)
+            if res.get("ok"):
+                seen_slugs.add(slug)
+                summary["queued"].append(
+                    {"model": model_name, "slug": slug,
+                     "proposal_id": res["proposal_id"], "path": res["path"]})
+            else:
+                summary["rejected"].append(
+                    {"model": model_name, "slug": slug, "error": res.get("error")})
+    return summary
 
 
 def validate_proposal(p: dict) -> "tuple[bool, str | None]":
@@ -244,9 +294,10 @@ def status() -> dict:
 # proposal for something the swarm already installed.
 GATE_BANNER = (
     "> ⚠️ **AUTONOMY GATE — do NOT merge into the live tool registry without "
-    "human review.** This tool was designed autonomously by the swarm during a "
-    "Joy Mode `tiny-tool-invention` run. Filing this issue is free and changes "
-    "nothing that runs. Promotion into the live registry is a reviewed PR."
+    "human review.** This tool was designed autonomously by the swarm (a Joy "
+    "Mode `tiny-tool-invention` run or a deliberation session). Filing this "
+    "issue is free and changes nothing that runs. Promotion into the live "
+    "registry is a reviewed PR."
 )
 
 
@@ -257,7 +308,7 @@ def format_issue(proposal: dict) -> dict:
     parts = [
         GATE_BANNER,
         "",
-        f"**Proposed by:** swarm Joy Mode ({proposal.get('source', 'joy')}, "
+        f"**Proposed by:** swarm ({proposal.get('source', 'joy')}, "
         f"{proposal.get('date', 'unknown date')})",
         "",
         "## Summary",

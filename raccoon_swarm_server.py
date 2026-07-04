@@ -76,6 +76,7 @@ import swarm_closer
 import swarm_filestore
 import swarm_mail
 import swarm_orchestrator
+import swarm_proposals
 import swarm_tools
 import swarm_version
 import swarm_websearch
@@ -3188,6 +3189,17 @@ def start_loop():
                 if mail_summary["sent"] or mail_summary["rejected"]:
                     q.put(("mail_activity", mail_summary))
 
+                # Queue [TOOL_PROPOSAL] blocks from ANY session (not just Joy
+                # runs) so designed tools reach GitHub as issues instead of
+                # stranding in the filestore. Filing is free; merge stays gated.
+                try:
+                    prop_summary = swarm_proposals.process_round_proposals(
+                        round_results, source=f"session:{session_id}")
+                    if prop_summary["queued"] or prop_summary["rejected"]:
+                        q.put(("tool_proposals", prop_summary))
+                except Exception as e:
+                    logger.error(f"round proposal processing failed (non-fatal): {e}")
+
                 # In daisy mode each turn was already streamed via speaker_complete,
                 # so don't resend them here (avoids double-render and double bandwidth).
                 q.put(("round_complete", {"round": round_num,
@@ -3241,11 +3253,16 @@ def start_loop():
                 synth_pseudo = {"synthesizer": synthesis}
                 fs_synth = swarm_filestore.process_round_writes(synth_pseudo)
                 mail_synth = swarm_mail.process_round_emails(synth_pseudo, session_id)
+                prop_synth = swarm_proposals.process_round_proposals(
+                    synth_pseudo, source=f"session:{session_id}")
                 if fs_synth.get("writes") or fs_synth.get("appends"):
                     logger.info(f"synthesis directives: filestore {fs_synth}")
                 if mail_synth.get("sent") or mail_synth.get("rejected"):
                     logger.info(f"synthesis directives: mail {mail_synth}")
-                q.put(("synthesis_directives", {"filestore": fs_synth, "mail": mail_synth}))
+                if prop_synth.get("queued"):
+                    logger.info(f"synthesis directives: proposals {prop_synth}")
+                q.put(("synthesis_directives", {"filestore": fs_synth, "mail": mail_synth,
+                                                "proposals": prop_synth}))
             except Exception as e:
                 logger.error(f"synthesis directive parse failed (non-fatal): {e}")
 
@@ -3694,6 +3711,14 @@ def run_headless_session(query, source, num_rounds=3, active_loop_models=None, s
                 if mail_summary["sent"] or mail_summary["rejected"]:
                     q.put(("mail_activity", mail_summary))
 
+                try:
+                    prop_summary = swarm_proposals.process_round_proposals(
+                        round_results, source=f"session:{session_id}")
+                    if prop_summary["queued"] or prop_summary["rejected"]:
+                        q.put(("tool_proposals", prop_summary))
+                except Exception as e:
+                    logger.error(f"round proposal processing failed [headless] (non-fatal): {e}")
+
                 q.put(("round_complete", {"round": round_num,
                         "responses": {k: v for k, v in round_results.items() if k != "_meta"}}))
 
@@ -3711,11 +3736,16 @@ def run_headless_session(query, source, num_rounds=3, active_loop_models=None, s
                 synth_pseudo = {"synthesizer": synthesis}
                 fs_synth = swarm_filestore.process_round_writes(synth_pseudo)
                 mail_synth = swarm_mail.process_round_emails(synth_pseudo, session_id)
+                prop_synth = swarm_proposals.process_round_proposals(
+                    synth_pseudo, source=f"session:{session_id}")
                 if fs_synth.get("writes") or fs_synth.get("appends"):
                     logger.info(f"synthesis directives [headless]: filestore {fs_synth}")
                 if mail_synth.get("sent") or mail_synth.get("rejected"):
                     logger.info(f"synthesis directives [headless]: mail {mail_synth}")
-                q.put(("synthesis_directives", {"filestore": fs_synth, "mail": mail_synth}))
+                if prop_synth.get("queued"):
+                    logger.info(f"synthesis directives [headless]: proposals {prop_synth}")
+                q.put(("synthesis_directives", {"filestore": fs_synth, "mail": mail_synth,
+                                                "proposals": prop_synth}))
             except Exception as e:
                 logger.error(f"synthesis directive parse failed (non-fatal): {e}")
 
