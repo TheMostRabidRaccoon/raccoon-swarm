@@ -29,8 +29,9 @@ def test_rejects_root_level_file(storage):
 
 def test_rejects_bad_extension(storage):
     assert fs._resolve_safe("positions/thing.exe") is None
-    assert fs._resolve_safe("positions/thing.py") is None
     assert fs._resolve_safe("positions/thing") is None
+    # .py is now allowed (Tiny Tool test_stub.py) — inert storage, not execution.
+    assert fs._resolve_safe("positions/thing.py") is not None
 
 
 def test_rejects_bad_dir_name(storage):

@@ -524,7 +524,17 @@ def dispatch(name: str, args: dict, calling_model: str = "unknown", session_id: 
             params["session_id"] = session_id
         if name == "dispatch_queue_write" and "model" not in params:
             params["model"] = calling_model
-        return fn(**params)
+        result = fn(**params)
+        # Audit the synchronous (tool-channel) filestore writes so the
+        # write-audit log captures BOTH channels — tool here, directive in
+        # swarm_filestore.process_round_writes — and phantom rates become
+        # comparable across seats (Session-133 write-channel finding).
+        if name in ("filestore_write", "filestore_append") and isinstance(result, dict):
+            swarm_filestore.audit_write(
+                model=calling_model, path=result.get("path", params.get("path", "?")),
+                channel="tool", result="written" if result.get("ok") else "rejected",
+                size=result.get("size") or result.get("appended_size"))
+        return result
     except TypeError as e:
         # Bad args — surface to model so it can retry
         return {"error": f"bad args for {name}: {e}"}

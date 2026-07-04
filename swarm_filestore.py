@@ -94,7 +94,13 @@ write the structural insight, not the identifiers.
 # Path safety
 # ============================================================
 
-_SAFE_PATH_RE = re.compile(r"^/?([a-z][a-z0-9_-]*)/[A-Za-z0-9_\-./]+\.(md|json|txt|log)$")
+# .py is allowed so Tiny Tool Invention can persist a test_stub.py directly
+# (the DoD required it; the old allowlist forced an ugly .py.txt workaround).
+# Storage is inert — nothing globs-and-executes filestore .py; the tool-INSTALL
+# gate (reviewed PR) is unchanged. Storing != installing != running.
+_SAFE_PATH_RE = re.compile(r"^/?([a-z][a-z0-9_-]*)/[A-Za-z0-9_\-./]+\.(md|json|txt|log|py)$")
+# File suffixes the filestore lists / searches / surfaces as recent context.
+_INDEXED_SUFFIXES = (".md", ".json", ".txt", ".log", ".py")
 
 
 def _resolve_safe(rel_path: str) -> Path | None:
@@ -168,6 +174,32 @@ def append_file(rel_path: str, content: str) -> bool:
         return False
 
 
+def audit_write(*, model: str, path: str, channel: str, result: str,
+                size: "int | None" = None) -> None:
+    """Append one line to logs/write-audit.jsonl per filestore write ATTEMPT.
+
+    Makes the write-reconciliation gap observable instead of inferred. Records
+    which seat wrote which path, via which CHANNEL —
+      - `tool`: a synchronous filestore_write/_append tool call (settles mid-turn)
+      - `directive`: a [MEMORY_WRITE]/[MEMORY_APPEND] block (settles at the ROUND
+        boundary, after the seat's turn — the async lag behind "the file wasn't
+        there when the next seat looked")
+    — and the RESULT (`written` | `rejected`). This is the ground truth behind
+    Session-133's "Grok phantoms": tool vs directive are not the same latency, so
+    seat-level phantom rates are incomparable without this tag. Best-effort
+    telemetry: a logging failure never blocks or breaks the underlying write.
+    """
+    try:
+        target = _storage_root() / "logs" / "write-audit.jsonl"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        rec = {"ts": datetime.now().isoformat(timespec="seconds"), "model": model,
+               "path": path, "channel": channel, "result": result, "size": size}
+        with open(target, "a") as f:
+            f.write(json.dumps(rec) + "\n")
+    except Exception as e:  # telemetry must never break a real write
+        logger.debug(f"swarm_filestore.audit_write failed (non-fatal): {e}")
+
+
 def is_safe_subdir(rel_dir: str) -> bool:
     """True if rel_dir is empty or a safe (possibly nested) directory path.
 
@@ -209,7 +241,7 @@ def list_files(rel_dir: str = "") -> list[str]:
         target = root
     out = []
     for p in sorted(target.rglob("*")):
-        if p.is_file() and not p.name.startswith("_") and p.suffix in (".md", ".json", ".txt", ".log"):
+        if p.is_file() and not p.name.startswith("_") and p.suffix in _INDEXED_SUFFIXES:
             out.append(str(p.relative_to(root)))
     return out
 
@@ -256,7 +288,7 @@ def search_files(query: str, max_results: int = 5, subdir: str = "") -> list[dic
     for path in root.rglob("*"):
         if not path.is_file() or path.name.startswith("_"):
             continue
-        if path.suffix not in (".md", ".json", ".txt", ".log"):
+        if path.suffix not in _INDEXED_SUFFIXES:
             continue
         rel = str(path.relative_to(root))
         # Scope to one lane BEFORE reading/scoring, so ranking + truncation
@@ -368,11 +400,15 @@ def process_round_writes(round_results: dict) -> dict:
         for path, content in directives["writes"]:
             ok = write_file(path, content)
             (summary["writes"] if ok else summary["rejected"]).append({"model": model_name, "path": path, "size": len(content)})
+            audit_write(model=model_name, path=path, channel="directive",
+                        result="written" if ok else "rejected", size=len(content))
             if ok:
                 logger.info(f"swarm_filestore: {model_name} wrote {path} ({len(content)} chars)")
         for path, content in directives["appends"]:
             ok = append_file(path, content)
             (summary["appends"] if ok else summary["rejected"]).append({"model": model_name, "path": path, "size": len(content)})
+            audit_write(model=model_name, path=path, channel="directive",
+                        result="written" if ok else "rejected", size=len(content))
             if ok:
                 logger.info(f"swarm_filestore: {model_name} appended to {path} ({len(content)} chars)")
     return summary
@@ -740,7 +776,7 @@ def recent_files_context(max_per_dir: int = 3) -> str:
         if not target.exists():
             continue
         files = sorted(
-            (p for p in target.rglob("*") if p.is_file() and not p.name.startswith("_") and p.suffix in (".md", ".json", ".txt", ".log")),
+            (p for p in target.rglob("*") if p.is_file() and not p.name.startswith("_") and p.suffix in _INDEXED_SUFFIXES),
             key=lambda p: p.stat().st_mtime,
             reverse=True,
         )[:max_per_dir]
