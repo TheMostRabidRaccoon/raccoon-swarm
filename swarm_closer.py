@@ -35,6 +35,7 @@ from pathlib import Path
 from typing import Optional
 
 import swarm_corpus
+import swarm_gate
 
 import swarm_orchestrator
 
@@ -574,52 +575,83 @@ def run_post_session_closer(
             local_path.write_text(f"# {subject}\n\n{body}\n")
 
             # Session scorecard (mechanical counters). Fail-loud: a scorecard
-            # write failure is logged but never aborts the closer or the session.
+            # failure is logged but never aborts the closer or the session.
+            # Built (not yet written) first so the corpus event and the gate
+            # can both read it; writes happen after all three are computed.
             scorecard = None
+            phantom_paths = None
             try:
                 phantom_paths = find_phantom_claims(all_rounds, synthesis)
                 honest_verb_violations = find_honest_verb_violations(all_rounds, synthesis, phantom_paths)
                 scorecard = build_scorecard(digest, phantom_paths=phantom_paths,
                                             honest_verb_violations=honest_verb_violations)
-                scorecard_path = logs_dir / f"scorecard-{session_id}.json"
-                # Atomic write (temp + os.replace), same discipline as the
-                # dispatch queue — a crash mid-write can't leave a torn scorecard.
-                tmp = scorecard_path.with_suffix(".json.tmp")
-                tmp.write_text(json.dumps(scorecard, indent=2))
-                os.replace(tmp, scorecard_path)
-                gap = scorecard["persistence_gap"]
-                logger.info(
-                    f"[closer] scorecard written: {scorecard_path} "
-                    f"(rounds={scorecard['rounds']}, persistence_gap="
-                    f"{gap if gap is not None else 'unknown'})"
-                )
-                if phantom_paths:  # None (unknown) is falsy but has no paths to name
-                    logger.warning(f"[closer] phantom write claims (unpersisted): {phantom_paths}")
             except Exception as e:
-                logger.error(f"[closer] scorecard emit failed for session {session_id}: "
+                logger.error(f"[closer] scorecard build failed for session {session_id}: "
                              f"{type(e).__name__}: {e}")
 
             # Corpus event (research-as-exhaust). Also fail-loud — never aborts
             # the closer. SHA-anchored so a claim about this session is checkable
             # against the exact commit it ran on.
+            event = None
             try:
                 event = swarm_corpus.build_corpus_event(
                     session_id=session_id, query=query, all_rounds=all_rounds,
                     digest=digest, scorecard=scorecard or {},
                     repo_sha=swarm_corpus.resolve_repo_sha())
-                corpus_dir = logs_dir / "corpus"
-                corpus_dir.mkdir(parents=True, exist_ok=True)
-                corpus_path = corpus_dir / f"corpus-{session_id}.json"
-                ctmp = corpus_path.with_suffix(".json.tmp")
-                ctmp.write_text(json.dumps(event, indent=2))
-                os.replace(ctmp, corpus_path)
-                ip = event["interaction_proxies"]
-                logger.info(f"[closer] corpus event written: {corpus_path} "
-                            f"(sha={event['repo_sha']}, dissent~{ip['dissent_markers']}, "
-                            f"convergence~{ip['convergence_markers']})")
             except Exception as e:
-                logger.error(f"[closer] corpus emit failed for session {session_id}: "
+                logger.error(f"[closer] corpus build failed for session {session_id}: "
                              f"{type(e).__name__}: {e}")
+
+            # Session Quality Gate v0 — SCORE-ONLY. Records what a blocking
+            # gate would have done; never rejects, never triggers a penalty
+            # round. Lives on the scorecard so the blocking decision can be
+            # made from measured false-positive rates instead of vibes.
+            if scorecard is not None:
+                try:
+                    scorecard["gate"] = swarm_gate.evaluate_gate(
+                        scorecard=scorecard, corpus_event=event, query=query)
+                    g = scorecard["gate"]
+                    logger.info(f"[closer] gate (score-only): failures={g['gate_failures']}, "
+                                f"friction_required={g['friction_required']}")
+                except Exception as e:
+                    logger.error(f"[closer] gate evaluation failed for session {session_id}: "
+                                 f"{type(e).__name__}: {e}")
+
+            if scorecard is not None:
+                try:
+                    scorecard_path = logs_dir / f"scorecard-{session_id}.json"
+                    # Atomic write (temp + os.replace), same discipline as the
+                    # dispatch queue — a crash mid-write can't leave a torn scorecard.
+                    tmp = scorecard_path.with_suffix(".json.tmp")
+                    tmp.write_text(json.dumps(scorecard, indent=2))
+                    os.replace(tmp, scorecard_path)
+                    gap = scorecard["persistence_gap"]
+                    logger.info(
+                        f"[closer] scorecard written: {scorecard_path} "
+                        f"(rounds={scorecard['rounds']}, persistence_gap="
+                        f"{gap if gap is not None else 'unknown'})"
+                    )
+                    if phantom_paths:  # None (unknown) is falsy but has no paths to name
+                        logger.warning(f"[closer] phantom write claims (unpersisted): {phantom_paths}")
+                except Exception as e:
+                    logger.error(f"[closer] scorecard emit failed for session {session_id}: "
+                                 f"{type(e).__name__}: {e}")
+
+            if event is not None:
+                try:
+                    corpus_dir = logs_dir / "corpus"
+                    corpus_dir.mkdir(parents=True, exist_ok=True)
+                    corpus_path = corpus_dir / f"corpus-{session_id}.json"
+                    ctmp = corpus_path.with_suffix(".json.tmp")
+                    ctmp.write_text(json.dumps(event, indent=2))
+                    os.replace(ctmp, corpus_path)
+                    ip = event["interaction_proxies"]
+                    logger.info(f"[closer] corpus event written: {corpus_path} "
+                                f"(sha={event['repo_sha']}, dissent~{ip['dissent_markers']}, "
+                                f"convergence~{ip['convergence_markers']})")
+                except Exception as e:
+                    logger.error(f"[closer] corpus emit failed for session {session_id}: "
+                                 f"{type(e).__name__}: {e}")
 
             sent, reason = _send_via_smtp(subject, body, session_id)
             outcome = "emailed" if sent else f"logged-only ({reason})"
