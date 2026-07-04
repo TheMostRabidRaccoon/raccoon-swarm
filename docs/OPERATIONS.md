@@ -118,6 +118,23 @@ truth into the next round — the model is never trusted to self-verify:
 
 Both emit SSE events (`filestore_phantom_writes`, `filestore_false_ghosts`).
 
+### Write-audit log — lag vs. loss, made observable
+
+`logs/write-audit.jsonl` records every filestore write attempt: `{ts, model,
+path, channel, result}`. `channel` is the load-bearing field:
+
+- `tool` — a synchronous `filestore_write`/`_append` tool call; settles mid-turn.
+- `directive` — a `[MEMORY_WRITE]` block; settles at the **round boundary**
+  (`process_round_writes`), *after* the emitting seat's turn.
+
+That async gap is the mechanism behind Session-133's "phantom" writes: a
+directive write isn't on disk when the *next* seat looks, so it reads as missing
+— lag, not loss. `result: rejected` rows capture the other cause (a blocked
+path/extension the emitting seat wasn't told about). The log makes both
+observable instead of inferred, and tags `write_channel` so seat-level phantom
+rates are actually comparable (they are not, untagged — a Paper 2 confound).
+Best-effort telemetry: an audit-log failure never blocks the underlying write.
+
 ## Joy Mode (daily play ritual)
 
 A bounded daily Core-4 ritual, run as a **systemd oneshot** (isolates the
