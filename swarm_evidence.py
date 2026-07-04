@@ -419,6 +419,145 @@ def is_independent_corroborator(origin: str) -> bool:
     return origin != SWARM
 
 
+# ============================================================
+# Ingest planning — Drive folder → catalog (pure; the script does the I/O)
+# ============================================================
+#
+# The origin class is assigned HERE, at ingest, because it's the anti-laundering
+# primitive: content under a "Notes & Sessions"-style lane is swarm-authored and
+# must never corroborate a swarm claim. Everything below is pure (no Drive, no
+# disk) so it unit-tests, and so a `--dry-run` can emit the full review manifest
+# from metadata alone — never reading a document body.
+
+# Path/name fragments that mark swarm-authored material inside an otherwise
+# conductor-authored research folder (e.g. RRI Research/_Notes & Sessions).
+DEFAULT_SWARM_MARKERS = (
+    "notes & sessions", "_sessions", "loop_synthesis", "loop-synthesis",
+    "swarm-session", "swarm_session", "session-synthesis",
+)
+
+# Text-bearing types worth cataloguing. Images / sheets / PDFs deferred.
+_INGESTABLE_MIMES = (
+    "application/vnd.google-apps.document",
+    "text/plain", "text/markdown", "text/x-markdown",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+)
+_INGESTABLE_EXTS = (".md", ".txt", ".docx")
+
+
+def is_ingestable(mime_type: "str | None", name: str = "") -> bool:
+    if (mime_type or "") in _INGESTABLE_MIMES:
+        return True
+    low = (name or "").lower()
+    return any(low.endswith(e) for e in _INGESTABLE_EXTS)
+
+
+def classify_origin(path: str, name: str, *, shared_with_me: bool = False,
+                    owner: "str | None" = None, conductor_email: "str | None" = None,
+                    swarm_markers: tuple = DEFAULT_SWARM_MARKERS) -> str:
+    """Assign an origin class from metadata alone (no body read).
+
+    - Shared-with-me, or owned by someone other than the Conductor → third-party
+      (externally authored; untrusted, and independent for corroboration).
+    - Under a swarm-authored lane (path/name marker) → swarm-authored (can NOT
+      corroborate a swarm claim — the citation-laundering guard).
+    - Otherwise → conductor-authored.
+    """
+    if shared_with_me:
+        return THIRD_PARTY
+    if owner and conductor_email and owner.strip().lower() != conductor_email.strip().lower():
+        return THIRD_PARTY
+    hay = f"{path}/{name}".lower()
+    if any(mark in hay for mark in swarm_markers):
+        return SWARM
+    return CONDUCTOR
+
+
+def plan_ingest(entries: list, *, conductor_email: "str | None" = None,
+                swarm_markers: tuple = DEFAULT_SWARM_MARKERS) -> list[dict]:
+    """Normalize `rclone lsjson`-style entries into ingest records — pure, no I/O.
+
+    Each input entry may carry: Path, Name, MimeType, Size, ModTime, ID, IsDir,
+    and optionally SharedWithMe / Owner. Directories are dropped. Returns records
+    with an assigned origin and an `ingestable` flag; nothing is read.
+    """
+    out = []
+    for e in entries or []:
+        if e.get("IsDir"):
+            continue
+        name = e.get("Name") or ""
+        path = e.get("Path") or name
+        mime = e.get("MimeType") or ""
+        out.append({
+            "path": path,
+            "name": name,
+            "mime_type": mime,
+            "size": e.get("Size"),
+            "modified": e.get("ModTime"),
+            "external_id": e.get("ID") or f"path:{path}",
+            "origin": classify_origin(
+                path, name, shared_with_me=bool(e.get("SharedWithMe")),
+                owner=e.get("Owner"), conductor_email=conductor_email,
+                swarm_markers=swarm_markers),
+            "ingestable": is_ingestable(mime, name),
+        })
+    return out
+
+
+def build_manifest(records: list[dict]) -> dict:
+    """Aggregate ingest records into a review manifest — what `--dry-run` emits.
+
+    Metadata only, no document bodies: this IS the personal-content review
+    surface. Skim it, flag anything that shouldn't reach four external vendors,
+    THEN run a real ingest. Every ingestable file is listed with its origin.
+    """
+    ingestable = [r for r in records if r["ingestable"]]
+    by_origin: dict = {}
+    by_mime: dict = {}
+    for r in ingestable:
+        by_origin[r["origin"]] = by_origin.get(r["origin"], 0) + 1
+        by_mime[r["mime_type"] or "?"] = by_mime.get(r["mime_type"] or "?", 0) + 1
+    return {
+        "total_files": len(records),
+        "ingestable": len(ingestable),
+        "skipped_non_text": len(records) - len(ingestable),
+        "by_origin": by_origin,
+        "by_mime": by_mime,
+        "files": [{"path": r["path"], "origin": r["origin"],
+                   "mime_type": r["mime_type"], "size": r["size"]}
+                  for r in sorted(ingestable, key=lambda x: x["path"])],
+    }
+
+
+def ingest_records(conn: sqlite3.Connection, records: list[dict], read_body,
+                   *, only_ingestable: bool = True) -> dict:
+    """Catalog each record, reading its body via the injected `read_body(record)
+    -> str`. Returns a summary {created, updated, duplicate, unchanged, skipped,
+    errors}. Injecting the reader keeps this pure of Drive/rclone specifics, so
+    it unit-tests with a fake and the script wires the real fetch.
+    """
+    summary = {"created": 0, "updated": 0, "duplicate": 0, "unchanged": 0,
+               "skipped": 0, "errors": 0}
+    for r in records:
+        if only_ingestable and not r["ingestable"]:
+            summary["skipped"] += 1
+            continue
+        try:
+            text = read_body(r)
+        except Exception:
+            summary["errors"] += 1
+            continue
+        if not (text or "").strip():
+            summary["skipped"] += 1
+            continue
+        res = catalog_source(
+            conn, title=r["name"] or r["path"], text=text, origin=r["origin"],
+            external_id=r["external_id"], mime_type=r["mime_type"],
+            modified_time=r.get("modified"))
+        summary[res["status"]] = summary.get(res["status"], 0) + 1
+    return summary
+
+
 def stats(conn: sqlite3.Connection) -> dict:
     src = conn.execute("SELECT COUNT(*) n FROM sources").fetchone()["n"]
     dup = conn.execute(
