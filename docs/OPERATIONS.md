@@ -66,6 +66,20 @@ nested-directory fix that was on `main` still failed in the running server.
   about deployed behaviour to `boot_commit`, not to `main`. Unauthenticated (a
   commit SHA, no secrets) so any seat or health check can hit it.
 
+### Serve with gunicorn, not the Flask dev server
+
+The homelab systemd unit currently execs `raccoon_swarm_server.py` directly,
+which starts Werkzeug's development server. It works, but it's the wrong
+runtime for this app: SSE streams plus five-model fan-out want real threading,
+and in-process session state needs the single-worker guarantee. The canonical
+serving command is the Procfile's (see [`stack/runtime.md`](stack/runtime.md)):
+
+    gunicorn --worker-class=gthread --workers=1 --threads=8 --timeout=300 \
+        --bind 0.0.0.0:$PORT raccoon_swarm_server:app
+
+Fix is a two-line `ExecStart` change in the VM's `swarm.service`. Until it's
+made, a stalled UI stream during a heavy session is probably this, not a bug.
+
 ## Monitoring
 
 - **Status endpoints** — `/websearch/status`, `/prosody/status`,
@@ -93,6 +107,14 @@ nested-directory fix that was on `main` still failed in the running server.
   and re-verify (a claim "verified against live main" is worthless once main
   moves). Fail-loud like the scorecard — a write failure never aborts a session.
 
+- **Quality Gate (score-only)** — every scorecard now carries a `gate` block
+  (`swarm_gate`): mechanical checks (M1 phantoms, M2 honest-verb, the
+  `[SESSION_PURPOSE: …]` tag) plus a friction trigger from corpus dissent
+  proxies. **Nothing blocks at v0** — `would_penalize` records what a blocking
+  gate *would* have done, and that accumulated count across real sessions is
+  the evidence that graduates any check to blocking. Judgment checks (R1–R5)
+  are deferred to the dual-grader rubric by design.
+
 ### Doctrine: the synthesis is the product; the scorecard is the instrument
 
 Scorecard emission is **mandatory-attempt, fail-loud — not session-gating.**
@@ -101,6 +123,24 @@ logged loudly but must **never** discard or invalidate completed synthesis
 work. Making the product invalid because an *observer* failed to write
 telemetry would invert the system's authority hierarchy — the same class of
 mistake as letting self-graded usefulness scores become the product.
+
+### Doctrine: the three-axis memory graph is DEFERRED, not rejected
+
+The Session-134 council designed a governed memory graph — three-axis
+authority `(kind, integrity, time)`, `MemoryNode`/`MemoryEdge`, a
+`TypedEdgeValidator` enforcing at construction, a `TemporalIndex` derived from
+committed edges only, graph-as-projection-never-law. The design is sound and
+its artifacts are preserved in the session filestore. **It is deliberately not
+built**, because:
+
+- `swarm_memory.py` already delivers supersede-don't-forget on flat JSON
+  (pursuit carry-forward, question closure, superseded-law skipping), and
+- no retrieval or provenance query exists yet that the flat model provably
+  cannot answer.
+
+Re-proposing the graph requires naming that concrete failing query first —
+"let's build GraphRAG" is not a proposal, a receipt is. Sufficient before
+elaborate; accountable before autonomous.
 
 ## Read-back verification (runner-enforced, both directions)
 
