@@ -197,6 +197,44 @@ def collect_joy_runs(since: datetime, until: "datetime | None" = None) -> list[s
     return sorted(hits)
 
 
+AUDIT_EXCERPT_CHARS = 3000
+
+
+def collect_persistence_audits(since: datetime,
+                               until: "datetime | None" = None) -> list[dict]:
+    """Persistence audits the sessions wrote to the filestore logs/ lane
+    inside the window. Returns [{path, text}] with text capped at
+    AUDIT_EXCERPT_CHARS (audits are short; the cap is a torn-file guard).
+
+    Listing is preferred (catches variant filenames); per-date direct reads
+    are the fallback when listing fails — an unlistable directory must not
+    silence the Audit Desk (the joy/metrics lesson)."""
+    until = until or datetime.now()
+    dates = []
+    day = since.date()
+    while day <= until.date():
+        dates.append(day.isoformat())
+        day += timedelta(days=1)
+
+    paths: list[str] = []
+    try:
+        for entry in swarm_filestore.list_files("logs") or []:
+            name = str(entry)
+            if "persistence-audit" in name and any(d in name for d in dates):
+                paths.append(name.split("swarm/", 1)[-1].lstrip("/"))
+    except Exception as e:
+        logger.warning(f"[gazette] logs listing failed ({e}); falling back to per-date reads")
+    if not paths:
+        paths = [f"logs/{d}_persistence-audit.md" for d in dates]
+
+    audits: list[dict] = []
+    for path in sorted(set(paths)):
+        text = swarm_filestore.read_file(path)
+        if text:
+            audits.append({"path": path, "text": text[:AUDIT_EXCERPT_CHARS]})
+    return audits
+
+
 def collect_email_log(since: datetime, until: "datetime | None" = None) -> list[dict]:
     """Entries from logs/emails.log inside the window — the ground truth the
     persistence audits learned to demand. Returns [{timestamp, subject}]."""
@@ -239,7 +277,8 @@ def _sum_measured(sessions: list[dict], key: str) -> int:
 
 
 def build_daily_burrow(*, date_str: str, sessions: list[dict],
-                       joy_runs: list[str], email_entries: list[dict]) -> tuple[str, str]:
+                       joy_runs: list[str], email_entries: list[dict],
+                       audits: "list[dict] | None" = None) -> tuple[str, str]:
     """(subject, markdown body) for the daily edition. Pure."""
     n = len(sessions)
     blockers = _sum_measured(sessions, "blockers")
@@ -310,9 +349,16 @@ def build_daily_burrow(*, date_str: str, sessions: list[dict],
         lines.append(f"- PLAY session {s['session_id']}: gazette edition in "
                      f"{PLAY_LANE}/ (attached or swept by the next Burrow).")
 
+    lines += ["", "## Audit Desk"]
+    if audits:
+        for audit in audits:
+            lines += [f"### {audit['path']}", "", audit["text"].strip(), ""]
+    else:
+        lines.append("- No persistence audits written in this window.")
+
     lines += ["", "## Receipts",
               "- logs/scorecard-<session>.json · logs/corpus/corpus-<session>.json · logs/closer-digest-<session>.md",
-              "- logs/emails.log (send ground truth)",
+              "- logs/emails.log (send ground truth) · filestore logs/*persistence-audit*.md",
               "",
               "_Generated mechanically from closer receipts; no model narration was consulted._"]
     return subject, "\n".join(lines)

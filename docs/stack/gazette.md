@@ -22,6 +22,7 @@ when a PLAY-shaped session closes.
 | `logs/closer-digest-<sid>.md` | "What needs you" bullets (carried verbatim) |
 | `joy/runs/**` (filestore) | Joy run list |
 | `logs/emails.log` (filestore) | email-channel ground truth |
+| `logs/*persistence-audit*.md` (filestore) | Audit Desk — session audits carried verbatim |
 
 ## Honesty invariants
 
@@ -56,6 +57,10 @@ rate caps — a busy swarm day must not starve the Conductor's own newspaper.
 
 - Enable the morning edition: `systemctl enable --now swarm-burrow.timer`
   (08:30 daily, `Persistent=true`).
+- Enable the weekly observer digest: `systemctl enable --now
+  swarm-observer.timer` (Sunday 08:00). The observer predates this layer
+  (PRs #52–#53) but shipped with only a cron *suggestion* — one manual run,
+  one email, then silence. The timer makes it actually weekly.
 - Manual print: `scripts/run_daily_burrow.py --dry-run` (stdout only),
   `--no-email` (persist + DOCX, no SMTP), `--window-hours 48`.
 - Kill switch: `RRI_GAZETTE_ENABLED=false` disables the closer's play hook

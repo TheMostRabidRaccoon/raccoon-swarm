@@ -1,0 +1,23 @@
+[Unit]
+Description=Swarm Observer — weekly cross-session audit digest (oneshot)
+After=network-online.target
+# Independent of swarm.service: the observer reads the filestore and calls
+# the Anthropic API directly; it must report even when the server is down.
+RefuseManualStart=no
+
+[Service]
+Type=oneshot
+User=theconductor
+WorkingDirectory=/home/theconductor/raccoon-swarm
+EnvironmentFile=-/home/theconductor/raccoon-swarm/.env
+ExecStart=/home/theconductor/raccoon-swarm/venv/bin/python3 /home/theconductor/raccoon-swarm/scripts/swarm_observer.py
+StandardOutput=journal
+StandardError=journal
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+# One Claude call over a week of filestore text; give it room.
+TimeoutStartSec=900
+
+[Install]
+WantedBy=multi-user.target

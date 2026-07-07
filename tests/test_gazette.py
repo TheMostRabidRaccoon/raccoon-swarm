@@ -107,6 +107,33 @@ def test_burrow_unmeasured_renders_as_question_mark(tmp_path):
     assert "| 20260704_120000 | ? |" in body  # unmeasured != 0
 
 
+# ---- Audit Desk ---------------------------------------------------------------
+
+def test_collect_persistence_audits_reads_window(storage):
+    import swarm_filestore
+    swarm_filestore.write_file("logs/2026-07-04_persistence-audit.md",
+                               "# Audit\ntriggers=4 sent=3 gap=1\n")
+    swarm_filestore.write_file("logs/2026-06-01_persistence-audit.md", "# old\n")
+    got = swarm_gazette.collect_persistence_audits(datetime(2026, 7, 3), datetime(2026, 7, 5))
+    assert [a["path"] for a in got] == ["logs/2026-07-04_persistence-audit.md"]
+    assert "gap=1" in got[0]["text"]
+
+
+def test_burrow_audit_desk_carries_audits_verbatim():
+    audits = [{"path": "logs/2026-07-04_persistence-audit.md",
+               "text": "triggers=4 sent=3 gap=1"}]
+    _, body = swarm_gazette.build_daily_burrow(
+        date_str="2026-07-04", sessions=[], joy_runs=[], email_entries=[], audits=audits)
+    assert "### logs/2026-07-04_persistence-audit.md" in body
+    assert "triggers=4 sent=3 gap=1" in body
+
+
+def test_burrow_audit_desk_honest_when_empty():
+    _, body = swarm_gazette.build_daily_burrow(
+        date_str="2026-07-07", sessions=[], joy_runs=[], email_entries=[], audits=[])
+    assert "No persistence audits written in this window." in body
+
+
 # ---- Play Gazette -----------------------------------------------------------
 
 def test_play_gazette_marks_clipped_sessions(tmp_path):

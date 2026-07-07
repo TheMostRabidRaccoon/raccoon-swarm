@@ -95,9 +95,10 @@ def main() -> int:
     sessions = swarm_gazette.collect_sessions(logs_dir, since, now)
     joy_runs = swarm_gazette.collect_joy_runs(since, now)
     email_entries = swarm_gazette.collect_email_log(since, now)
+    audits = swarm_gazette.collect_persistence_audits(since, now)
     subject, body = swarm_gazette.build_daily_burrow(
         date_str=date_str, sessions=sessions, joy_runs=joy_runs,
-        email_entries=email_entries)
+        email_entries=email_entries, audits=audits)
 
     if args.dry_run:
         print(f"SUBJECT: {subject}\n\n{body}")

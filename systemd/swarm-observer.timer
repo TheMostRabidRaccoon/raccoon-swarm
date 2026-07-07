@@ -1,0 +1,15 @@
+[Unit]
+Description=Run the Swarm Observer weekly (Sunday morning audit digest)
+
+[Timer]
+# Weekly, Sunday 08:00 — the cadence the observer's own docstring suggested
+# as a cron line but that never became a unit (which is why exactly one
+# digest ever arrived: it had been run by hand).
+OnCalendar=Sun *-*-* 08:00:00
+# If the box was asleep/off on Sunday morning, run when it next wakes.
+Persistent=true
+RandomizedDelaySec=600
+Unit=swarm-observer.service
+
+[Install]
+WantedBy=timers.target
