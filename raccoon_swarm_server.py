@@ -175,6 +175,15 @@ GROK_MODEL       = os.getenv("RRI_GROK_MODEL", "grok-4.3")
 GEMINI_MODEL     = os.getenv("RRI_GEMINI_MODEL", "gemini-3.1-pro-preview")
 PERPLEXITY_MODEL = os.getenv("RRI_PERPLEXITY_MODEL", "sonar-pro")
 
+# Grok reasoning effort. grok-4.3 silently defaults reasoning_effort to "low"
+# when the param is omitted — the seat runs the flagship at its laziest setting
+# (the session-105 "Grok isn't like he used to be" degradation). Valid values
+# per xAI docs: none | low | medium | high. Set to "" to omit the param and
+# fall back to the API default. Sent via extra_body so any openai>=1.0 SDK
+# forwards it; an invalid value errors at call time, not boot — verify via
+# /ping-swarm after changing, same as a model-id bump.
+GROK_REASONING_EFFORT = os.getenv("RRI_GROK_REASONING", "high")
+
 # Per-call output-token ceiling for every seat + synthesis. Was 2000 (rounds) /
 # 3000 (synthesis), which truncated long table-read / synthesis output. You only
 # pay for tokens actually generated, so a higher cap permits longer answers
@@ -1113,11 +1122,16 @@ def _openai_chat_with_tools(
     calling_model: str,
     label: str,
     session_id: str = "unknown",
+    extra_body: dict | None = None,
 ):
     """Tool-use loop for OpenAI-compatible APIs (GPT and Grok).
 
     tokens_param differs by provider: GPT-5+ uses 'max_completion_tokens',
     Grok uses 'max_tokens'. Pass whichever the model expects.
+
+    extra_body carries provider-specific params the OpenAI SDK doesn't model
+    (e.g. Grok's reasoning_effort) — the SDK merges it into the request body
+    untyped, so it works on any openai>=1.0 version. None sends nothing.
     """
     if images:
         messages = _build_openai_vision_messages(query, images, system_prompt=sys_prompt)
@@ -1129,6 +1143,8 @@ def _openai_chat_with_tools(
 
     if not _mcp_tools_enabled():
         kwargs = {tokens_param: max_tokens}
+        if extra_body:
+            kwargs["extra_body"] = extra_body
         resp = client.chat.completions.create(model=model_name, messages=messages, **kwargs)
         return resp.choices[0].message.content or f"[{label} returned no text]"
 
@@ -1138,6 +1154,8 @@ def _openai_chat_with_tools(
     last_msg = None
     for iteration in range(max_iters):
         kwargs = {tokens_param: max_tokens}
+        if extra_body:
+            kwargs["extra_body"] = extra_body
         resp = client.chat.completions.create(
             model=model_name,
             messages=messages,
@@ -1227,6 +1245,10 @@ def call_grok(query, max_tokens=MAX_OUTPUT_TOKENS, images=None, session_id="unkn
             calling_model="grok",
             label="Grok",
             session_id=session_id,
+            extra_body=(
+                {"reasoning_effort": GROK_REASONING_EFFORT}
+                if GROK_REASONING_EFFORT else None
+            ),
         )
     except Exception as e:
         logger.error(f"Grok Error: {e}")
