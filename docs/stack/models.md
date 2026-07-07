@@ -57,6 +57,16 @@ To bump a seat: change the default in that one constant, **or** set the env
 var and restart — no code change, no redeploy. When a provider ships a newer
 id, this table + the constant are the only two places to touch.
 
+## Grok reasoning effort
+
+`GROK_REASONING_EFFORT` (env: `RRI_GROK_REASONING`, default `high`) is sent as
+`reasoning_effort` on every Grok call via the SDK's `extra_body` passthrough.
+grok-4.3 defaults to `low` when the param is omitted — the seat runs the
+flagship at its laziest setting, which presented as "Grok isn't like he used
+to be" (session 105). Valid values per xAI docs: `none | low | medium | high`.
+Set to `""` to omit the param and take the API default. Like a model-id bump,
+an invalid value errors at call time, not boot — verify via `/ping-swarm`.
+
 **Verify on the floor after any bump.** A wrong id 404s at call time, not at
 boot. Hit `/ping-swarm` (or a quick round) and confirm each seat responds; if
 one fails, flip its `RRI_*_MODEL` env back to a known-good id and restart. Only
