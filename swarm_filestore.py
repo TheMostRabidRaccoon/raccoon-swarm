@@ -246,6 +246,30 @@ def list_files(rel_dir: str = "") -> list[str]:
     return out
 
 
+def zip_directory_bytes(rel_dir: str) -> "bytes | None":
+    """Zip an entire filestore subtree (e.g. one joy run folder) into an
+    in-memory archive for download. Returns None when the directory is unsafe,
+    missing, or holds no indexable files.
+
+    Text lanes only (_INDEXED_SUFFIXES) — same visibility rule as list_files,
+    so what you can list is exactly what you can download. Images ship
+    separately via /download and /artifacts/images."""
+    import io
+    import zipfile
+    paths = list_files(rel_dir)
+    if not paths:
+        return None
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for path in paths:
+            content = read_file(path)
+            if content is not None:
+                zf.writestr(path, content)
+    data = buf.getvalue()
+    # An archive with zero members means every listed file failed to read.
+    return data if len(paths) and zipfile.ZipFile(io.BytesIO(data)).namelist() else None
+
+
 def existing_subdirs() -> list[str]:
     """First-level dirs that currently exist under the filestore root."""
     root = _storage_root()
