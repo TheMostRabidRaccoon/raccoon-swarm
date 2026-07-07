@@ -3507,6 +3507,38 @@ def filestore_search():
     return jsonify({"query": q, "results": swarm_filestore.search_files(q, max_results=max_results)})
 
 
+@app.route("/filestore/download", methods=["GET"])
+@require_auth
+def filestore_download():
+    """Download filestore content as a browser attachment.
+
+    ?path=logs/2026-07-04_persistence-audit.md  → that file
+    ?dir=joy/runs/2026-07-03_kata-004           → the whole folder as a .zip
+
+    Path safety and visibility are the filestore's (read_file/_resolve_safe,
+    list_files) — what a seat can read is exactly what the Conductor can
+    download, nothing more."""
+    import io as _io
+    path = request.args.get("path", "")
+    rel_dir = request.args.get("dir", "")
+    if path:
+        content = swarm_filestore.read_file(path)
+        if content is None:
+            return jsonify({"error": "not found or unsafe path"}), 404
+        name = path.rstrip("/").split("/")[-1]
+        return send_file(_io.BytesIO(content.encode("utf-8")),
+                         as_attachment=True, download_name=name,
+                         mimetype="text/plain")
+    if rel_dir:
+        data = swarm_filestore.zip_directory_bytes(rel_dir)
+        if data is None:
+            return jsonify({"error": "not found, unsafe, or empty directory"}), 404
+        name = rel_dir.strip("/").replace("/", "_") + ".zip"
+        return send_file(_io.BytesIO(data), as_attachment=True,
+                         download_name=name, mimetype="application/zip")
+    return jsonify({"error": "path or dir required"}), 400
+
+
 @app.route("/mail/status", methods=["GET"])
 @require_auth
 def mail_status():
