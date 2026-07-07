@@ -5,8 +5,19 @@ omitted, so the guarantee that matters is: the Grok seat actually sends the
 configured effort on every chat.completions call (both the no-tools path and
 the tool-use loop), and other seats' calls are untouched when extra_body is
 None. The param rides in extra_body so any openai>=1.0 SDK forwards it.
+
+The plumbing lives in raccoon_swarm_server, which needs the full model-client
+stack (flask/anthropic/openai) — deliberately absent from CI's bare
+interpreter (see .github/workflows/tests.yml). importorskip keeps CI green on
+requirements-dev.txt alone; the tests run wherever requirements.txt is
+installed (dev boxes, the deploy floor).
 """
-import raccoon_swarm_server as srv
+import pytest
+
+srv = pytest.importorskip(
+    "raccoon_swarm_server",
+    reason="needs the full model-client stack (requirements.txt), not in CI",
+)
 
 
 class _FakeMessage:
