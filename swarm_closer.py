@@ -666,6 +666,21 @@ def run_post_session_closer(
             }, indent=2))
 
             logger.info(f"[closer] session {session_id}: {outcome}; digest at {local_path}")
+
+            # Play Gazette — a newspaper edition for PLAY-shaped sessions,
+            # emailed with a DOCX attachment (see swarm_gazette). Runs AFTER
+            # the receipts above exist because it reads only those receipts.
+            # Fail-loud: a gazette failure never disturbs the closer.
+            try:
+                import swarm_gazette
+                if swarm_gazette.enabled() and swarm_gazette.is_play_session(query):
+                    gz = swarm_gazette.fire_play_gazette(
+                        session_id=session_id, logs_dir=logs_dir, outputs_dir=outputs_dir)
+                    logger.info(f"[closer] play gazette for {session_id}: "
+                                f"published={gz['published']} emailed={gz['emailed']}")
+            except Exception as e:
+                logger.error(f"[closer] play gazette failed for session {session_id}: "
+                             f"{type(e).__name__}: {e}")
         except Exception as e:
             logger.error(f"[closer] failed for session {session_id}: {type(e).__name__}: {e}")
 
