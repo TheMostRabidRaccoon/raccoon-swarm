@@ -1,0 +1,24 @@
+[Unit]
+Description=Daily Burrow — the Conductor's morning newspaper (oneshot)
+After=network-online.target
+# Deliberately NOT After=swarm.service: the paper must print even when the
+# server is down — "server down" is front-page news, not a reason to skip.
+RefuseManualStart=no
+
+[Service]
+Type=oneshot
+User=theconductor
+WorkingDirectory=/home/theconductor/raccoon-swarm
+EnvironmentFile=-/home/theconductor/raccoon-swarm/.env
+ExecStart=/home/theconductor/raccoon-swarm/venv/bin/python3 /home/theconductor/raccoon-swarm/scripts/run_daily_burrow.py
+StandardOutput=journal
+StandardError=journal
+# Reads receipts + filestore, renders a DOCX, sends one SMTP message. No model
+# calls — this should finish in seconds.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+TimeoutStartSec=300
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,16 @@
+[Unit]
+Description=Publish the Daily Burrow every morning
+
+[Timer]
+# Morning edition: after any overnight daemon sessions close, before the
+# Conductor's coffee. The content is a rolling 24h window, so the exact
+# minute doesn't matter — only that it prints once per day.
+OnCalendar=*-*-* 08:30:00
+# If the box was asleep/off at 08:30, still print when it next wakes.
+Persistent=true
+# Small jitter so a fleet of swarms doesn't stampede SMTP at :30.
+RandomizedDelaySec=300
+Unit=swarm-burrow.service
+
+[Install]
+WantedBy=timers.target

@@ -15,6 +15,7 @@ speed, not prose.
 | `auth.md`    | Auth token, password hash, login flow                       |
 | `hooks.md`   | `.claude/` hooks and skills                                 |
 | `ci.md`      | GitHub Actions workflows                                    |
+| `gazette.md` | Daily Burrow + Play Gazette emails (receipts-only digests)  |
 
 ## Conventions
 

@@ -22,8 +22,10 @@ import logging
 import threading
 from collections import deque
 from datetime import datetime, timedelta
+from email.mime.application import MIMEApplication
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from pathlib import Path
 
 import swarm_filestore
 
@@ -129,6 +131,106 @@ def send_to_conductor(subject: str, body: str, model: str, session_id: str = "un
         logger.error(f"swarm_mail audit-log failed (send still succeeded): {e}")
 
     logger.info(f"swarm_mail sent to conductor — model={model} subject={full_subject!r}")
+    return True, "sent"
+
+
+# ============================================================
+# Operational channel — system sends (gazettes), not model directives
+# ============================================================
+
+def _prepare_attachments(paths: "list[str] | None") -> tuple["list[dict] | None", str]:
+    """Verify and hash every attachment BEFORE any send. Returns
+    ([{path, name, sha256, size}], "ok") or (None, reason).
+
+    Fail-closed on purpose: a missing attachment aborts the whole send rather
+    than mailing an email that claims a file it doesn't carry — the attachment
+    version of "announcing a write is not a write"."""
+    import hashlib
+    records: list[dict] = []
+    for p in paths or []:
+        path = Path(p)
+        try:
+            data = path.read_bytes()
+        except OSError as e:
+            return None, f"attachment missing/unreadable: {p} ({e})"
+        records.append({
+            "path": str(path),
+            "name": path.name,
+            "sha256": hashlib.sha256(data).hexdigest(),
+            "size": len(data),
+            "_data": data,
+        })
+    return records, "ok"
+
+
+def send_operational(subject: str, body: str, *, attachments: "list[str] | None" = None,
+                     prefix: str = "[RRI Swarm]", session_id: str = "operational") -> tuple[bool, str]:
+    """Send a system-level email to the Conductor (gazettes, daemon digests).
+
+    This is NOT reachable from model output — the directive parser only routes
+    [EMAIL_CONDUCTOR] blocks to send_to_conductor. The recipient stays locked
+    to RRI_CONDUCTOR_EMAIL. Like the closer's digest sends, this bypasses the
+    per-session/24h model rate caps: it runs on a fixed systemd cadence, so a
+    busy swarm day must not starve the Conductor's own newspaper.
+
+    Attachment invariant: every attachment must exist and is sha256-hashed
+    before the send; any missing file aborts the send entirely, and the
+    emails.log entry records each attachment's name + hash + the send status.
+    """
+    ok, reason = _config_status()
+    if not ok:
+        return False, reason
+
+    records, reason = _prepare_attachments(attachments)
+    if records is None:
+        logger.error(f"swarm_mail operational send refused: {reason}")
+        return False, reason
+
+    to_addr = os.getenv("RRI_CONDUCTOR_EMAIL")
+    from_addr = os.getenv("SMTP_USER")
+    full_subject = f"{prefix} {subject.strip()[:120]}"
+
+    msg = MIMEMultipart()
+    msg["From"] = from_addr
+    msg["To"] = to_addr
+    msg["Subject"] = full_subject
+    msg.attach(MIMEText(body, "plain"))
+    for rec in records:
+        part = MIMEApplication(rec["_data"], Name=rec["name"])
+        part["Content-Disposition"] = f'attachment; filename="{rec["name"]}"'
+        msg.attach(part)
+
+    try:
+        host = os.getenv("SMTP_HOST")
+        port = int(os.getenv("SMTP_PORT", "587"))
+        password = os.getenv("SMTP_APP_PASSWORD")
+        with smtplib.SMTP(host, port, timeout=60) as server:
+            server.starttls()
+            server.login(from_addr, password)
+            server.sendmail(from_addr, to_addr, msg.as_string())
+    except smtplib.SMTPException as e:
+        logger.error(f"swarm_mail operational SMTP error: {e}")
+        return False, f"smtp error: {e}"
+    except (OSError, ValueError) as e:
+        logger.error(f"swarm_mail operational send failed: {e}")
+        return False, f"send error: {e}"
+
+    attach_lines = "".join(
+        f"attachment: {r['name']} sha256={r['sha256']} size={r['size']}\n" for r in records)
+    log_entry = (
+        f"{datetime.now().isoformat()} | model=operational | session={session_id}\n"
+        f"subject: {full_subject}\n"
+        f"{attach_lines}"
+        f"status: sent\n"
+        f"body: {body[:500]}{'...' if len(body) > 500 else ''}\n"
+    )
+    try:
+        swarm_filestore.append_file("/logs/emails.log", log_entry)
+    except Exception as e:  # never let audit-log failure block the send
+        logger.error(f"swarm_mail audit-log failed (send still succeeded): {e}")
+
+    logger.info(f"swarm_mail operational sent — subject={full_subject!r} "
+                f"attachments={len(records)}")
     return True, "sent"
 
 
