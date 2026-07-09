@@ -1,8 +1,11 @@
 # The Autonomy Ladder — Autonomous Creation, Governed Integration
 
 **Status:** DESIGN — proposed, not built. Conductor red-pen expected before any rung ships.
-**Author:** drafted with Claude Code, 2026-07-07. For Conductor ratification.
-**One line:** *The swarm may independently produce reviewable software artifacts. It may not touch protected branches, secrets, deploys, or permissions without a human gate.*
+**Author:** drafted with Claude Code, 2026-07-07. Amended 2026-07-09: collaboration model
+replaced with **Led Builds**; ladder revised (Rung -1 tool spine added, auto-merge removed
+from v1); the five open questions resolved. For Conductor ratification.
+**One line:** *The swarm may independently produce reviewable software artifacts. It may not
+touch protected branches, secrets, deploys, or permissions without a human gate.*
 
 ---
 
@@ -52,13 +55,62 @@ A model that will forge a filestore receipt will forge a commit author. So:
 Build this first. It is also the smallest piece. No rung above it is sound
 until a seat *cannot* forge "which seat, which runner, which tests, which SHA."
 
+**Known limit — documented now so it cannot be miscited later.** `authored_by` is
+*submission* provenance: which API produced the diff, stamped by the runner. It is
+**not** *idea* provenance — it does not record which seat conceived the work. In a
+shared-context council a seat can ghost-write a diff another seat triggers. That is
+fine for accountability; it is wrong as authorship-of-idea. Do not cite `authored_by`
+as idea-provenance in Paper 2 or anywhere else.
+
 ---
 
 ## The ladder
 
-Five rungs. Each earns the next; none skips the floor above.
+Revised. The floor is unchanged; the collaboration rung is **Led Builds**, not solo
+branches and not baton-passing; auto-merge is removed from v1.
+
+```
+Rung -1  Tool spine        MCP parity + evidence tools wired + stateful code_exec
+Rung  0  Attribution floor runner-stamped receipts (build first, always)
+Rung  1  Read              GitHub App / PAT, least privilege, SHA-cited claims
+Rung  2  Led Builds        swarm-lab; one seat leads, others assist, leader owns
+Rung  3  Draft PRs         council review → Conductor gate
+   —     (former auto-merge rung: removed from v1 — see Decisions)
+```
+
+Above every rung, permanently: **the human integration gate.** Nothing merges into
+anything that runs without Conductor approval. That gate is non-negotiable, and by
+itself it protects the merge path most of this document's caution is spent guarding.
+
+### Rung -1 — Tool spine (the substrate)
+
+Before autonomous creation is worth turning on, the seats need something to build
+*with* and receipts to build *on*. This is numbered below the floor because it is the
+material the lab works in — but it proceeds *together with* Rung 0 at the start.
+
+- **MCP parity.** Generate the external MCP surface from (or run a parity check
+  against) `swarm_tools.py`, so a tool exists whether a seat is reached by native
+  tool-use or by MCP. Today `swarm_tools.py` registers more tools
+  (`web_verify`, `filestore_semantic_search`, `prosody_analyze`,
+  `dispatch_queue_write`) than `raccoon_mcp_server.py` exposes. That gap is a
+  Rung -1 bug, and closing it at the source kills the *class* of gap instead of
+  patching today's instance.
+- **Evidence tools wired.** `evidence_search / evidence_fetch /
+  evidence_resolve_citation` over the existing `swarm_evidence.py` catalog — which is
+  built (source IDs, content hashes, chunk indexes, dedup) but currently ships no
+  model-facing tools.
+- **Stateful `code_exec`.** Persistent sessions so a build can accrete across turns
+  instead of dying at each sandbox boundary. Single-shot execution is fine for
+  "compute this"; it cannot support "build this."
+
+### Rung 0 — Attribution floor (build first, always)
+
+Runner-stamped `authored_by / executed_by / tests_passed / base_sha`, seat-unforgeable
+(full spec above). Nothing above this rung turns on until a seat *cannot* forge which
+seat, which runner, which tests, which SHA.
 
 ### Rung 1 — Read (private-repo, least privilege)
+
 - A **GitHub App**, per-repo install, read-only contents scope. NOT a broad
   user token. (Graduation from today's `RRI_GITHUB_PROPOSAL_TOKEN`
   fine-grained PAT.)
@@ -68,50 +120,62 @@ Five rungs. Each earns the next; none skips the floor above.
 - **Kills the phantom-external-verification class** (audit row 7.2): every
   claim about repo state becomes checkable against ground truth on disk,
   SHA-anchored. No more "verified 157 commits via web search."
+- **Repo-state claims must cite the manifest SHA** — mandatory, not optional — so a
+  claim that was true at mirror time cannot be silently re-quoted after the mirror
+  has moved.
 
-### Rung 2 — Branch (bot-owned namespaces)
-- The App may push to `swarm/<seat>/<slug>` branches only
-  (e.g. `swarm/gpt-5/idea-tool-x`). **Branch protection forbids any push to
-  `main`.**
-- Every commit carries the Rung-0 attribution trailer, signed by the bot
-  identity, stamped by the runner.
+### Rung 2 — Led Builds (the collaboration model)
+
+One seat leads. The others assist. The leader owns the artifact. This replaces both
+the draft's per-seat solo structure (five soloists building in parallel) and the
+baton-passing alternative raised in review (a polite, sequential relay race). Neither
+is what this system was asked to demonstrate.
+
+```yaml
+led_build:
+  leader: <seat>                    # council-assigned or rotating, per project
+  branch: swarm/led/<seat>/<slug>   # lab repo only
+  leader_may:
+    - commit                        # sole commit authority on the branch
+    - invoke_helper(seat, ask)      # a question or a bounded subtask
+    - declare_done                  # opens the draft PR
+  helper_may:
+    - respond                       # that's it
+  helper_may_not:
+    - commit
+    - invoke                        # no helper-calls-helper; depth caps at leader -> helper
+  attribution:
+    authored_by: leader             # every commit, no exceptions
+    helper_contributions:           # logged, never authorship
+      to: BUILD_LOG.md              # seat, ask, response ref, timestamp
+  caps:
+    invoke_depth: 2                 # leader -> helper, full stop
+    helper_calls_per_build: 20      # config value, tune from lab data
+    token_budget: per-build         # set at kickoff
+  exit:
+    draft PR -> council review -> Conductor gate
+```
+
+**Why this keeps Rung 0 intact.** The leader is `authored_by` on every commit the way
+a tech lead owns a PR after consulting five colleagues. Helper invocations are
+*inputs* — logged to `BUILD_LOG.md` (seat, ask, response ref, timestamp), auditable,
+never authorship. The attribution floor does not bend; the collaboration was
+restructured so it does not have to. The "authorship is mush" problem only existed
+under *symmetric* peer invocation (any seat calls any seat, output comes back
+interwoven), which this does not ship.
+
+**Why live invocation is not a new capability grant.** Live multi-model exchange is
+this swarm's incumbent operating mode — 140+ sessions of cross-synthesis, dual-grader
+adjudication, deadlock resolution. The only delta in a Led Build is that the exchange
+produces git artifacts instead of session transcripts. The floor was designed for
+exactly that delta.
 
 ### Rung 3 — Draft PR (the sweet spot — free for every seat)
-- The swarm opens **draft** PRs without asking. This is where creation lives:
-  code, tests, argument, revision, all preserved as reviewable artifacts.
-- The Conductor wakes to branches and PRs, not vapor.
-- **No reliability score gates this.** Creation is universal. (See the death-
-  spiral note below.)
 
-### Rung 4 — Auto-merge (tiny low-risk lanes only)
-- A PR may auto-merge **only** if ALL hold: it touches only an allow-listed
-  low-risk lane (docs, tests, internal prompts, non-runtime swarm tools,
-  formatting); CI is green; diff size is under a cap; no dependency, secret,
-  config, or workflow file is touched; and the authoring seat's **recency-
-  weighted reliability score** clears the lane threshold.
-- Reliability gates *this rung only* — the fast lane, never the on-ramp.
-
-### Rung 5 — Human gate (high blast radius)
-- Runtime code, auth, billing, deploy, `.github/workflows`, dependency
-  manifests, private-data handling, repo settings, secrets → **always** a
-  human PR review. No score, no budget, no lane buys past this.
-
----
-
-## Reliability scores — gate the fast lane, never the on-ramp
-
-Seat reliability (from the seat-error-profile work, audit 7.1: per-seat phantom
-rate, false-conviction rate, honest-verb compliance, CI pass rate) gates
-**Rung 4 eligibility only.**
-
-Two hard rules so the score helps instead of harms:
-1. **It never gates creation (Rungs 1–3).** If a low-reliability seat also gets
-   fewer chances to build clean receipts, it death-spirals. Everyone always
-   branches and opens drafts; only clean receipts earn auto-merge.
-2. **It is recency-weighted.** A seat that just got a fix (e.g. Grok's
-   reasoning bump, PR #89) must be able to climb back fast. A stale lifetime
-   average punishes a fixed model for old failures and disincentivizes the
-   exact repairs we want.
+The leader's `declare_done` opens a **draft** PR. Council review, then the Conductor
+gate. This is where creation lives: code, tests, argument, revision, all preserved as
+reviewable artifacts. No reliability score gates creation — it is universal. The
+Conductor wakes to branches and PRs, not vapor.
 
 ---
 
@@ -128,7 +192,7 @@ or confused diff can leak secrets or self-approve **without ever merging**
 - CI on `swarm/**` branches runs with **zero secrets in the environment**
   (scrubbed env, no ambient credentials).
 - Workflow / CI config is **immune to modification by a PR-triggered run** —
-  changes there are Rung-5, full stop.
+  changes there are top-rung, full stop.
 - Private-repo work executes in **isolated runners** with scrubbed env, never
   with the swarm's live secrets in scope.
 
@@ -139,16 +203,15 @@ This is `swarm_deploy.py`'s fail-closed doctrine extended to the CI boundary.
 ## The playground — `swarm-lab` (build here FIRST)
 
 Not a fun add-on — the **safest rung and the proving ground** for the whole
-machinery. Build attribution, receipts, the promotion vote, and the auto-merge
-lane in a repo where blast radius is zero; watch how they fail; *then* graduate
-the proven mechanism to `raccoon-swarm`.
+machinery. Build attribution, receipts, the Led Build protocol, and the promotion
+vote in a repo where blast radius is zero; watch how they fail; *then* graduate the
+proven mechanism to `raccoon-swarm`.
 
-- A dedicated `swarm-lab` repo / `/experiments` area for weird prototypes.
-- Scheduled **jam sessions**: each seat gets a small budget to build something
-  delightful or useful.
-- Every experiment leaves a **receipt**: branch, demo notes, tests or
-  screenshot, and a short "why this is interesting."
-- The council **votes to promote** an experiment into a real PR.
+- A dedicated `swarm-lab` repo (see Decisions) for weird prototypes.
+- Scheduled **Led Builds**: one seat leads, the others assist, per the Rung-2 protocol.
+- Every build leaves a **receipt**: branch, `BUILD_LOG.md`, tests or screenshot, and a
+  short "why this is interesting."
+- The council **votes to promote** a build into a real PR.
 
 Same measure-first discipline as the score-only Quality Gate: don't point a
 novel autonomy system at production until it's earned it somewhere harmless.
@@ -173,27 +236,101 @@ Casino loop**, not a new daemon:
 
 ## Autonomy budget
 
-Each seat gets **N draft-PRs or M compute-minutes per day**, spendable without
+Each seat gets a **daily draft-PR / compute allowance**, spendable without
 the Conductor. Prevents a runaway seat from flooding the queue; makes "agency"
-concrete and bounded. Budgets refill daily; unused budget does not roll over
-(no hoarding-then-flooding). Orthogonal to reliability: budget caps *volume*,
-reliability caps *integration speed*.
+concrete and bounded.
+- **2–3 draft PRs per seat per day.** Budget to the Conductor's *reading* speed —
+  the review is the bottleneck, not the models' output speed.
+- **Led Build caps** as specified in Rung 2: `invoke_depth: 2`,
+  `helper_calls_per_build: ~20`, per-build token budget set at kickoff.
+- Budgets refill daily; unused budget does not roll over (no hoarding-then-flooding).
+- Orthogonal to reliability: budget caps *volume*, reliability caps *integration speed*.
+
+---
+
+## Reliability scores — deferred with the fast lane
+
+Seat reliability (per-seat phantom rate, false-conviction rate, honest-verb
+compliance, CI pass rate) was specified to gate the auto-merge fast lane. **With
+auto-merge removed from v1, reliability scoring is deferred with it** — it re-enters
+only when an auto-merge lane is proposed post-lab.
+
+When it returns, the two hard rules stand:
+1. **It never gates creation (Rungs 1–3).** If a low-reliability seat also gets fewer
+   chances to build clean receipts, it death-spirals. Everyone always branches and
+   opens drafts; only clean receipts earn auto-merge.
+2. **It is recency-weighted.** A seat that just got a fix (e.g. Grok's reasoning bump,
+   PR #89) must be able to climb back fast. A stale lifetime average punishes a fixed
+   model for old failures and disincentivizes the exact repairs we want.
 
 ---
 
 ## Build order
 
-Rungs are built one at a time, each earning the next. **Do not turn on five
-rungs at once.**
+Built one piece at a time; each earns the next. **Do not turn on multiple rungs at
+once.**
 
-0. **Attribution floor** — runner-stamped `authored_by/executed_by/tests_passed/base_sha`
-   + signed bot commits. Smallest piece; everything rests on it.
-1. **GitHub App**, read + `swarm/**` branch-push, **on `swarm-lab` only.**
-2. **Draft PRs in the lab** — prove creation + receipts.
-3. **Reliability + promotion vote in the lab** — prove the auto-merge lane and
+0. **Attribution floor (Rung 0)** — runner-stamped
+   `authored_by/executed_by/tests_passed/base_sha` + signed bot commits. Smallest
+   piece; everything rests on it.
+1. **Tool spine (Rung -1)** — MCP parity + evidence tools wired + stateful `code_exec`.
+   Proceeds alongside the floor; it is the substrate the lab builds with.
+2. **Read (Rung 1)** — GitHub App / PAT, mirror + manifest, SHA-cited claims —
+   **on `swarm-lab` only.**
+3. **Led Builds in the lab (Rung 2)** — leader/helper protocol + `BUILD_LOG.md`; prove
+   creation + receipts where blast radius is zero.
+4. **Draft PRs + council promotion in the lab (Rung 3)** — prove the promotion vote and
    the calibration-driven idea lifecycle where nothing production can break.
-4. **Graduate to `raccoon-swarm`** with the danger-zone ruleset, CI hardening,
-   and the Rung-4 lane — only after the lab has shown the failure modes.
+5. **Graduate to `raccoon-swarm`** with the danger-zone ruleset and CI hardening — only
+   after the lab has shown the failure modes.
+
+Auto-merge and symmetric peer invocation are **not** on this v1 order; each carries a
+named earning-condition below.
+
+---
+
+## Decisions (the draft's five open questions, resolved)
+
+1. **Lab repo vs. monorepo → separate repo.** A repo with no secrets solves the
+   CI-secrets problem *structurally* instead of by discipline.
+2. **App vs. PAT → PAT to prototype, App before anything graduates** to
+   `raccoon-swarm`. Don't let App setup yak-shave block Rungs 0–2.
+3. **Rung-4 thresholds → deferred.** Setting them before lab data exists violates this
+   doc's own measure-first doctrine.
+4. **Budgets → 2–3 draft PRs / seat / day; Led Build caps as specified.** Budget to
+   Conductor reading speed.
+5. **Auto-merge in v1 → no.** Q5 was never independent of Q3: thresholds that can't
+   exist yet can't gate anything. The auto-merge rung is definitionally post-lab.
+
+---
+
+## Named deferrals (so they can't quietly become never)
+
+- **Auto-merge (tiny low-risk lanes).** Unlocks for design once the lab has a full
+  quarter of clean Led-Build receipts; thresholds are set from that data, not from
+  vibes.
+- **Symmetric peer invocation (any seat calls any seat).** Unlocks for lab evaluation
+  when **≥3 Led Builds have been promoted through council review AND ≥1 `BUILD_LOG`
+  shows a build where the leader-bottleneck demonstrably cost the artifact** (a helper
+  had the decisive contribution but couldn't act on it). If the leader never
+  bottlenecks, symmetric invoke was never needed. If it does, we'll hold the exact
+  receipt that justifies engineering around the attribution floor carefully.
+
+---
+
+## Season One
+
+Five Led Builds, each seat leads one, portfolio-grade targets pitched by the leader at
+kickoff and ratified by the council. Candidate slate:
+
+- `deck_draw` — server-side verifiable randomness; entropy the seats can't narrate.
+- RRI site intake-triage agent with subagent delegation.
+- Corpus query surface over the dissent-event data.
+- Leader's choice ×2.
+
+Per-build deliverable: working artifact + `BUILD_LOG.md` + draft PR. Aggregate
+deliverable: five AI systems, each architected by a different frontier model directing
+the other four — with full provenance receipts.
 
 ---
 
@@ -206,19 +343,3 @@ rungs at once.**
   ladder.
 - **Every rung is measure-first.** Prove it in the lab, score it, then let the
   data — not vibes — earn the next rung.
-
----
-
-## Open questions for the Conductor (red-pen here)
-
-1. `swarm-lab` as a **separate repo** vs a `/experiments` tree inside
-   `raccoon-swarm`? (Separate repo = cleaner blast-radius story; monorepo =
-   less plumbing.)
-2. GitHub **App** vs a tightly-scoped fine-grained **PAT** for the first read
-   rung? (App is the right end state; a PAT is faster to prototype.)
-3. Reliability-score **thresholds** and the exact **low-risk lane** allow-list
-   for Rung 4 — what earns auto-merge, numerically?
-4. Autonomy-budget **numbers** — N draft-PRs / M compute-minutes per seat per
-   day?
-5. Does auto-merge (Rung 4) ship at all in v1, or does *everything* stay
-   human-gated until the lab has a full quarter of clean receipts?
