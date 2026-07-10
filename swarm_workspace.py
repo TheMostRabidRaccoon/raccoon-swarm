@@ -56,7 +56,10 @@ import os
 import re
 from typing import Any
 
-import requests
+# NOTE: `requests` is imported lazily inside _gh() (the only place it's used) so
+# this module — and its pure validation guards — import on a bare interpreter.
+# CI runs the unit suite with stdlib + pytest + numpy only (see tests.yml), and
+# the network ops are never exercised there.
 
 logger = logging.getLogger("SwarmVault")
 
@@ -190,6 +193,7 @@ def _gh(method: str, path: str, **kwargs) -> "tuple[dict | list | None, str | No
             "workspace not configured — set SWARM_WORKSPACE_GITHUB_TOKEN to a "
             "fine-grained token scoped to the sandbox repo only."
         )
+    import requests  # lazy — keeps the module importable on a bare interpreter
     url = path if path.startswith("http") else f"{GITHUB_API}{path}"
     try:
         resp = requests.request(method, url, headers=_headers(), timeout=_HTTP_TIMEOUT, **kwargs)
