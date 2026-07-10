@@ -1,0 +1,383 @@
+{
+  "version": "1.0",
+  "brand": "RRI Workspace Lab",
+  "projects": [
+    {
+      "slug": "raccoon-swarm",
+      "title": "Raccoon Swarm",
+      "group": "flagship",
+      "status": "live-system",
+      "business_function": "Multi-model orchestration",
+      "one_liner": "Five-model deliberation, shared MCP tools, persistent memory, governance, synthesis, and autonomous work queues.",
+      "proof": [
+        "multi-model routing",
+        "shared MCP infrastructure",
+        "persistent institutional memory",
+        "auditable governance"
+      ],
+      "data_policy": "operator-controlled",
+      "demo_mode": [
+        "guided-replay",
+        "authenticated-live"
+      ]
+    },
+    {
+      "slug": "anansi",
+      "title": "Anansi",
+      "group": "flagship",
+      "status": "live-system",
+      "business_function": "Clinical documentation and revenue intelligence",
+      "one_liner": "A domain workspace that turns fragmented clinical and revenue signals into structured operational intelligence.",
+      "proof": [
+        "document ingestion",
+        "domain reasoning",
+        "exception detection",
+        "decision artifacts"
+      ],
+      "data_policy": "approved/private",
+      "demo_mode": [
+        "synthetic-sandbox"
+      ]
+    },
+    {
+      "slug": "corinthian",
+      "title": "Corinthian",
+      "group": "flagship",
+      "status": "live-system",
+      "business_function": "Judicial pattern intelligence",
+      "one_liner": "A research workspace that assembles opinion history, ruling patterns, baseline deviations, and strategic profiles.",
+      "proof": [
+        "research orchestration",
+        "source verification",
+        "pattern analysis",
+        "profile generation"
+      ],
+      "data_policy": "public-source",
+      "demo_mode": [
+        "sample-profile",
+        "guided-replay"
+      ]
+    },
+    {
+      "slug": "prosody-intelligence",
+      "title": "Prosody Intelligence",
+      "group": "flagship",
+      "status": "live-system",
+      "business_function": "Speech and acoustic intelligence",
+      "one_liner": "A multimodal workspace that synchronizes transcript, timing, acoustic features, emotion, and TTS rendering.",
+      "proof": [
+        "multimodal analysis",
+        "time-aligned features",
+        "emotion mapping",
+        "audio artifact pipeline"
+      ],
+      "data_policy": "approved/sample",
+      "demo_mode": [
+        "sample-analysis",
+        "guided-replay"
+      ]
+    },
+    {
+      "slug": "latch",
+      "title": "Latch",
+      "group": "workspace-sandbox",
+      "status": "interactive-sandbox",
+      "business_function": "Lead intake and qualification",
+      "one_liner": "Captures a lead, resolves context, scores fit, drafts the response, updates CRM, and requests a scheduling decision.",
+      "agents": [
+        "Intake",
+        "Context Resolver",
+        "Qualifier",
+        "Response Writer",
+        "QA"
+      ],
+      "mcp_tools": [
+        "sandbox_inbox",
+        "sandbox_crm",
+        "sandbox_calendar",
+        "web_verify"
+      ],
+      "human_gates": [
+        "send response",
+        "book meeting"
+      ],
+      "artifacts": [
+        "lead brief",
+        "qualification rationale",
+        "reply draft"
+      ],
+      "data_policy": "synthetic",
+      "demo_mode": [
+        "replay",
+        "try",
+        "rate-limited-live"
+      ],
+      "priority": 1
+    },
+    {
+      "slug": "scope",
+      "title": "Scope",
+      "group": "workspace-sandbox",
+      "status": "interactive-sandbox",
+      "business_function": "Discovery to proposal",
+      "one_liner": "Turns call notes and business constraints into a scoped solution, estimate, risk register, SOW, and client-ready proposal.",
+      "agents": [
+        "Discovery Analyst",
+        "Scope Architect",
+        "Estimator",
+        "Risk Reviewer",
+        "Proposal Editor"
+      ],
+      "mcp_tools": [
+        "document_store",
+        "pricebook",
+        "template_render",
+        "sandbox_crm"
+      ],
+      "human_gates": [
+        "pricing approval",
+        "proposal release"
+      ],
+      "artifacts": [
+        "requirements brief",
+        "SOW",
+        "proposal PDF",
+        "risk register"
+      ],
+      "data_policy": "synthetic",
+      "demo_mode": [
+        "replay",
+        "try"
+      ],
+      "priority": 4
+    },
+    {
+      "slug": "front-desk",
+      "title": "Front Desk",
+      "group": "workspace-sandbox",
+      "status": "interactive-sandbox",
+      "business_function": "Inbox, voicemail, and scheduling",
+      "one_liner": "Triage incoming requests, recover customer context, propose appointments, draft replies, and escalate exceptions.",
+      "agents": [
+        "Triage",
+        "Customer Context",
+        "Scheduler",
+        "Drafting",
+        "Escalation"
+      ],
+      "mcp_tools": [
+        "sandbox_inbox",
+        "sandbox_voicemail",
+        "sandbox_contacts",
+        "sandbox_calendar",
+        "sandbox_crm"
+      ],
+      "human_gates": [
+        "external send",
+        "schedule confirmation",
+        "high-risk escalation"
+      ],
+      "artifacts": [
+        "priority queue",
+        "customer brief",
+        "draft response",
+        "appointment options"
+      ],
+      "data_policy": "synthetic",
+      "demo_mode": [
+        "replay",
+        "try",
+        "rate-limited-live"
+      ],
+      "priority": 2
+    },
+    {
+      "slug": "fieldline",
+      "title": "Fieldline",
+      "group": "workspace-sandbox",
+      "status": "interactive-sandbox",
+      "business_function": "Field-service dispatch",
+      "one_liner": "Classifies a service request, selects the right technician, checks inventory, proposes a route, and drafts customer updates.",
+      "agents": [
+        "Service Triage",
+        "Dispatcher",
+        "Route Planner",
+        "Inventory Check",
+        "Customer Comms"
+      ],
+      "mcp_tools": [
+        "sandbox_crm",
+        "sandbox_calendar",
+        "sandbox_maps",
+        "sandbox_inventory",
+        "sandbox_sms"
+      ],
+      "human_gates": [
+        "dispatch approval",
+        "customer message"
+      ],
+      "artifacts": [
+        "work order",
+        "dispatch plan",
+        "technician brief",
+        "customer update"
+      ],
+      "data_policy": "synthetic",
+      "demo_mode": [
+        "replay",
+        "try"
+      ],
+      "priority": 7
+    },
+    {
+      "slug": "ledger",
+      "title": "Ledger",
+      "group": "workspace-sandbox",
+      "status": "interactive-sandbox",
+      "business_function": "Cash flow and collections",
+      "one_liner": "Reads synthetic receivables, spots risk, models cash scenarios, prioritizes outreach, and prepares approval-ready collection drafts.",
+      "agents": [
+        "AR Analyst",
+        "Cash Forecaster",
+        "Collections Planner",
+        "Controller"
+      ],
+      "mcp_tools": [
+        "sandbox_accounting",
+        "spreadsheet_calc",
+        "sandbox_inbox",
+        "document_render"
+      ],
+      "human_gates": [
+        "send collection message",
+        "change payment terms"
+      ],
+      "artifacts": [
+        "aging analysis",
+        "cash forecast",
+        "collection plan",
+        "draft outreach"
+      ],
+      "data_policy": "synthetic",
+      "demo_mode": [
+        "replay",
+        "try"
+      ],
+      "priority": 5
+    },
+    {
+      "slug": "foundry",
+      "title": "Foundry",
+      "group": "workspace-sandbox",
+      "status": "interactive-sandbox",
+      "business_function": "Knowledge and SOP operations",
+      "one_liner": "Turns scattered documents and tribal knowledge into a searchable workspace, verified SOPs, checklists, and versioned updates.",
+      "agents": [
+        "Librarian",
+        "Process Miner",
+        "SOP Writer",
+        "Verifier",
+        "Change Curator"
+      ],
+      "mcp_tools": [
+        "filestore_search",
+        "filestore_semantic_search",
+        "document_ingest",
+        "versioned_write"
+      ],
+      "human_gates": [
+        "publish SOP",
+        "retire procedure"
+      ],
+      "artifacts": [
+        "knowledge map",
+        "SOP",
+        "checklist",
+        "change log"
+      ],
+      "data_policy": "synthetic",
+      "demo_mode": [
+        "replay",
+        "try",
+        "rate-limited-live"
+      ],
+      "priority": 6
+    },
+    {
+      "slug": "signal",
+      "title": "Signal",
+      "group": "workspace-sandbox",
+      "status": "interactive-sandbox",
+      "business_function": "Reviews and reputation",
+      "one_liner": "Clusters customer feedback, identifies operational root causes, drafts responses, and creates service-recovery tasks.",
+      "agents": [
+        "Feedback Classifier",
+        "Theme Analyst",
+        "Root-Cause Investigator",
+        "Response Writer",
+        "Recovery Planner"
+      ],
+      "mcp_tools": [
+        "sandbox_reviews",
+        "sandbox_crm",
+        "sandbox_tasks",
+        "sandbox_inbox"
+      ],
+      "human_gates": [
+        "publish response",
+        "offer compensation"
+      ],
+      "artifacts": [
+        "theme report",
+        "response drafts",
+        "recovery plan",
+        "operations alert"
+      ],
+      "data_policy": "synthetic",
+      "demo_mode": [
+        "replay",
+        "try"
+      ],
+      "priority": 8
+    },
+    {
+      "slug": "control-room",
+      "title": "Control Room",
+      "group": "workspace-sandbox",
+      "status": "interactive-sandbox",
+      "business_function": "Owner daily brief and decision cockpit",
+      "one_liner": "Combines sales, operations, cash, service, and workload signals into an anomaly-aware daily operating brief.",
+      "agents": [
+        "Metric Aggregator",
+        "Anomaly Detector",
+        "Forecaster",
+        "Decision Integrator",
+        "Briefing Editor"
+      ],
+      "mcp_tools": [
+        "sandbox_crm",
+        "sandbox_accounting",
+        "sandbox_calendar",
+        "sandbox_tasks",
+        "analytics_calc"
+      ],
+      "human_gates": [
+        "approve action plan",
+        "send executive brief"
+      ],
+      "artifacts": [
+        "daily brief",
+        "anomaly ledger",
+        "decision memo",
+        "action queue"
+      ],
+      "data_policy": "synthetic",
+      "demo_mode": [
+        "replay",
+        "try",
+        "rate-limited-live"
+      ],
+      "priority": 3
+    }
+  ]
+}
