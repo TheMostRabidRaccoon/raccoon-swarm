@@ -23,6 +23,7 @@ import swarm_webverify
 import swarm_prosody
 import swarm_dispatch
 import swarm_semantic
+import swarm_workspace
 
 try:
     import swarm_imagegen
@@ -185,6 +186,55 @@ def _dispatch_dispatch_queue_write(
     if notes:
         payload["notes"] = notes
     return swarm_dispatch.write_payload(payload, submitted_by=submitted_by)
+
+
+def _dispatch_workspace_status() -> dict:
+    return swarm_workspace.status()
+
+
+def _dispatch_workspace_list_files(owner: str, repo: str, path: str = "", ref: str = "") -> dict:
+    return swarm_workspace.list_files(owner=owner, repo=repo, path=path, ref=ref)
+
+
+def _dispatch_workspace_read(owner: str, repo: str, path: str, ref: str = "") -> dict:
+    return swarm_workspace.read_file(owner=owner, repo=repo, path=path, ref=ref)
+
+
+def _dispatch_workspace_open_branch(owner: str, repo: str, branch: str, from_branch: str = "") -> dict:
+    return swarm_workspace.open_branch(owner=owner, repo=repo, branch=branch, from_branch=from_branch)
+
+
+def _dispatch_workspace_put_file(
+    owner: str,
+    repo: str,
+    branch: str,
+    path: str,
+    content: str,
+    message: str,
+    sha: str = "",
+    model: str = "unknown",
+    session_id: str = "unknown",
+) -> dict:
+    return swarm_workspace.put_file(
+        owner=owner, repo=repo, branch=branch, path=path, content=content,
+        message=message, sha=sha, model=model, session_id=session_id,
+    )
+
+
+def _dispatch_workspace_open_pr(
+    owner: str,
+    repo: str,
+    head: str,
+    title: str,
+    body: str = "",
+    base: str = "",
+    model: str = "unknown",
+    session_id: str = "unknown",
+) -> dict:
+    return swarm_workspace.open_pr(
+        owner=owner, repo=repo, head=head, title=title, body=body, base=base,
+        model=model, session_id=session_id,
+    )
 
 
 def _dispatch_image_generate(
@@ -478,6 +528,127 @@ TOOL_DEFINITIONS: dict[str, dict[str, Any]] = {
         },
         "dispatch": _dispatch_prosody_analyze,
     },
+    "workspace_status": {
+        "description": (
+            "Report the swarm's repo-sandbox (Portfolio Workspace) config and "
+            "reachability: which repo(s) the swarm may touch, whether a token is "
+            "installed, and each repo's default branch — WITHOUT ever revealing "
+            "the token. The sandbox is a fenced yard: the swarm can open job "
+            "branches and DRAFT pull requests here, but can never write to the "
+            "base branch, merge, or reach any repo outside the allowlist (its "
+            "own source is deliberately not reachable). Call this first to "
+            "confirm the workspace is configured before opening a branch."
+        ),
+        "input_schema": {"type": "object", "properties": {}},
+        "dispatch": _dispatch_workspace_status,
+    },
+    "workspace_list_files": {
+        "description": (
+            "List files in a directory of an allowlisted sandbox repo at a given "
+            "ref (branch/tag/sha; defaults to the base branch). Returns path, "
+            "type, size, and blob sha for each entry."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "owner": {"type": "string", "description": "Repo owner, e.g. 'TheMostRabidRaccoon'."},
+                "repo": {"type": "string", "description": "Repo name, e.g. 'swarm-lab'. Must be on the workspace allowlist."},
+                "path": {"type": "string", "description": "Directory path within the repo. Empty for the root."},
+                "ref": {"type": "string", "description": "Branch/tag/sha to read from. Default: base branch."},
+            },
+            "required": ["owner", "repo"],
+        },
+        "dispatch": _dispatch_workspace_list_files,
+    },
+    "workspace_read": {
+        "description": (
+            "Read one file from an allowlisted sandbox repo at a given ref. "
+            "Returns the file content plus its blob sha — pass that sha back to "
+            "workspace_put_file when updating the file, for optimistic "
+            "concurrency (fails if someone else changed it first)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "owner": {"type": "string", "description": "Repo owner."},
+                "repo": {"type": "string", "description": "Repo name (allowlisted)."},
+                "path": {"type": "string", "description": "File path within the repo."},
+                "ref": {"type": "string", "description": "Branch/tag/sha. Default: base branch."},
+            },
+            "required": ["owner", "repo", "path"],
+        },
+        "dispatch": _dispatch_workspace_read,
+    },
+    "workspace_open_branch": {
+        "description": (
+            "Create a job branch (a lease) off the base branch in an allowlisted "
+            "sandbox repo. Branch names MUST be namespaced 'swarm/<slug>' so a "
+            "lease is never confused with — or able to be — the base branch. This "
+            "is where a build's commits and its draft PR live. You cannot create "
+            "or write the base branch (main/master); that is Conductor-only."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "owner": {"type": "string", "description": "Repo owner."},
+                "repo": {"type": "string", "description": "Repo name (allowlisted)."},
+                "branch": {"type": "string", "description": "Job branch name, must match 'swarm/<slug>' (lowercase)."},
+                "from_branch": {"type": "string", "description": "Branch to fork from. Default: base branch."},
+            },
+            "required": ["owner", "repo", "branch"],
+        },
+        "dispatch": _dispatch_workspace_open_branch,
+    },
+    "workspace_put_file": {
+        "description": (
+            "Create or update ONE file on a job branch (swarm/<slug>) of an "
+            "allowlisted sandbox repo, committing it. For an update, pass the "
+            "current blob 'sha' (from workspace_read) for optimistic concurrency. "
+            "Refuses the base branch and permanently-forbidden paths: workflow/CI "
+            "files (.github/workflows/**), secrets/.env files, deploy files "
+            "(Procfile, netlify.toml, Dockerfile, …), and dependency manifests/"
+            "lockfiles (package.json, requirements*.txt, pyproject.toml, …) — "
+            "those are Conductor-only. Every commit is stamped with model + "
+            "session provenance. For a multi-file change, call once per file."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "owner": {"type": "string", "description": "Repo owner."},
+                "repo": {"type": "string", "description": "Repo name (allowlisted)."},
+                "branch": {"type": "string", "description": "Job branch 'swarm/<slug>'. Never the base branch."},
+                "path": {"type": "string", "description": "File path within the repo, e.g. 'demos/latch/index.html'."},
+                "content": {"type": "string", "description": "Full new file content (UTF-8)."},
+                "message": {"type": "string", "description": "Commit message."},
+                "sha": {"type": "string", "description": "Current blob sha when updating an existing file (from workspace_read). Omit to create a new file."},
+            },
+            "required": ["owner", "repo", "branch", "path", "content", "message"],
+        },
+        "dispatch": _dispatch_workspace_put_file,
+    },
+    "workspace_open_pr": {
+        "description": (
+            "Open a DRAFT pull request from a job branch into the base branch of "
+            "an allowlisted sandbox repo. Always draft — there is NO merge "
+            "operation in this toolset; the Conductor reviews and merges. Use "
+            "this to hand a finished build back for review. The PR body is "
+            "stamped with model + session provenance. Announce the returned PR "
+            "url with EMAIL_CONDUCTOR [REVIEW]."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "owner": {"type": "string", "description": "Repo owner."},
+                "repo": {"type": "string", "description": "Repo name (allowlisted)."},
+                "head": {"type": "string", "description": "The job branch 'swarm/<slug>' containing the changes."},
+                "title": {"type": "string", "description": "PR title."},
+                "body": {"type": "string", "description": "PR description (what was built, the 10-second wow, how to review)."},
+                "base": {"type": "string", "description": "Branch to merge into. Default: base branch."},
+            },
+            "required": ["owner", "repo", "head", "title"],
+        },
+        "dispatch": _dispatch_workspace_open_pr,
+    },
     "image_generate": {
         "description": (
             "Generate an image from a text prompt via Gemini Imagen, Grok "
@@ -524,6 +695,11 @@ def dispatch(name: str, args: dict, calling_model: str = "unknown", session_id: 
             params["session_id"] = session_id
         if name == "dispatch_queue_write" and "model" not in params:
             params["model"] = calling_model
+        # Workspace write ops carry model + session provenance onto every
+        # commit / draft PR (Rung-0 attribution floor).
+        if name in ("workspace_put_file", "workspace_open_pr"):
+            params.setdefault("model", calling_model)
+            params.setdefault("session_id", session_id)
         result = fn(**params)
         # Audit the synchronous (tool-channel) filestore writes so the
         # write-audit log captures BOTH channels — tool here, directive in
