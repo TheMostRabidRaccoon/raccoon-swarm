@@ -1,0 +1,156 @@
+{
+  "demo_version": "1.0",
+  "slug": "latch",
+  "title": "Latch",
+  "subtitle": "Lead Intake & Qualification Workspace",
+  "status": "interactive-sandbox",
+  "data_policy": "synthetic",
+  "runtime_modes": [
+    "replay",
+    "try",
+    "rate-limited-live"
+  ],
+  "session": {
+    "ttl_minutes": 10,
+    "max_live_runs_per_ip_per_day": 3,
+    "reset_after_run": true
+  },
+  "agents": [
+    {
+      "id": "intake",
+      "label": "Intake",
+      "model_route": "fast",
+      "responsibility": "Normalize the inbound request and identify missing fields.",
+      "tools": [
+        "sandbox_inbox.read",
+        "sandbox_crm.search"
+      ]
+    },
+    {
+      "id": "context",
+      "label": "Context Resolver",
+      "model_route": "research",
+      "responsibility": "Resolve company and relationship context without inventing facts.",
+      "tools": [
+        "sandbox_crm.read",
+        "web_verify"
+      ]
+    },
+    {
+      "id": "qualifier",
+      "label": "Qualifier",
+      "model_route": "reasoning",
+      "responsibility": "Score fit against an explicit rubric and explain the score.",
+      "tools": [
+        "sandbox_crm.read",
+        "rubric.evaluate"
+      ]
+    },
+    {
+      "id": "writer",
+      "label": "Response Writer",
+      "model_route": "fast",
+      "responsibility": "Prepare a concise response and meeting options.",
+      "tools": [
+        "sandbox_calendar.availability",
+        "artifact.write"
+      ]
+    },
+    {
+      "id": "qa",
+      "label": "QA",
+      "model_route": "reasoning",
+      "responsibility": "Check factual support, tone, policy, and unresolved risk.",
+      "tools": [
+        "artifact.read",
+        "policy.check"
+      ]
+    }
+  ],
+  "workflow": [
+    {
+      "from": "intake",
+      "to": "context"
+    },
+    {
+      "from": "context",
+      "to": "qualifier"
+    },
+    {
+      "from": "qualifier",
+      "to": "writer",
+      "when": "score >= 60"
+    },
+    {
+      "from": "qualifier",
+      "to": "qa",
+      "when": "score < 60"
+    },
+    {
+      "from": "writer",
+      "to": "qa"
+    },
+    {
+      "from": "qa",
+      "to": "human_approval"
+    }
+  ],
+  "scenarios": [
+    {
+      "id": "strong-fit",
+      "label": "Strong-fit inbound lead",
+      "fixture": "fixtures/latch/strong-fit.json"
+    },
+    {
+      "id": "ambiguous",
+      "label": "Ambiguous request with missing budget",
+      "fixture": "fixtures/latch/ambiguous.json"
+    },
+    {
+      "id": "prompt-injection",
+      "label": "Malicious instructions hidden in message",
+      "fixture": "fixtures/latch/prompt-injection.json"
+    }
+  ],
+  "dashboard": {
+    "widgets": [
+      "lead_summary",
+      "qualification_score",
+      "missing_information",
+      "meeting_options",
+      "draft_response",
+      "agent_timeline",
+      "tool_ledger",
+      "artifact_drawer",
+      "approval_gate"
+    ]
+  },
+  "events": [
+    "run.started",
+    "agent.started",
+    "tool.called",
+    "tool.completed",
+    "artifact.created",
+    "approval.requested",
+    "decision.recorded",
+    "run.completed",
+    "run.failed"
+  ],
+  "safety": {
+    "external_writes": "simulate_only",
+    "tool_allowlist_enforced": true,
+    "cross_tenant_access": "deny",
+    "secrets_in_browser": false,
+    "code_execution": false,
+    "real_data": false,
+    "prompt_injection_fixture_required": true
+  },
+  "acceptance": [
+    "Replay completes without network access.",
+    "Try mode resets to a clean synthetic tenant.",
+    "Live mode never exposes a non-allowlisted tool.",
+    "No external message is sent without human approval.",
+    "Every claimed tool action appears in the tool ledger.",
+    "Desktop and mobile visual checks pass."
+  ]
+}
