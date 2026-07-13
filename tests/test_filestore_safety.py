@@ -119,7 +119,10 @@ def test_unindexed_files_safety_rules_match_list_files(storage):
 
 
 def test_filestore_list_dispatch_discloses_unindexed(storage):
-    import swarm_tools
+    # swarm_tools pulls the websearch/imagegen stack (requests, etc.) which
+    # bare CI doesn't install — same skip rule as test_write_audit.
+    import pytest
+    swarm_tools = pytest.importorskip("swarm_tools")
     rel = _plant_png(storage)
     out = swarm_tools._dispatch_filestore_list("artifacts")
     assert out["unindexed_files"] == [rel]
