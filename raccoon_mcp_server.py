@@ -72,8 +72,10 @@ mcp = FastMCP(
         "\n"
         "image_generate produces an image via Gemini Imagen, Grok Imagine, or "
         "OpenAI gpt-image-1 (falls back to dall-e-3). Daily cap (default 50) "
-        "shared across the swarm. Outputs persist to /artifacts/images/. "
-        "Use for figures, diagrams, visual artifacts.\n"
+        "shared across the swarm. Outputs persist to /artifacts/images/ but "
+        "are binary, so filestore_list/search report them only under "
+        "'unindexed_files' — trust this tool's success result, not an empty "
+        "text-file listing. Use for figures, diagrams, visual artifacts.\n"
         "\n"
         "web_search runs a public web query (Tavily by default; Google CSE "
         "available as a curated-allowlist alternative) and returns "
@@ -154,12 +156,18 @@ def filestore_read(path: str) -> dict:
 def filestore_list(directory: str = "") -> dict:
     """List files in the filestore.
 
+    Indexes TEXT files only (.md/.json/.txt/.log/.py). Binaries such as
+    generated images never appear in "files"; when present they are disclosed
+    under "unindexed_files" instead. An empty "files" list therefore does not
+    mean the directory is empty.
+
     Args:
         directory: subdirectory to list ("positions", "questions", etc.).
                    Empty string returns ALL files across all subdirectories.
 
     Returns:
-        {"directory": str, "files": [list of relative paths], "subdirs": [...]}
+        {"directory": str, "files": [list of relative paths], "subdirs": [...],
+         "unindexed_files": [...] (only when binaries exist here)}
     """
     if directory and not swarm_filestore.is_safe_subdir(directory):
         return {
@@ -168,12 +176,21 @@ def filestore_list(directory: str = "") -> dict:
             "files": [],
         }
     files = swarm_filestore.list_files(directory)
-    return {
+    out = {
         "directory": directory or "(all)",
         "files": files,
         "canonical_subdirs": list(swarm_filestore.SUBDIRS),
         "existing_subdirs": swarm_filestore.existing_subdirs(),
     }
+    unindexed = swarm_filestore.unindexed_files(directory)
+    if unindexed:
+        out["unindexed_files"] = unindexed
+        out["unindexed_note"] = (
+            "These binary files (images etc.) exist here but are not indexed — "
+            "filestore_search/read cannot see them. Images are served via "
+            "GET /artifacts/images."
+        )
+    return out
 
 
 # ============================================================

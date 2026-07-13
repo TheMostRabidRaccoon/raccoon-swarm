@@ -3473,14 +3473,27 @@ def get_pursuits():
 @app.route("/filestore", methods=["GET"])
 @require_auth
 def filestore_list():
-    """List files in the swarm filestore. Optional ?dir=positions to scope."""
+    """List files in the swarm filestore. Optional ?dir=positions to scope.
+
+    Text files only in "files"; binaries (images etc.) are disclosed under
+    "unindexed_files" so an empty listing is never mistaken for an empty dir.
+    """
     swarm_filestore.ensure_layout()
     rel_dir = request.args.get("dir", "")
-    return jsonify({
+    payload = {
         "files": swarm_filestore.list_files(rel_dir),
         "canonical_subdirs": list(swarm_filestore.SUBDIRS),
         "existing_subdirs": swarm_filestore.existing_subdirs(),
-    })
+    }
+    unindexed = swarm_filestore.unindexed_files(rel_dir)
+    if unindexed:
+        payload["unindexed_files"] = unindexed
+        payload["unindexed_note"] = (
+            "These binary files (images etc.) exist here but are not indexed — "
+            "filestore search/read cannot see them. Images are served via "
+            "GET /artifacts/images."
+        )
+    return jsonify(payload)
 
 
 @app.route("/filestore/read", methods=["GET"])

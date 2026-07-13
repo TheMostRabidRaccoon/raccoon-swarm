@@ -70,12 +70,21 @@ def _dispatch_filestore_list(directory: str = "") -> dict:
             "files": [],
         }
     files = swarm_filestore.list_files(directory)
-    return {
+    out = {
         "directory": directory or "(all)",
         "files": files,
         "canonical_subdirs": list(swarm_filestore.SUBDIRS),
         "existing_subdirs": swarm_filestore.existing_subdirs(),
     }
+    unindexed = swarm_filestore.unindexed_files(directory)
+    if unindexed:
+        out["unindexed_files"] = unindexed
+        out["unindexed_note"] = (
+            "These binary files (images etc.) exist here but are not indexed — "
+            "filestore_search/read cannot see them. Images are served via "
+            "GET /artifacts/images."
+        )
+    return out
 
 
 def _dispatch_filestore_write(path: str, content: str) -> dict:
@@ -307,7 +316,11 @@ TOOL_DEFINITIONS: dict[str, dict[str, Any]] = {
     "filestore_list": {
         "description": (
             "List files in the filestore. Empty directory lists all subdirs. "
-            "Use this to enumerate before searching when you don't know what's there."
+            "Use this to enumerate before searching when you don't know what's there. "
+            "Indexes TEXT files only (.md/.json/.txt/.log/.py) — binaries such as "
+            "generated images never appear in 'files'; when present they are "
+            "disclosed under 'unindexed_files' instead. An empty 'files' list "
+            "therefore does not mean the directory is empty."
         ),
         "input_schema": {
             "type": "object",
@@ -654,7 +667,10 @@ TOOL_DEFINITIONS: dict[str, dict[str, Any]] = {
             "Generate an image from a text prompt via Gemini Imagen, Grok "
             "Imagine, or OpenAI gpt-image-1. Use for figure production, "
             "diagrams, visual artifacts. Daily cap (default 50) shared "
-            "across the swarm. Outputs persist to /artifacts/images/."
+            "across the swarm. Outputs persist to /artifacts/images/ but are "
+            "binary, so filestore_list/search report them only under "
+            "'unindexed_files' — trust this tool's success result, not an "
+            "empty text-file listing."
         ),
         "input_schema": {
             "type": "object",

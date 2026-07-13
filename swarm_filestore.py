@@ -246,6 +246,35 @@ def list_files(rel_dir: str = "") -> list[str]:
     return out
 
 
+def unindexed_files(rel_dir: str = "") -> list[str]:
+    """Files the filestore holds but does NOT index (suffixes outside
+    _INDEXED_SUFFIXES — images and other binaries, e.g. imagegen PNGs).
+
+    Exists so the tool layer can disclose them instead of returning a silently
+    incomplete listing: a model that generates an image and then lists the
+    directory would otherwise see [] and conclude the file vanished (the
+    "checker is also blind" failure from the 2026-07-13 free-play run).
+    Same traversal and safety rules as list_files, inverted suffix filter.
+    """
+    root = _storage_root()
+    if not root.exists():
+        return []
+    if rel_dir:
+        rel = rel_dir.strip("/")
+        if not is_safe_subdir(rel):
+            return []
+        target = root / rel
+        if not target.exists():
+            return []
+    else:
+        target = root
+    out = []
+    for p in sorted(target.rglob("*")):
+        if p.is_file() and not p.name.startswith("_") and p.suffix not in _INDEXED_SUFFIXES:
+            out.append(str(p.relative_to(root)))
+    return out
+
+
 def zip_directory_bytes(rel_dir: str) -> "bytes | None":
     """Zip an entire filestore subtree (e.g. one joy run folder) into an
     in-memory archive for download. Returns None when the directory is unsafe,
