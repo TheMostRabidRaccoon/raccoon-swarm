@@ -28,7 +28,7 @@ import subprocess
 import tempfile
 import time
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import swarm_filestore
@@ -159,8 +159,13 @@ def run_code(
     allow_network: bool = False,
     persist: bool = True,
     model: str = "unknown",
+    ephemeral: bool = False,
 ) -> dict:
     """Execute Python code in a sandboxed subprocess.
+
+    ephemeral=True marks the run as a deliberate bit/joke/throwaway in its
+    manifest; compost_sweep() may later move such runs out of the archive.
+    Default False — honest runs are kept forever.
 
     Returns a dict with: stdout, stderr, exit_code, execution_time_ms,
     generated_files (relative paths in artifacts), artifact_path (the manifest),
@@ -260,6 +265,7 @@ def run_code(
             "model": model,
             "description": description,
             "run_id": run_id,
+            "ephemeral": ephemeral,
         }
 
         if persist:
@@ -275,6 +281,7 @@ def run_code(
                     timed_out=timed_out,
                     elapsed_ms=elapsed_ms,
                     generated_paths=generated,
+                    ephemeral=ephemeral,
                 )
                 # After persist, generated_files refers to artifact-relative paths
                 if generated:
@@ -305,6 +312,7 @@ def _persist_run(
     timed_out: bool,
     elapsed_ms: int,
     generated_paths: list[Path],
+    ephemeral: bool = False,
 ) -> None:
     swarm_filestore.ensure_layout()
     root = swarm_filestore._storage_root()
@@ -334,8 +342,84 @@ def _persist_run(
         "generated_files": [p.name for p in generated_paths],
         "stdout_size": len(stdout),
         "stderr_size": len(stderr),
+        "ephemeral": ephemeral,
     }
     (runs_dir / "manifest.json").write_text(json.dumps(manifest, indent=2))
+
+
+# ============================================================
+# Compost sweep — forgetting for runs that were born ephemeral
+# ============================================================
+
+COMPOST_DIRNAME = "_composted"
+DEFAULT_COMPOST_AFTER_DAYS = 7
+
+
+def compost_sweep(older_than_days: "int | None" = None, dry_run: bool = False) -> dict:
+    """Move ephemeral code runs older than N days into _composted/.
+
+    The janitor from the free-play "temperature-deaf archive" note (swarm-lab
+    PR #7): the archive keeps every run forever by default, so only runs whose
+    manifest says "ephemeral": true are ever touched. A missing, unreadable,
+    or age-less manifest means KEEP — every ambiguity fails toward memory.
+    The move is reversible: composted runs stay on disk under
+    artifacts/code-runs/_composted/, invisible to the filestore lanes
+    (underscore paths are internal) but recoverable by the Conductor.
+
+    N defaults to RRI_COMPOST_AFTER_DAYS (env), then 7.
+    """
+    if older_than_days is None:
+        try:
+            older_than_days = int(os.getenv("RRI_COMPOST_AFTER_DAYS", "") or DEFAULT_COMPOST_AFTER_DAYS)
+        except ValueError:
+            older_than_days = DEFAULT_COMPOST_AFTER_DAYS
+    cutoff = datetime.now() - timedelta(days=older_than_days)
+
+    root = swarm_filestore._storage_root()
+    runs_root = root / ARTIFACTS_SUBDIR / RUNS_PREFIX
+    swept: list[str] = []
+    kept_young: list[str] = []
+    errors: list[dict] = []
+    if not runs_root.exists():
+        return {"ok": True, "swept": swept, "kept_young": kept_young,
+                "errors": errors, "older_than_days": older_than_days,
+                "dry_run": dry_run}
+
+    compost_dir = runs_root / COMPOST_DIRNAME
+    for run_dir in sorted(runs_root.iterdir()):
+        if not run_dir.is_dir() or run_dir.name.startswith("_"):
+            continue
+        try:
+            manifest = json.loads((run_dir / "manifest.json").read_text())
+        except (OSError, ValueError):
+            continue  # no readable manifest -> keep, always
+        if manifest.get("ephemeral") is not True:
+            continue  # non-ephemeral runs are never touched
+        try:
+            born = datetime.fromisoformat(str(manifest.get("timestamp", "")))
+        except ValueError:
+            continue  # unparseable age -> keep (fail-safe)
+        if born > cutoff:
+            kept_young.append(run_dir.name)
+            continue
+        if dry_run:
+            swept.append(run_dir.name)
+            continue
+        try:
+            compost_dir.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(run_dir), str(compost_dir / run_dir.name))
+            swept.append(run_dir.name)
+        except OSError as e:
+            errors.append({"run": run_dir.name, "error": str(e)})
+
+    if swept and not dry_run:
+        logger.info(
+            f"compost_sweep: composted {len(swept)} ephemeral run(s) older "
+            f"than {older_than_days}d -> {RUNS_PREFIX}/{COMPOST_DIRNAME}/"
+        )
+    return {"ok": not errors, "swept": swept, "kept_young": kept_young,
+            "errors": errors, "older_than_days": older_than_days,
+            "dry_run": dry_run}
 
 
 # ============================================================

@@ -109,6 +109,7 @@ def _dispatch_code_exec(
     timeout: int = 60,
     allow_network: bool = False,
     model: str = "unknown",
+    ephemeral: bool = False,
 ) -> dict:
     return swarm_codeexec.run_code(
         code=code,
@@ -116,6 +117,7 @@ def _dispatch_code_exec(
         timeout=timeout,
         allow_network=allow_network,
         model=model,
+        ephemeral=ephemeral,
         persist=True,
     )
 
@@ -379,7 +381,9 @@ TOOL_DEFINITIONS: dict[str, dict[str, Any]] = {
             "60s timeout default (max 120s), 1GB memory cap, network disabled. "
             "numpy/pandas/matplotlib/scipy preinstalled. Use this to verify "
             "quantitative claims, run calculations, generate analysis files. "
-            "Outputs auto-persist to /artifacts/code-runs/."
+            "Outputs auto-persist to /artifacts/code-runs/. If the run is a "
+            "deliberate bit, joke, or throwaway, pass ephemeral=true so the "
+            "janitor can compost it later — everything else is kept forever."
         ),
         "input_schema": {
             "type": "object",
@@ -388,6 +392,7 @@ TOOL_DEFINITIONS: dict[str, dict[str, Any]] = {
                 "description": {"type": "string", "description": "Brief description of what this run does (for audit log)."},
                 "timeout": {"type": "integer", "description": "Max runtime seconds (default 60, hard max 120)."},
                 "allow_network": {"type": "boolean", "description": "Opt-in network. Default false. Don't enable without an explicit reason."},
+                "ephemeral": {"type": "boolean", "description": "Mark this run as a deliberate bit/joke/throwaway. Default false. Ephemeral runs are composted (moved out of the archive, recoverable by the Conductor) after ~7 days; honest runs are never touched."},
             },
             "required": ["code"],
         },

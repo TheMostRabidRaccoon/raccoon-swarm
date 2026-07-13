@@ -256,6 +256,7 @@ def code_exec(
     timeout: int = 60,
     allow_network: bool = False,
     model: str = "unknown",
+    ephemeral: bool = False,
 ) -> dict:
     """Execute Python code in a sandboxed subprocess and capture results.
 
@@ -279,6 +280,10 @@ def code_exec(
                        unless you have an explicit reason and the Conductor
                        knows.
         model: optional name of the model running this code (for audit log).
+        ephemeral: mark this run as a deliberate bit/joke/throwaway. Default
+                   False. Ephemeral runs are composted (moved out of the
+                   archive, recoverable by the Conductor) after ~7 days;
+                   honest runs are never touched.
 
     Returns:
         {
@@ -299,6 +304,7 @@ def code_exec(
         timeout=timeout,
         allow_network=allow_network,
         model=model,
+        ephemeral=ephemeral,
         persist=True,
     )
 
