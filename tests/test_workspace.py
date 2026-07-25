@@ -73,7 +73,15 @@ def test_deploy_files_forbidden():
 
 
 def test_secret_and_env_files_forbidden():
-    for p in (".env", "demos/x/.env", "config/secret_keys.txt", "creds/credentials.json"):
+    for p in (
+        ".env",
+        ".env.local",
+        "demos/x/.env",
+        "demos/x/.env.production",
+        "demos/x/.env/config.json",   # .env as a directory segment
+        "config/secret_keys.txt",
+        "creds/credentials.json",
+    ):
         assert not ws.check_write_path(p)[0], p
 
 

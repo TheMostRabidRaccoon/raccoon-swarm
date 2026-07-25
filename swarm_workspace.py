@@ -163,6 +163,10 @@ def check_write_path(path: str) -> "tuple[bool, str | None]":
     # requirements.txt / requirements-dev.txt / requirements_prod.txt, etc.
     if base.startswith("requirements") and base.endswith(".txt"):
         return False, f"path {path!r} is a dependency manifest — Conductor-only"
+    # .env anywhere in the path, including as a DIRECTORY segment
+    # (sandbox/.env/config slips past a basename-suffix check).
+    if any(part == ".env" or part.startswith(".env.") for part in low.split("/")):
+        return False, f"path {path!r} looks like a secret/env file — forbidden"
     if any(base.endswith(sfx) for sfx in _FORBIDDEN_SUFFIXES):
         return False, f"path {path!r} looks like a secret/env file — forbidden"
     if any(s in base for s in _FORBIDDEN_NAME_SUBSTR):
