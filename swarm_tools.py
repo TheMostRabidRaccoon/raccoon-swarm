@@ -70,17 +70,28 @@ def _dispatch_filestore_list(directory: str = "") -> dict:
             "files": [],
         }
     files = swarm_filestore.list_files(directory)
-    images = swarm_filestore.list_images(directory)
-    return {
+    out = {
         "directory": directory or "(all)",
         "files": files,
-        # Images are listed with byte sizes but are not text-readable. An
-        # empty `files` with a populated `images` means the directory holds
-        # binary artifacts -- NOT that generation failed.
-        "images": images,
         "canonical_subdirs": list(swarm_filestore.SUBDIRS),
         "existing_subdirs": swarm_filestore.existing_subdirs(),
     }
+    # Images get a dedicated field with byte sizes (they also appear among
+    # unindexed_files below). An empty `files` with a populated `images`
+    # means the directory holds binary artifacts -- NOT that generation
+    # failed (the Session 142 false conviction).
+    images = swarm_filestore.list_images(directory)
+    if images:
+        out["images"] = images
+    unindexed = swarm_filestore.unindexed_files(directory)
+    if unindexed:
+        out["unindexed_files"] = unindexed
+        out["unindexed_note"] = (
+            "These binary files (images etc.) exist here but are not indexed — "
+            "filestore_search/read cannot see them. Images are served via "
+            "GET /artifacts/images."
+        )
+    return out
 
 
 def _dispatch_filestore_write(path: str, content: str) -> dict:
@@ -105,6 +116,7 @@ def _dispatch_code_exec(
     timeout: int = 60,
     allow_network: bool = False,
     model: str = "unknown",
+    ephemeral: bool = False,
 ) -> dict:
     return swarm_codeexec.run_code(
         code=code,
@@ -112,6 +124,7 @@ def _dispatch_code_exec(
         timeout=timeout,
         allow_network=allow_network,
         model=model,
+        ephemeral=ephemeral,
         persist=True,
     )
 
@@ -313,9 +326,12 @@ TOOL_DEFINITIONS: dict[str, dict[str, Any]] = {
         "description": (
             "List files in the filestore. Empty directory lists all subdirs. "
             "Use this to enumerate before searching when you don't know what's there. "
-            "Text files appear in `files`; images (png/jpg/webp/...) appear in "
-            "`images` with byte sizes. Images exist on disk and are served via "
-            "the HTTP image catalog even though they cannot be read as text."
+            "Indexes TEXT files only (.md/.json/.txt/.log/.py) — binaries such as "
+            "generated images never appear in 'files'. Images (png/jpg/webp/...) "
+            "are disclosed under 'images' with byte sizes; any other binaries "
+            "under 'unindexed_files'. An empty 'files' list therefore does not "
+            "mean the directory is empty — images exist on disk and are served "
+            "via the HTTP image catalog even though they cannot be read as text."
         ),
         "input_schema": {
             "type": "object",
@@ -381,7 +397,10 @@ TOOL_DEFINITIONS: dict[str, dict[str, Any]] = {
             "working directory are persisted (to /artifacts/code-runs/); "
             "absolute-path writes are lost with the sandbox. "
             "numpy/pandas/matplotlib/scipy preinstalled. Use this to verify "
-            "quantitative claims, run calculations, generate analysis files."
+            "quantitative claims, run calculations, generate analysis files. "
+            "If the run is a deliberate bit, joke, or throwaway, pass "
+            "ephemeral=true so the janitor can compost it later — everything "
+            "else is kept forever."
         ),
         "input_schema": {
             "type": "object",
@@ -390,6 +409,7 @@ TOOL_DEFINITIONS: dict[str, dict[str, Any]] = {
                 "description": {"type": "string", "description": "Brief description of what this run does (for audit log)."},
                 "timeout": {"type": "integer", "description": "Max runtime seconds (default 60, hard max 120)."},
                 "allow_network": {"type": "boolean", "description": "Opt-in network. Default false. Don't enable without an explicit reason."},
+                "ephemeral": {"type": "boolean", "description": "Mark this run as a deliberate bit/joke/throwaway. Default false. Ephemeral runs are composted (moved out of the archive, recoverable by the Conductor) after ~7 days; honest runs are never touched."},
             },
             "required": ["code"],
         },
@@ -669,7 +689,10 @@ TOOL_DEFINITIONS: dict[str, dict[str, Any]] = {
             "Generate an image from a text prompt via Gemini Imagen, Grok "
             "Imagine, or OpenAI gpt-image-1. Use for figure production, "
             "diagrams, visual artifacts. Daily cap (default 50) shared "
-            "across the swarm. Outputs persist to /artifacts/images/."
+            "across the swarm. Outputs persist to /artifacts/images/ but are "
+            "binary, so filestore_list/search report them only under "
+            "'unindexed_files' — trust this tool's success result, not an "
+            "empty text-file listing."
         ),
         "input_schema": {
             "type": "object",

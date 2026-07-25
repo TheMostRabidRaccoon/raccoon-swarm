@@ -103,6 +103,15 @@ _SAFE_PATH_RE = re.compile(r"^/?([a-z][a-z0-9_-]*)/[A-Za-z0-9_\-./]+\.(md|json|t
 _INDEXED_SUFFIXES = (".md", ".json", ".txt", ".log", ".py")
 
 
+def _is_internal(p: Path, root: Path) -> bool:
+    """Underscore prefix marks a path internal at ANY level — file or
+    directory. Models can't create these (_SAFE_PATH_RE requires letter-start
+    segments), so anything under an _dir was placed by infrastructure — e.g.
+    the compost sweep's artifacts/code-runs/_composted/ — and stays out of
+    every listing/search lane while remaining on disk for the Conductor."""
+    return any(seg.startswith("_") for seg in p.relative_to(root).parts)
+
+
 def _resolve_safe(rel_path: str) -> Path | None:
     """Resolve a relative swarm path safely. Returns None if unsafe."""
     if not _SAFE_PATH_RE.match(rel_path):
@@ -241,7 +250,36 @@ def list_files(rel_dir: str = "") -> list[str]:
         target = root
     out = []
     for p in sorted(target.rglob("*")):
-        if p.is_file() and not p.name.startswith("_") and p.suffix in _INDEXED_SUFFIXES:
+        if p.is_file() and not _is_internal(p, root) and p.suffix in _INDEXED_SUFFIXES:
+            out.append(str(p.relative_to(root)))
+    return out
+
+
+def unindexed_files(rel_dir: str = "") -> list[str]:
+    """Files the filestore holds but does NOT index (suffixes outside
+    _INDEXED_SUFFIXES — images and other binaries, e.g. imagegen PNGs).
+
+    Exists so the tool layer can disclose them instead of returning a silently
+    incomplete listing: a model that generates an image and then lists the
+    directory would otherwise see [] and conclude the file vanished (the
+    "checker is also blind" failure from the 2026-07-13 free-play run).
+    Same traversal and safety rules as list_files, inverted suffix filter.
+    """
+    root = _storage_root()
+    if not root.exists():
+        return []
+    if rel_dir:
+        rel = rel_dir.strip("/")
+        if not is_safe_subdir(rel):
+            return []
+        target = root / rel
+        if not target.exists():
+            return []
+    else:
+        target = root
+    out = []
+    for p in sorted(target.rglob("*")):
+        if p.is_file() and not _is_internal(p, root) and p.suffix not in _INDEXED_SUFFIXES:
             out.append(str(p.relative_to(root)))
     return out
 
@@ -344,7 +382,7 @@ def search_files(query: str, max_results: int = 5, subdir: str = "") -> list[dic
     sub = subdir.strip("/")
     scored = []
     for path in root.rglob("*"):
-        if not path.is_file() or path.name.startswith("_"):
+        if not path.is_file() or _is_internal(path, root):
             continue
         if path.suffix not in _INDEXED_SUFFIXES:
             continue
@@ -834,7 +872,7 @@ def recent_files_context(max_per_dir: int = 3) -> str:
         if not target.exists():
             continue
         files = sorted(
-            (p for p in target.rglob("*") if p.is_file() and not p.name.startswith("_") and p.suffix in _INDEXED_SUFFIXES),
+            (p for p in target.rglob("*") if p.is_file() and not _is_internal(p, root) and p.suffix in _INDEXED_SUFFIXES),
             key=lambda p: p.stat().st_mtime,
             reverse=True,
         )[:max_per_dir]
