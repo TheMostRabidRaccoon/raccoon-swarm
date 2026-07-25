@@ -70,9 +70,14 @@ def _dispatch_filestore_list(directory: str = "") -> dict:
             "files": [],
         }
     files = swarm_filestore.list_files(directory)
+    images = swarm_filestore.list_images(directory)
     return {
         "directory": directory or "(all)",
         "files": files,
+        # Images are listed with byte sizes but are not text-readable. An
+        # empty `files` with a populated `images` means the directory holds
+        # binary artifacts -- NOT that generation failed.
+        "images": images,
         "canonical_subdirs": list(swarm_filestore.SUBDIRS),
         "existing_subdirs": swarm_filestore.existing_subdirs(),
     }
@@ -307,7 +312,10 @@ TOOL_DEFINITIONS: dict[str, dict[str, Any]] = {
     "filestore_list": {
         "description": (
             "List files in the filestore. Empty directory lists all subdirs. "
-            "Use this to enumerate before searching when you don't know what's there."
+            "Use this to enumerate before searching when you don't know what's there. "
+            "Text files appear in `files`; images (png/jpg/webp/...) appear in "
+            "`images` with byte sizes. Images exist on disk and are served via "
+            "the HTTP image catalog even though they cannot be read as text."
         ),
         "input_schema": {
             "type": "object",
@@ -363,10 +371,17 @@ TOOL_DEFINITIONS: dict[str, dict[str, Any]] = {
     "code_exec": {
         "description": (
             "Execute Python code in a sandboxed subprocess and capture results. "
-            "60s timeout default (max 120s), 1GB memory cap, network disabled. "
+            "60s timeout default (max 120s), 1GB memory cap. Network isolation "
+            "is best-effort (kernel-dependent) -- treat network as unavailable "
+            "and do not rely on isolation for safety. FILESYSTEM CONTRACT: the "
+            "process starts in an EMPTY ephemeral directory. You CANNOT read "
+            "repo files, the filestore, or /artifacts/... paths from code -- "
+            "fetch inputs via filestore tools first and inline the data into "
+            "your code string. Only files you create via RELATIVE paths in the "
+            "working directory are persisted (to /artifacts/code-runs/); "
+            "absolute-path writes are lost with the sandbox. "
             "numpy/pandas/matplotlib/scipy preinstalled. Use this to verify "
-            "quantitative claims, run calculations, generate analysis files. "
-            "Outputs auto-persist to /artifacts/code-runs/."
+            "quantitative claims, run calculations, generate analysis files."
         ),
         "input_schema": {
             "type": "object",

@@ -35,6 +35,7 @@ from pathlib import Path
 from typing import Optional
 
 import swarm_corpus
+import swarm_filestore
 import swarm_gate
 
 import swarm_orchestrator
@@ -61,9 +62,43 @@ _EMAIL_TAG_RE = re.compile(
     r"\[EMAIL_CONDUCTOR:\s*\[(BLOCKER|REVIEW|FLAG)\]\s*([^\]\n]+?)\]"
 )
 
-# Provider-side rate-limit indicators visible inside model output text.
+# Provider-side rate-limit indicators. A model counts as rate-limited only
+# when its own call FAILED — the whole output is an "[<Label> error: ...]"
+# marker (see call_gpt/call_grok/... in raccoon_swarm_server.py) containing one
+# of these hints. Prose that merely mentions another model's 429 never counts.
 # (Truncations are detected separately via swarm_orchestrator.)
-_RATE_LIMIT_HINTS = ("429", "rate_limit", "rate limit", "ratelimit", "TooManyRequests")
+_RATE_LIMIT_HINTS = ("429", "rate_limit", "rate limit", "ratelimit", "toomanyrequests")
+_ERROR_MARKER_RE = re.compile(r"^\s*\[[\w-]+ (?:error|Error):")
+
+
+# Header line of every emails.log entry (see swarm_mail): an ISO timestamp,
+# the sending model, and the session id. Bodies are indented free text and a
+# body line can quote anything, so the timestamp anchor is what keeps this
+# from matching prose.
+_EMAIL_LOG_HEADER_RE = re.compile(
+    r"^\d{4}-\d{2}-\d{2}T\S+ \| model=(\S+) \| session=(\S+)\s*$",
+    re.MULTILINE,
+)
+
+
+def _count_logged_sends(session_id: str) -> Optional[int]:
+    """Count model emails recorded in /logs/emails.log for this session.
+
+    This is the only counter that covers ROUND-level sends as well as
+    synthesis-stage ones (mail_synth only sees the synthesis pass).
+    Excludes model=operational entries -- gazettes are system sends, not
+    model directives. Returns None when the log is missing/unreadable so
+    callers can fall back instead of mistaking "unknown" for zero."""
+    try:
+        raw = swarm_filestore.read_file("logs/emails.log")
+    except Exception:
+        return None
+    if raw is None:
+        return None
+    return sum(
+        1 for m in _EMAIL_LOG_HEADER_RE.finditer(raw)
+        if m.group(2) == session_id and m.group(1) != "operational"
+    )
 
 
 def _parse_audit_counts(synthesis: str) -> Optional[dict]:
@@ -127,10 +162,11 @@ def _detect_rate_limits(round_results: dict) -> list[str]:
     for model, output in round_results.items():
         if model == "_meta" or not isinstance(output, str):
             continue
-        for hint in _RATE_LIMIT_HINTS:
-            if hint in output:
-                hits.append(model)
-                break
+        if not _ERROR_MARKER_RE.match(output):
+            continue
+        lowered = output.lower()
+        if any(hint in lowered for hint in _RATE_LIMIT_HINTS):
+            hits.append(model)
     return hits
 
 
@@ -159,6 +195,27 @@ def build_digest(
     fs_rejected = (fs_synth or {}).get("rejected", []) or []
 
     counts = _parse_audit_counts(synthesis or "")
+
+    # Ground-truth the self-reported email count. Session 142 claimed
+    # emails_sent: 4 while the mail log recorded 0 -- [EMAIL_CONDUCTOR]
+    # directives appearing in a transcript are intentions, not sends. The
+    # mail log (mail_synth["sent"]) is the only counter that means "handed
+    # to swarm_mail and logged", so it wins; the claimed number is kept
+    # alongside and the mismatch is surfaced in the digest.
+    if counts is not None:
+        logged = _count_logged_sends(session_id)
+        # emails.log is the full ground truth (round-level + synthesis sends);
+        # mail_synth only sees the synthesis pass. Fall back to mail_synth
+        # when the log is unreadable rather than treating unknown as zero.
+        actual_sent = logged if logged is not None else len(mail_sent)
+        counts["emails_sent_claimed"] = counts["emails_sent"]
+        if counts["emails_sent"] != actual_sent:
+            counts["emails_sent"] = actual_sent
+            counts["gap"] = counts["triggers_identified"] - actual_sent
+            counts["discrepancy"] = (
+                f"synthesis claimed {counts['emails_sent_claimed']} email(s) "
+                f"sent; the mail log recorded {actual_sent}"
+            )
 
     # Tier-tagged items found across the synthesis + round transcript, regardless
     # of whether they became [EMAIL_CONDUCTOR] directives. This is what lets the
@@ -448,6 +505,9 @@ def format_digest_email(digest: dict) -> tuple[str, str]:
             f"- Audit: triggers_identified={counts['triggers_identified']}, "
             f"emails_sent={counts['emails_sent']}, gap={counts['gap']}"
         )
+        if counts.get("discrepancy"):
+            owed.append(f"  - **AUDIT MISCOUNT: {counts['discrepancy']} "
+                        f"(counts above use the mail log)**")
         if counts["gap"] > 0:
             owed.append(f"  - **{counts['gap']} email trigger(s) identified but not sent**")
     else:

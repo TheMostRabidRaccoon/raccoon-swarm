@@ -246,6 +246,40 @@ def list_files(rel_dir: str = "") -> list[str]:
     return out
 
 
+_IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg")
+
+
+def list_images(rel_dir: str = "") -> list[dict]:
+    """List image files (path + byte size) in the filestore.
+
+    Images live outside the text lanes (_INDEXED_SUFFIXES): they cannot be
+    read or searched as text. But they must still be VISIBLE in listings --
+    when list_files returns nothing for a directory full of PNGs, models
+    conclude image generation failed and convict a working pipeline (the
+    Session 142 verification-blind false diagnosis)."""
+    root = _storage_root()
+    if not root.exists():
+        return []
+    if rel_dir:
+        rel = rel_dir.strip("/")
+        if not is_safe_subdir(rel):
+            return []
+        target = root / rel
+        if not target.exists():
+            return []
+    else:
+        target = root
+    out = []
+    for p in sorted(target.rglob("*")):
+        if p.is_file() and not p.name.startswith("_") and p.suffix.lower() in _IMAGE_SUFFIXES:
+            try:
+                size = p.stat().st_size
+            except OSError:
+                continue
+            out.append({"path": str(p.relative_to(root)), "bytes": size})
+    return out
+
+
 def zip_directory_bytes(rel_dir: str) -> "bytes | None":
     """Zip an entire filestore subtree (e.g. one joy run folder) into an
     in-memory archive for download. Returns None when the directory is unsafe,

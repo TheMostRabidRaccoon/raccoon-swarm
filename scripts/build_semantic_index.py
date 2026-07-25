@@ -34,7 +34,7 @@ if str(REPO_ROOT) not in sys.path:
 # was never read. Re-running the script via os.execv preserves stdout,
 # argv, and exit code semantics.
 _VENV_PY = REPO_ROOT / "venv" / "bin" / "python3"
-if _VENV_PY.exists() and Path(sys.executable).resolve() != _VENV_PY.resolve():
+if _VENV_PY.exists() and Path(sys.prefix).resolve() != (REPO_ROOT / "venv").resolve():
     os.execv(str(_VENV_PY), [str(_VENV_PY), str(Path(__file__).resolve()), *sys.argv[1:]])
 
 # Load .env from the repo root so OPENAI_API_KEY (and friends) are present

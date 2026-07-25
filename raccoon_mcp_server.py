@@ -1,5 +1,13 @@
 """Raccoon Swarm MCP Server — exposes the swarm's filestore as MCP tools.
 
+STATUS: LEGACY / INACTIVE (2026-07-24 audit). Nothing runs or imports this
+server — no systemd unit, process, cron entry, or code reference. The swarm
+uses the native swarm_tools.TOOL_DEFINITIONS registry (18 tools), which is
+canonical; this file exposes an out-of-parity subset (11) and its default
+port (5050) collides with prosody.service. If an external MCP client ever
+needs it, regenerate it as a thin adapter over swarm_tools.TOOL_DEFINITIONS
+on a distinct authenticated port instead of maintaining two registries.
+
 Wraps the existing swarm_filestore module as Model Context Protocol tools so
 external MCP clients (Claude Desktop, Anthropic API tool_use, mcp inspector,
 etc.) can read/write/search the swarm's persistent memory directly.
