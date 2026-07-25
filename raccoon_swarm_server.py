@@ -3158,6 +3158,11 @@ def start_loop():
                     preamble_parts.append(filestore_recent)
                 if drive_index and round_num == 1:
                     preamble_parts.append(drive_index)
+                if round_num == 1:
+                    # The swarm should always know which commit it is running
+                    # (Session 133's merged-vs-deployed clause; the July 13
+                    # deploy gap made the missing upstream leg lethal).
+                    preamble_parts.append(swarm_version.session_banner())
                 if filestore_verify_context:
                     preamble_parts.append(filestore_verify_context)
                 if filestore_query_context:
@@ -3746,6 +3751,11 @@ def run_headless_session(query, source, num_rounds=3, active_loop_models=None, s
                     preamble_parts.append(filestore_recent)
                 if drive_index and round_num == 1:
                     preamble_parts.append(drive_index)
+                if round_num == 1:
+                    # The swarm should always know which commit it is running
+                    # (Session 133's merged-vs-deployed clause; the July 13
+                    # deploy gap made the missing upstream leg lethal).
+                    preamble_parts.append(swarm_version.session_banner())
                 if filestore_verify_context:
                     preamble_parts.append(filestore_verify_context)
                 if filestore_query_context:

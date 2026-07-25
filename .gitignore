@@ -55,3 +55,4 @@ swarm/
 .env.bak
 .env.save
 .env.*
+.deploy.lock
