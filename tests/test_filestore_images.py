@@ -6,8 +6,9 @@ so the swarm concluded image generation had failed — twice (July 4 and
 July 13). Images must be visible in listings (with byte sizes) even though
 they stay outside the text read/search/zip lanes.
 """
+import pytest
+
 import swarm_filestore as fs
-import swarm_tools
 
 
 def _put_png(rel_path: str, n_bytes: int = 64) -> None:
@@ -48,6 +49,8 @@ def test_list_images_skips_underscore_and_unsafe_dirs(storage):
 def test_filestore_list_tool_reports_images_field(storage):
     """The dispatch result must show images even when `files` is empty —
     the exact shape that produced the false 'pipeline broken' conviction."""
+    # swarm_tools pulls the web stack (requests); CI is stdlib-only by design.
+    swarm_tools = pytest.importorskip("swarm_tools")
     _put_png("artifacts/images/kyle-tie.png", 100)
 
     out = swarm_tools._dispatch_filestore_list("artifacts/images")

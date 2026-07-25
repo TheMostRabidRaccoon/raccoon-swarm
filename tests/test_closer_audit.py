@@ -12,8 +12,13 @@ Regression tests for two Session 141/142 audit defects:
    The mail log (emails.log) is the ground truth and covers round-level
    sends that mail_synth (synthesis-stage only) never sees.
 """
-import swarm_closer as closer
+import pytest
+
 import swarm_filestore as fs
+
+# swarm_closer's import chain (corpus/gate/orchestrator) needs the full model
+# stack; CI is stdlib-only by design, so these run on the provisioned server.
+closer = pytest.importorskip("swarm_closer")
 
 SYNTH_CLAIMING_4 = "6. COUNTS\ntriggers_identified: 4\nemails_sent: 4\ngap: 0"
 
