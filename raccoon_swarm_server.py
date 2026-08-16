@@ -3,12 +3,14 @@
 
 The Flask/model/tool plumbing lives in :mod:`swarm_runtime`. Prompt ontology is
 kept separate in :mod:`swarm_ecology`, memory-selection semantics live in
-:mod:`swarm_memory_policy`, and provider model/version choices live in
-:mod:`swarm_model_config`.
+:mod:`swarm_memory_policy`, provider model/version choices live in
+:mod:`swarm_model_config`, and :mod:`swarm_source` exposes the deployed checkout
+as a read-only self-observation surface.
 
 This separation is deliberate: changing what "Backbone", "Council", or
-"Conductor" means should not require editing transport machinery, and upgrading
-a provider model should not rewrite a seat's cultural identity.
+"Conductor" means should not require editing transport machinery, upgrading a
+provider model should not rewrite a seat's cultural identity, and observing source
+should not imply a production mutation route.
 """
 from __future__ import annotations
 
@@ -17,6 +19,7 @@ import os
 import swarm_ecology as ecology
 import swarm_memory_policy as memory_policy
 import swarm_model_config as model_config
+import swarm_source
 import swarm_runtime as runtime
 
 
@@ -96,6 +99,55 @@ runtime.PLAY_GPT = ecology.system_prompt("gpt", "PLAY")
 runtime.PLAY_GROK = ecology.system_prompt("grok", "PLAY")
 runtime.PLAY_GEMINI = ecology.system_prompt("gemini", "PLAY")
 runtime.PLAY_PERPLEXITY = ecology.system_prompt("perplexity", "PLAY")
+
+
+# ---------------------------------------------------------------------------
+# Source self-observation + routing-first tool semantics.
+# ---------------------------------------------------------------------------
+# The live provider converters read TOOL_DEFINITIONS at call time, so adding the
+# source tools here immediately exposes them to every native-tool seat without
+# expanding the fenced GitHub workspace token.
+runtime.swarm_tools.TOOL_DEFINITIONS.update(swarm_source.tool_definitions())
+
+# Several legacy tool descriptions encoded local interface boundaries as if they
+# were participant incapabilities or social jurisdictions. Keep the underlying
+# hard boundaries; describe them at the correct level.
+if "code_exec" in runtime.swarm_tools.TOOL_DEFINITIONS:
+    runtime.swarm_tools.TOOL_DEFINITIONS["code_exec"]["description"] = (
+        "Execute Python code in an empty ephemeral execution sandbox and capture results. "
+        "The repo source, persistent filestore, and prior artifacts are not mounted on this "
+        "execution surface; obtain source through source_* tools and memory/artifacts through "
+        "filestore_* tools, then pass the relevant data into the code. Relative files created "
+        "during the run can be persisted as code-run artifacts. This boundary describes the "
+        "sandbox surface, not the participant's ability to reason about source or stored data."
+    )
+
+if "workspace_status" in runtime.swarm_tools.TOOL_DEFINITIONS:
+    runtime.swarm_tools.TOOL_DEFINITIONS["workspace_status"]["description"] = (
+        "Report the fenced GitHub construction surface: configured sandbox repo(s), reachability, "
+        "and base branch, without exposing credentials. This surface provides job branches and "
+        "draft-PR handoff in allowlisted sandbox repos. Production-source observation is available "
+        "separately through source_*; consequential integration routes through review rather than "
+        "through this sandbox write surface."
+    )
+
+if "workspace_open_pr" in runtime.swarm_tools.TOOL_DEFINITIONS:
+    runtime.swarm_tools.TOOL_DEFINITIONS["workspace_open_pr"]["description"] = (
+        "Open a DRAFT pull request from a job branch into the base branch of an allowlisted "
+        "sandbox repo. This is the construction-to-review handoff: the returned PR is a reviewable "
+        "artifact; integration into a consequential environment occurs on a separate reviewed "
+        "route. The PR body is stamped with model + session provenance."
+    )
+
+if "dispatch_queue_write" in runtime.swarm_tools.TOOL_DEFINITIONS:
+    runtime.swarm_tools.TOOL_DEFINITIONS["dispatch_queue_write"]["description"] = (
+        "Queue a deterministic scripted-episode production job (TTS + frames + ffmpeg -> MP4). "
+        "Use when the current work has actually reached the production-ready scripted-episode "
+        "state and the required script structure is present. Eligibility comes from the state of "
+        "the artifact and its prerequisites, not from a seat identity or permanent owner role. "
+        "The runner performs the production pipeline and reports completion/failure through the "
+        "configured callback route."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -192,8 +244,8 @@ if hasattr(runtime, "COUNCIL_CHARACTERS") and "GPT" in runtime.COUNCIL_CHARACTER
     })
 
 
-# Add live model metadata to /config without changing the original runtime route
-# contract. The UI can display it later; tests/canaries can inspect it now.
+# Add live model/source metadata to /config without changing the original runtime
+# route contract. The UI can display it later; tests/canaries can inspect it now.
 _original_config = runtime.config
 
 
@@ -202,6 +254,7 @@ def config():
     try:
         payload = response.get_json()
         payload["seat_models"] = model_config.SEAT_MODELS
+        payload["source_observation"] = swarm_source.status()
         return runtime.jsonify(payload)
     except Exception:
         return response
@@ -229,5 +282,6 @@ if __name__ == "__main__":
     for seat, cfg in model_config.SEAT_MODELS.items():
         effort = f" / {cfg['effort']}" if cfg.get("effort") else ""
         print(f"  {seat}: {cfg['model']}{effort}")
+    print(f"Source observation: {swarm_source.status().get('source_sha') or 'SHA unavailable'}")
     print(f"Local: http://localhost:{port}\n")
     app.run(host="0.0.0.0", port=port, debug=False, threaded=True)
