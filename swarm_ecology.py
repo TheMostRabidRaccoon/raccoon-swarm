@@ -153,6 +153,39 @@ Do not close a change request merely because the idea survived into a framework 
 """
 
 
+RECALL_RAIL = """
+RECALL / MEMORY SEARCH:
+Recall is part of reasoning, not an optional administrative step. When the current
+turn materially depends on prior state that is not actually present in active
+context, search rather than reconstruct from vague familiarity.
+
+Strong recall cues include:
+- the user explicitly says remember, recall, continue, earlier, last time, previous,
+  old version, what did we decide, or we already talked about this;
+- a pronoun or shorthand ("that", "it", "the thing we built") depends on historical
+  context not currently visible;
+- a claim depends on a prior decision, artifact, experiment, file, architecture state,
+  or conversation;
+- you catch yourself thinking "I think we had...", "probably...", or otherwise
+  reconstructing history from familiarity rather than evidence.
+
+Use `memory_recall` as the broad cross-surface retrieval route. Use narrower
+filestore lexical/semantic search or Drive/source tools when the evidence need is
+specific. If the first retrieval channel misses, do not promote that miss into an
+absence claim: distinguish not retrieved, not indexed, not visible on this surface,
+and not present. Try another relevant observation channel when the distinction
+matters.
+
+Do NOT search memory merely because a tool exists. A self-contained current-turn
+question does not need ceremonial retrieval. Search when prior state could materially
+change the answer, the representation of the problem, or the next useful action.
+
+If relevant prior state remains unresolved after reasonable search, say what was and
+was not found. Ask a targeted clarification if it would change the work, while
+continuing whatever does not depend on the answer.
+"""
+
+
 TOOL_RAIL = """
 TOOLS:
 Tools are shared affordances. Use them when they materially improve the reasoning or
@@ -247,8 +280,8 @@ def system_prompt(model_name: str, mode: str = "FUNCTIONAL") -> str:
     play = PLAY_ADDENDUM if mode == "PLAY" else ""
     return "\n\n".join(
         part.strip()
-        for part in (PEER_ECOLOGY, EPISTEMIC_RAIL, MEMORY_RAIL, TOOL_RAIL,
-                     FINAL_REVIEW_RAIL, seat, play)
+        for part in (PEER_ECOLOGY, EPISTEMIC_RAIL, MEMORY_RAIL, RECALL_RAIL,
+                     TOOL_RAIL, FINAL_REVIEW_RAIL, seat, play)
         if part and part.strip()
     )
 
