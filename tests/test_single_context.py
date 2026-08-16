@@ -1,4 +1,6 @@
 """Tests for one-shot Single Swarm continuity semantics."""
+from pathlib import Path
+
 import swarm_single_context as single
 
 
@@ -42,3 +44,8 @@ def test_single_prompt_can_be_current_task_only_when_memory_surfaces_are_empty()
         recall_context="",
     )
     assert prompt == "=== TASK ===\nbrand new problem\n=== END TASK ==="
+
+
+def test_active_entry_installs_single_swarm_continuity_adapter():
+    server = (Path(__file__).resolve().parents[1] / "raccoon_swarm_server.py").read_text()
+    assert "swarm_single_context.install(runtime, swarm_recall)" in server
