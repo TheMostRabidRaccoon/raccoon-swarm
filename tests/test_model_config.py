@@ -1,4 +1,6 @@
 """Current seat-model defaults are explicit and rollbackable."""
+from pathlib import Path
+
 import swarm_model_config as cfg
 
 
@@ -25,3 +27,11 @@ def test_nested_agent_routes_are_explicitly_separate():
     assert grok_nested["model"] == "grok-4.20-multi-agent"
     assert "separate topology" in grok_nested["note"]
     assert cfg.OPTIONAL_NESTED_AGENT_ROUTES["gpt_ultra"]["effort"] == "ultra"
+
+
+def test_active_entry_loads_runtime_dotenv_before_import_time_model_registry():
+    """RRI_* values from project .env must exist before config constants evaluate."""
+    server = (Path(__file__).resolve().parents[1] / "raccoon_swarm_server.py").read_text()
+    runtime_import = server.index("import swarm_runtime as runtime")
+    config_import = server.index("import swarm_model_config as model_config")
+    assert runtime_import < config_import
