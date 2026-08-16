@@ -1,7 +1,7 @@
 # The Autonomy Ladder — Capability Surfaces and Integration Routes
 
-**Status:** ACTIVE DESIGN PRINCIPLE  
-**Historical name retained:** *Autonomy Ladder*  
+**Status:** ACTIVE DESIGN PRINCIPLE
+**Historical name retained:** *Autonomy Ladder*
 **Current interpretation:** progressively richer **observation and action surfaces**, not ranks among participants.
 
 > **Exploration can be open while consequential integration remains mechanically gated.**
