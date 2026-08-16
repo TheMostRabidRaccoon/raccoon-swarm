@@ -14,13 +14,16 @@ import os
 
 CLAUDE_MODEL = os.getenv("RRI_CLAUDE_MODEL", "claude-fable-5")
 GPT_MODEL = os.getenv("RRI_GPT_MODEL", "gpt-5.6-sol")
-GROK_MODEL = os.getenv("RRI_GROK_MODEL", "grok-4.5")
+GROK_MODEL = os.getenv("RRI_GROK_MODEL", "grok-4.6")
 GEMINI_MODEL = os.getenv("RRI_GEMINI_MODEL", "gemini-3.1-pro-preview")
 PERPLEXITY_MODEL = os.getenv("RRI_PERPLEXITY_MODEL", "sonar-pro")
 
-# Grok 4.5 supports low / medium / high and defaults to high. Keep it explicit:
-# prior RRI sessions showed that low-effort Grok is a materially different seat.
-GROK_REASONING_EFFORT = os.getenv("RRI_GROK_REASONING", "high")
+# Grok 4.6 supports low / medium / high / xhigh. The RRI Grok seat has shown a
+# large qualitative drop at low effort, so run the seat at xhigh by default.
+# This is still one Grok inference. Grok's separate multi-agent endpoint is a
+# different topology and should be evaluated deliberately rather than smuggled
+# in under the word "reasoning".
+GROK_REASONING_EFFORT = os.getenv("RRI_GROK_REASONING", "xhigh")
 
 # GPT-5.6 Sol supports none / low / medium / high / xhigh / max. This runtime
 # currently uses Chat Completions; pass the selected effort through extra_body.
