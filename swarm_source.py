@@ -9,13 +9,17 @@ surface. It deliberately separates OBSERVABILITY from ACTUATION:
 - runtime data, secrets, user/personal corpus, and hidden state are outside this
   observation surface by construction.
 
+The active entry point already installs this module's `tool_definitions()` as an
+extension bundle. That bundle also composes in the memory-recall observation tools
+from `swarm_recall`; this keeps the entry point small without conflating source and
+memory as the same substrate.
+
 A missing actuator is not a statement about model capability. It is simply a property
-of this interface.
+of the present interface.
 """
 from __future__ import annotations
 
 import os
-import re
 import subprocess
 from pathlib import Path
 
@@ -71,8 +75,7 @@ def _is_allowed_rel(rel: str) -> bool:
 
     if parts[0] not in _ALLOWED_DIRS:
         return False
-    name = parts[-1]
-    suffix = Path(name).suffix.lower()
+    suffix = Path(parts[-1]).suffix.lower()
     return suffix in _ALLOWED_SUFFIXES
 
 
@@ -220,8 +223,7 @@ def search(query: str, prefix: str = "", max_results: int = 20) -> dict:
     }
 
 
-def tool_definitions() -> dict:
-    """Registry entries installed by the active swarm entry point."""
+def _source_tool_definitions() -> dict:
     return {
         "source_status": {
             "description": (
@@ -286,3 +288,18 @@ def tool_definitions() -> dict:
             "dispatch": search,
         },
     }
+
+
+def tool_definitions() -> dict:
+    """Active observation/recall extension bundle installed by the entry point."""
+    out = _source_tool_definitions()
+    # Lazy import avoids making source observation depend on embeddings/numpy merely
+    # to import this module; tool construction happens after the runtime is loaded.
+    try:
+        import swarm_recall
+        out.update(swarm_recall.tool_definitions())
+    except Exception:
+        # Source observation remains independently useful if the optional semantic
+        # stack is unavailable on a minimal environment.
+        pass
+    return out
