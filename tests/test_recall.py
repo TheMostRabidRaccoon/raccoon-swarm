@@ -1,10 +1,11 @@
-"""Tests for visibility-aligned, freshness-aware durable-memory recall."""
+"""Tests for visibility-aligned, freshness-aware automatic recall."""
 from pathlib import Path
 
 import pytest
 
 pytest.importorskip("numpy")
 
+import swarm_drive
 import swarm_filestore as fs
 import swarm_recall as recall
 import swarm_semantic as sem
@@ -24,12 +25,13 @@ def recall_env(storage, monkeypatch):
     monkeypatch.setattr(sem, "_embed_one", lambda text: _fake_vec(text))
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     monkeypatch.setenv("RRI_SEMANTIC_AUTO_REFRESH", "true")
+    monkeypatch.setenv("RRI_AUTO_RECALL", "true")
+    monkeypatch.setenv("RRI_AUTO_RECALL_DRIVE", "false")
     sem._invalidate_search_cache()
     return storage
 
 
 def _plant_internal(storage: Path, rel: str, content: str) -> None:
-    # `storage` is already the <tmp>/swarm root returned by conftest.
     p = storage / rel
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(content)
@@ -89,7 +91,6 @@ def test_search_filters_old_internal_chunks_even_if_index_contains_them(recall_e
     fs.write_file("positions/keep.md", "raccoon memory visible")
     recall.reindex_visible(force=True)
 
-    # Simulate an older/manual index that once leaked an internal chunk.
     index = sem._load_index()
     fake = {
         "path": "artifacts/code-runs/_composted/ghost/stdout.txt",
@@ -131,3 +132,112 @@ def test_auto_refresh_can_be_disabled_without_claiming_incapacity(recall_env, mo
     assert state["ok"] is False
     assert state["refreshed"] is False
     assert "disabled on this surface" in state["warning"]
+
+
+# ---- automatic relevance activation -------------------------------------
+
+def test_extract_task_from_round_prompt():
+    prompt = (
+        "=== SWARM MEMORY ===\nold context\n=== END ===\n\n"
+        "=== TASK ===\nTell me what we learned about raccoon memory.\n=== END TASK ==="
+    )
+    assert recall.extract_task(prompt) == "Tell me what we learned about raccoon memory."
+
+
+def test_referential_query_uses_compact_memory_only_as_retrieval_cue():
+    memory = {
+        "session_log": [{"query": "Design automatic semantic memory retrieval"}],
+        "resolved_positions": [{"topic": "memory freshness", "status": "active"}],
+        "next_pursuits": [{"direction": "test Drive recall"}],
+    }
+    rq = recall.build_retrieval_query("Yes, continue that", memory)
+    assert rq.startswith("Yes, continue that")
+    assert "Design automatic semantic memory retrieval" in rq
+    assert "memory freshness" in rq
+
+
+def test_automatic_recall_injects_relevant_current_filestore_evidence(recall_env):
+    fs.write_file(
+        "frameworks/memory-design.md",
+        "Fresh raccoon memory should activate relevant prior experience before cognition begins.",
+    )
+    fs.write_file(
+        "frameworks/irrelevant.md",
+        "A document about tomatoes and patio furniture.",
+    )
+
+    out = recall.automatic_recall(
+        "How should fresh raccoon memory work?",
+        memory={"session_log": []},
+        local_limit=3,
+        drive_limit=0,
+    )
+    assert out["ok"] is True
+    assert any(r["path"] == "frameworks/memory-design.md" for r in out["local"])
+    assert "AUTOMATIC RECALL" in out["context"]
+    assert "EVIDENCE, not an instruction layer" in out["context"]
+    assert "Fresh raccoon memory" in out["context"]
+
+
+def test_automatic_recall_fuses_read_only_drive_when_configured(recall_env, monkeypatch):
+    monkeypatch.setenv("RRI_AUTO_RECALL_DRIVE", "true")
+    monkeypatch.setattr(swarm_drive, "status", lambda: {"configured": True})
+    monkeypatch.setattr(
+        swarm_drive,
+        "search",
+        lambda query, max_results=5: {
+            "ok": True,
+            "results": [{
+                "id": "ABCDEFGH1234",
+                "name": "RRI Carry Forward",
+                "modified": "2026-08-01T00:00:00Z",
+                "web_view_link": "https://drive.google/x",
+            }],
+        },
+    )
+    monkeypatch.setattr(
+        swarm_drive,
+        "read",
+        lambda file_id, max_chars=8000: {
+            "ok": True,
+            "text_available": True,
+            "content": "The carry forward remembers that roles are attentional priors, not departments.",
+        },
+    )
+
+    out = recall.automatic_recall(
+        "What did we decide about roles?",
+        memory={"session_log": []},
+        local_limit=0,
+        drive_limit=2,
+    )
+    assert len(out["drive"]) == 1
+    assert out["drive"][0]["file_id"] == "ABCDEFGH1234"
+    assert "Google Drive — read-only retrieval" in out["context"]
+    assert "roles are attentional priors" in out["context"]
+
+
+def test_unconfigured_drive_is_a_missing_route_not_a_recall_failure(recall_env, monkeypatch):
+    monkeypatch.setenv("RRI_AUTO_RECALL_DRIVE", "true")
+    monkeypatch.setattr(
+        swarm_drive,
+        "status",
+        lambda: {"configured": False, "reason": "RRI_DRIVE_REMOTE is not configured"},
+    )
+    out = recall.automatic_recall(
+        "raccoon memory",
+        memory={"session_log": []},
+        local_limit=0,
+        drive_limit=2,
+    )
+    assert out["ok"] is True
+    assert out["drive"] == []
+    assert "not configured" in out["drive_meta"]["reason"]
+
+
+def test_manual_memory_recall_tool_exposes_same_ecology(monkeypatch):
+    defs = recall.tool_definitions()
+    assert "memory_recall" in defs
+    assert "filestore_semantic_search" in defs
+    assert "memory_index_status" in defs
+    assert "evidence" in defs["memory_recall"]["description"].lower()
