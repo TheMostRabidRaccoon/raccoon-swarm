@@ -29,7 +29,8 @@ def recall_env(storage, monkeypatch):
 
 
 def _plant_internal(storage: Path, rel: str, content: str) -> None:
-    p = storage / "swarm" / rel
+    # `storage` is already the <tmp>/swarm root returned by conftest.
+    p = storage / rel
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(content)
 
@@ -65,7 +66,7 @@ def test_freshness_detects_new_changed_and_removed_memory(recall_env):
     fresh = recall.freshness()
     assert "positions/a.md" in fresh["changed"]
 
-    (recall_env / "swarm" / "positions" / "a.md").unlink()
+    (recall_env / "positions" / "a.md").unlink()
     fresh = recall.freshness()
     assert "positions/a.md" in fresh["removed"]
 
