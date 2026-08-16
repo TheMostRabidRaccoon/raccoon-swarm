@@ -19,14 +19,20 @@ from __future__ import annotations
 import os
 import threading
 
+import swarm_claude_adapter
 import swarm_closer_policy as closer_policy
 import swarm_drive
 import swarm_ecology as ecology
 import swarm_memory_policy as memory_policy
-import swarm_model_config as model_config
 import swarm_recall
+import swarm_single_context
 import swarm_source
+
+# IMPORTANT: swarm_runtime loads ~/.env and the project .env at import time. Import it
+# BEFORE swarm_model_config, whose constants are evaluated from os.environ at import.
+# This makes local RRI_* model/reasoning overrides real rather than decorative.
 import swarm_runtime as runtime
+import swarm_model_config as model_config
 
 
 # ---------------------------------------------------------------------------
@@ -39,6 +45,24 @@ runtime.GROK_MODEL = model_config.GROK_MODEL
 runtime.GEMINI_MODEL = model_config.GEMINI_MODEL
 runtime.PERPLEXITY_MODEL = model_config.PERPLEXITY_MODEL
 runtime.GROK_REASONING_EFFORT = model_config.GROK_REASONING_EFFORT
+
+
+# Claude Fable 5 can return HTTP-200 classifier refusals with empty content. The
+# adapter preserves refusal as a first-class unavailable result instead of turning it
+# into a false-success "returned no text" string.
+def call_claude(query, max_tokens=runtime.MAX_OUTPUT_TOKENS, images=None, session_id="unknown"):
+    return swarm_claude_adapter.call(
+        runtime,
+        query,
+        max_tokens=max_tokens,
+        images=images,
+        session_id=session_id,
+    )
+
+
+runtime.call_claude = call_claude
+runtime.SWARM_SINGLE["claude"] = call_claude
+runtime.SWARM_LOOP["Claude"] = call_claude
 
 
 # GPT-5.6 supports explicit reasoning effort. The legacy runtime helper already
@@ -254,11 +278,6 @@ if "dispatch_queue_write" in runtime.swarm_tools.TOOL_DEFINITIONS:
 # ---------------------------------------------------------------------------
 # Automatic associative recall — once, before Round 1.
 # ---------------------------------------------------------------------------
-# We install this below the loop worker rather than asking every model to remember
-# to search. `run_loop_round` receives the fully assembled first-round prompt, which
-# contains the canonical === TASK === block, so the hook can recover the actual task
-# while remaining transport-agnostic. Joy's separate runner uses session_id=unknown
-# and therefore keeps its intentionally scoped context.
 _original_run_loop_round = runtime.run_loop_round
 _recall_sessions: set[str] = set()
 _recall_lock = threading.Lock()
@@ -290,8 +309,6 @@ def _recall_prompt_once(prompt: str, session_id: str) -> str:
         )
         return f"{ctx}\n\n{prompt}" if ctx else prompt
     except Exception as exc:
-        # Recall is an aid, not a gate. A broken memory instrument must not erase
-        # the user's current conversation.
         runtime.logger.error(
             f"automatic recall failed for {session_id} (non-fatal): "
             f"{type(exc).__name__}: {exc}"
@@ -315,13 +332,15 @@ def run_loop_round(prompt, models=None, images=None, session_id="unknown",
 
 runtime.run_loop_round = run_loop_round
 
+# Single Swarm bypasses run_loop_round entirely, so install an equivalent endpoint
+# adapter that supplies compact continuity + automatic relevance recall before the
+# one-shot parallel dispatch.
+swarm_single_context.install(runtime, swarm_recall)
+
 
 # ---------------------------------------------------------------------------
 # Mechanical closer: telemetry always, interruption only when useful by default.
 # ---------------------------------------------------------------------------
-# swarm_closer writes its local digest, scorecard, corpus event, and gate telemetry
-# before it reaches the SMTP step. Keep those receipts on every session; suppress
-# routine clean-session email unless RRI_CLOSER_NOTIFY_MODE=all.
 _original_closer_send = runtime.swarm_closer._send_via_smtp
 
 
@@ -337,21 +356,27 @@ runtime.swarm_closer._send_via_smtp = _ecology_closer_send
 
 # ---------------------------------------------------------------------------
 # Dual final-review integration — Claude + GPT remain the reliability pair.
-# This is competence routing, explicitly not a rank hierarchy.
 # ---------------------------------------------------------------------------
 def _integration_failed(label: str, text: str) -> bool:
-    low = (text or "").lower()
-    return low.startswith(f"[{label.lower()} error") or "synthesis error" in low[:120]
+    low = (text or "").strip().lower()
+    if not low:
+        return True
+    if label.lower() == "claude" and swarm_claude_adapter.is_unavailable_output(text):
+        return True
+    return low.startswith((
+        f"[{label.lower()} error",
+        f"[{label.lower()} synthesis error",
+        f"[{label.lower()} returned no text",
+    )) or "synthesis error" in low[:120]
 
 
 def run_synthesis(query, all_rounds):
     """Integrate a session through the Claude/GPT reliability pair.
 
-    Both models independently integrate the same transcript. Claude performs the
-    final mechanical merge only because one API call must emit the final string;
-    the merge prompt explicitly denies that this grants seniority or authority.
-    Exploratory sessions are allowed to remain landscapes rather than being
-    converted into recommendations or project plans.
+    Both models independently integrate the same transcript. A Claude classifier
+    refusal is an unavailable review result, not a successful empty synthesis. If
+    Claude is unavailable at either the independent-review or final-merge step, the
+    valid GPT integration survives instead of being discarded.
     """
     transcript = runtime._build_transcript(query, all_rounds)
     integration_prompt = f"""You are independently integrating a multi-model peer-cognition session.
@@ -381,24 +406,30 @@ You are not ranking participants and you are not presiding over a council.
     claude_bad = _integration_failed("claude", claude_integration)
     gpt_bad = _integration_failed("gpt", gpt_integration)
     if claude_bad and not gpt_bad:
+        runtime.logger.warning("Claude independent integration unavailable; using GPT integration")
         return gpt_integration
     if gpt_bad and not claude_bad:
         return claude_integration
     if claude_bad and gpt_bad:
         return f"{claude_integration}\n\n{gpt_integration}"
 
-    return runtime.call_claude(
+    merged = runtime.call_claude(
         ecology.merge_prompt(claude_integration, gpt_integration),
         max_tokens=runtime.MAX_OUTPUT_TOKENS,
     )
+    if _integration_failed("claude", merged):
+        runtime.logger.warning(
+            "Claude final integration unavailable; preserving valid GPT independent integration"
+        )
+        return gpt_integration
+    return merged
 
 
 runtime.run_synthesis = run_synthesis
 
 
 # ---------------------------------------------------------------------------
-# Current display semantics. The lore survives; obsolete membership/probation
-# status does not. "The Conductor" remains a cultural title/signature.
+# Current display semantics.
 # ---------------------------------------------------------------------------
 if "gpt" in runtime.VOICE_CAST:
     runtime.VOICE_CAST["gpt"]["label"] = "Integrator"
@@ -408,15 +439,11 @@ for _key, _label in ecology.DISPLAY_LABELS.items():
         runtime.VOICE_CAST_LABELS[_key] = _label
         runtime.VOICE_CAST_LABELS[_key.capitalize() if _key != "gpt" else "GPT"] = _label
 
-# HOME_HTML was assembled as a static string during runtime import; remove the
-# obsolete status wording from that already-built UI surface too.
 runtime.HOME_HTML = runtime.HOME_HTML.replace(
     "Eric — Integrator — Full Council Member", "Eric — Integrator")
 runtime.HOME_HTML = runtime.HOME_HTML.replace(
     "Claude synthesizing...", "Claude + GPT integrating...")
 
-# Woodland Council art retains Eric's identity without visually encoding an old
-# probation/membership hierarchy.
 if hasattr(runtime, "COUNCIL_CHARACTERS") and "GPT" in runtime.COUNCIL_CHARACTERS:
     runtime.COUNCIL_CHARACTERS["GPT"].update({
         "title": "THE INTEGRATOR",
@@ -430,7 +457,7 @@ if hasattr(runtime, "COUNCIL_CHARACTERS") and "GPT" in runtime.COUNCIL_CHARACTER
 
 
 # Add live model/source/memory metadata to /config without changing the original
-# runtime route contract. The UI can display it later; tests/canaries can inspect it.
+# runtime route contract.
 _original_config = runtime.config
 
 
@@ -458,9 +485,6 @@ runtime.app.view_functions["config"] = config
 app = runtime.app
 
 
-# Delegate everything else for backwards compatibility with imports that expect
-# raccoon_swarm_server.<name>. The runtime remains the source of transport/tool
-# implementation; this module owns the active cognitive semantics.
 def __getattr__(name: str):
     return getattr(runtime, name)
 
