@@ -17,7 +17,6 @@ about participant capability.
 """
 from __future__ import annotations
 
-import csv
 import html
 import json
 import os
@@ -34,6 +33,9 @@ DEFAULT_TIMEOUT = 30
 DEFAULT_MAX_RESULTS = 10
 DEFAULT_MAX_CHARS = 16_000
 MAX_DOWNLOAD_BYTES = 25 * 1024 * 1024
+MAX_ARCHIVE_UNCOMPRESSED_BYTES = 100 * 1024 * 1024
+MAX_ARCHIVE_MEMBER_BYTES = 50 * 1024 * 1024
+MAX_EXTRACTED_TEXT_CHARS = 2_000_000
 
 _STOPWORDS = {
     "a", "an", "and", "are", "as", "at", "be", "but", "by", "for", "from",
@@ -86,12 +88,11 @@ def status(probe: bool = False) -> dict:
         "remote": _remote() if configured else None,
         "remote_write_actuator": "not exposed on this surface",
         "recommended_rclone_scope": "drive.readonly",
+        "max_transfer_bytes": MAX_DOWNLOAD_BYTES,
     }
     if not configured or not probe:
         return out
 
-    # Probe with a metadata-only query capped only by the provider response. It
-    # does not download content or mutate Drive.
     proc = _run(["rclone", "backend", "query", _remote(), "trashed = false"])
     out["probe_ok"] = proc.returncode == 0
     if proc.returncode != 0:
@@ -100,18 +101,10 @@ def status(probe: bool = False) -> dict:
 
 
 def _escape_drive_literal(value: str) -> str:
-    # Google Drive query strings use backslash escapes for literal slash/quote.
     return (value or "").replace("\\", "\\\\").replace("'", "\\'")
 
 
 def _terms(query: str, limit: int = 7) -> list[str]:
-    """Extract useful Drive full-text terms without destroying word-internal marks.
-
-    Apostrophes matter: `swarm's` is a legitimate literal that must reach
-    `_escape_drive_literal()` intact rather than silently degrading to `swarm`.
-    Curly apostrophes are normalized to ASCII before Drive-query escaping.
-    Dots/hyphens/underscores are retained only when they join non-empty segments.
-    """
     seen: set[str] = set()
     terms: list[str] = []
     pattern = r"[A-Za-z0-9]+(?:['’][A-Za-z0-9]+)*(?:[_.-][A-Za-z0-9]+)*"
@@ -139,7 +132,6 @@ def _drive_query(query: str) -> str:
 
 
 def search(query: str, max_results: int = DEFAULT_MAX_RESULTS) -> dict:
-    """Search Drive's provider index, including indexed file text/metadata."""
     configured, reason = _configured()
     if not configured:
         return {"ok": False, "query": query, "error": reason, "results": []}
@@ -171,7 +163,6 @@ def search(query: str, max_results: int = DEFAULT_MAX_RESULTS) -> dict:
         name = str(row.get("name") or "").lower()
         exact = 5 if q_lower and q_lower in name else 0
         token_hits = sum(1 for t in q_terms if t in name)
-        # Modified time is ISO/RFC3339 and therefore lexically sortable.
         return exact + token_hits, str(row.get("modifiedTime") or "")
 
     rows.sort(key=rank, reverse=True)
@@ -198,23 +189,69 @@ def search(query: str, max_results: int = DEFAULT_MAX_RESULTS) -> dict:
     }
 
 
+def _assert_archive_safe(path: Path) -> None:
+    """Bound Office zip-container expansion before a parser opens it."""
+    try:
+        with zipfile.ZipFile(path) as zf:
+            infos = zf.infolist()
+            total = sum(max(0, info.file_size) for info in infos)
+            largest = max((max(0, info.file_size) for info in infos), default=0)
+    except zipfile.BadZipFile as exc:
+        raise ValueError("invalid Office archive") from exc
+    if total > MAX_ARCHIVE_UNCOMPRESSED_BYTES:
+        raise ValueError(
+            f"archive expansion exceeds limit ({MAX_ARCHIVE_UNCOMPRESSED_BYTES} bytes)"
+        )
+    if largest > MAX_ARCHIVE_MEMBER_BYTES:
+        raise ValueError(
+            f"archive member exceeds limit ({MAX_ARCHIVE_MEMBER_BYTES} bytes)"
+        )
+
+
 def _text_from_docx(path: Path) -> str:
     from docx import Document
+
+    _assert_archive_safe(path)
     doc = Document(str(path))
-    parts = [p.text for p in doc.paragraphs if p.text]
-    for table in doc.tables:
-        for row in table.rows:
-            parts.append("\t".join(cell.text for cell in row.cells))
-    return "\n".join(parts)
+    parts: list[str] = []
+    chars = 0
+    for paragraph in doc.paragraphs:
+        if not paragraph.text:
+            continue
+        parts.append(paragraph.text)
+        chars += len(paragraph.text)
+        if chars >= MAX_EXTRACTED_TEXT_CHARS:
+            break
+    if chars < MAX_EXTRACTED_TEXT_CHARS:
+        for table in doc.tables:
+            for row in table.rows:
+                line = "\t".join(cell.text for cell in row.cells)
+                parts.append(line)
+                chars += len(line)
+                if chars >= MAX_EXTRACTED_TEXT_CHARS:
+                    break
+            if chars >= MAX_EXTRACTED_TEXT_CHARS:
+                break
+    return "\n".join(parts)[:MAX_EXTRACTED_TEXT_CHARS]
 
 
 def _text_from_pdf(path: Path) -> str:
     import fitz
+
     doc = fitz.open(str(path))
+    parts: list[str] = []
+    chars = 0
     try:
-        return "\n".join(page.get_text("text") for page in doc)
+        for page in doc:
+            text = page.get_text("text")
+            remaining = MAX_EXTRACTED_TEXT_CHARS - chars
+            if remaining <= 0:
+                break
+            parts.append(text[:remaining])
+            chars += min(len(text), remaining)
     finally:
         doc.close()
+    return "\n".join(parts)[:MAX_EXTRACTED_TEXT_CHARS]
 
 
 def _text_from_xlsx(path: Path, max_rows_per_sheet: int = 500) -> str:
@@ -222,43 +259,71 @@ def _text_from_xlsx(path: Path, max_rows_per_sheet: int = 500) -> str:
         from openpyxl import load_workbook
     except ImportError:
         return "[XLSX text extraction unavailable: install openpyxl]"
+
+    _assert_archive_safe(path)
     wb = load_workbook(path, read_only=True, data_only=True)
     parts: list[str] = []
+    chars = 0
     try:
         for ws in wb.worksheets:
-            parts.append(f"# Sheet: {ws.title}")
+            header = f"# Sheet: {ws.title}"
+            parts.append(header)
+            chars += len(header)
             for i, row in enumerate(ws.iter_rows(values_only=True), start=1):
                 if i > max_rows_per_sheet:
-                    parts.append(f"[truncated after {max_rows_per_sheet} rows]")
+                    marker = f"[truncated after {max_rows_per_sheet} rows]"
+                    parts.append(marker)
+                    chars += len(marker)
                     break
                 vals = ["" if v is None else str(v) for v in row]
                 if any(vals):
-                    parts.append("\t".join(vals))
+                    line = "\t".join(vals)
+                    remaining = MAX_EXTRACTED_TEXT_CHARS - chars
+                    if remaining <= 0:
+                        break
+                    parts.append(line[:remaining])
+                    chars += min(len(line), remaining)
+            if chars >= MAX_EXTRACTED_TEXT_CHARS:
+                break
     finally:
         wb.close()
-    return "\n".join(parts)
+    return "\n".join(parts)[:MAX_EXTRACTED_TEXT_CHARS]
 
 
 def _text_from_pptx(path: Path) -> str:
-    # Avoid another dependency: PPTX is a zip of XML; slide text lives in <a:t>.
+    _assert_archive_safe(path)
     parts: list[str] = []
+    chars = 0
     try:
         with zipfile.ZipFile(path) as zf:
-            names = sorted(n for n in zf.namelist() if re.match(r"ppt/slides/slide\d+\.xml$", n))
-            for n in names:
-                root = ET.fromstring(zf.read(n))
-                texts = [html.unescape(el.text or "") for el in root.iter() if el.tag.endswith("}t")]
+            names = sorted(
+                n for n in zf.namelist()
+                if re.match(r"ppt/slides/slide\d+\.xml$", n)
+            )
+            for name in names:
+                root = ET.fromstring(zf.read(name))
+                texts = [
+                    html.unescape(el.text or "")
+                    for el in root.iter()
+                    if el.tag.endswith("}t")
+                ]
                 if texts:
-                    parts.append(" ".join(texts))
+                    line = " ".join(texts)
+                    remaining = MAX_EXTRACTED_TEXT_CHARS - chars
+                    if remaining <= 0:
+                        break
+                    parts.append(line[:remaining])
+                    chars += min(len(line), remaining)
     except (zipfile.BadZipFile, ET.ParseError, OSError):
         return ""
-    return "\n".join(parts)
+    return "\n".join(parts)[:MAX_EXTRACTED_TEXT_CHARS]
 
 
 def _extract_text(path: Path) -> str:
     ext = path.suffix.lower()
     if ext in {".txt", ".md", ".json", ".csv", ".tsv", ".log", ".py", ".yaml", ".yml", ".html", ".htm"}:
-        return path.read_text(encoding="utf-8", errors="replace")
+        with open(path, "r", encoding="utf-8", errors="replace") as handle:
+            return handle.read(MAX_EXTRACTED_TEXT_CHARS)
     if ext == ".docx":
         return _text_from_docx(path)
     if ext == ".pdf":
@@ -271,7 +336,7 @@ def _extract_text(path: Path) -> str:
 
 
 def read(file_id: str, max_chars: int = DEFAULT_MAX_CHARS) -> dict:
-    """Fetch one Drive file by ID into a temp dir, extract text, delete the temp copy."""
+    """Fetch one Drive file by ID into a bounded temp surface and extract text."""
     configured, reason = _configured()
     if not configured:
         return {"ok": False, "file_id": file_id, "error": reason}
@@ -281,10 +346,15 @@ def read(file_id: str, max_chars: int = DEFAULT_MAX_CHARS) -> dict:
 
     with tempfile.TemporaryDirectory(prefix="rri-drive-read-") as td:
         dest = Path(td)
-        # The path ending in / tells copyid to keep/export the provider file name.
+        limit = f"{MAX_DOWNLOAD_BYTES}B"
+        # Enforce the byte ceiling DURING transfer, not after the file has already
+        # occupied local disk. The post-transfer stat check remains defense in depth.
         proc = _run([
             "rclone", "backend", "copyid", _remote(), file_id, f"{dest.as_posix()}/",
             "--drive-export-formats", "txt,csv,pdf",
+            "--max-size", limit,
+            "--max-transfer", limit,
+            "--cutoff-mode", "HARD",
         ], timeout=max(_timeout(), 45))
         if proc.returncode != 0:
             return {
@@ -295,7 +365,6 @@ def read(file_id: str, max_chars: int = DEFAULT_MAX_CHARS) -> dict:
         files = [p for p in dest.rglob("*") if p.is_file()]
         if not files:
             return {"ok": False, "file_id": file_id, "error": "Drive fetch returned no local file"}
-        # copyid receives one ID; if a backend creates support files, prefer the largest.
         path = max(files, key=lambda p: p.stat().st_size)
         size = path.stat().st_size
         if size > MAX_DOWNLOAD_BYTES:
@@ -373,9 +442,11 @@ def tool_definitions() -> dict:
         },
         "drive_read": {
             "description": (
-                "Fetch one Google Drive result by its Drive file ID to a temporary LOCAL read "
-                "surface, extract text from supported document formats, and delete the temporary "
-                "copy afterward. This tool exposes no remote write/delete/move operation."
+                "Fetch one Google Drive result by its Drive file ID to a bounded temporary LOCAL "
+                "read surface, extract text from supported document formats, and delete the "
+                "temporary copy afterward. Transfer and compressed-document expansion limits are "
+                "enforced before content is admitted to the observation surface. This tool exposes "
+                "no remote write/delete/move operation."
             ),
             "input_schema": {
                 "type": "object",
