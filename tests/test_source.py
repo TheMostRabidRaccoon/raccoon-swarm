@@ -76,12 +76,18 @@ def test_search_returns_line_cited_matches(tmp_path, monkeypatch):
     assert "1: roles are attentional priors" in hit["snippet"]
 
 
-def test_tool_definitions_are_observation_only():
+def test_tool_bundle_composes_source_and_recall_without_mutation_actuators():
     defs = src.tool_definitions()
-    assert set(defs) == {"source_status", "source_list", "source_read", "source_search"}
+    assert {"source_status", "source_list", "source_read", "source_search"}.issubset(defs)
+    # The same extension bundle replaces the old stale semantic-search surface and
+    # exposes freshness as observable state.
+    assert "filestore_semantic_search" in defs
+    assert "memory_index_status" in defs
+
     joined = " ".join(spec["description"].lower() for spec in defs.values())
     assert "read-only" in joined
     assert "production-write" in joined or "mutation" in joined
+    assert "fresh" in joined
     assert not any("write" in name or "merge" in name or "deploy" in name for name in defs)
 
 
