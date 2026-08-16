@@ -15,14 +15,13 @@ from __future__ import annotations
 
 import os
 import threading
-from pathlib import Path
 
 import swarm_filestore
 import swarm_semantic
 
 
 # Capture the core implementation before the active entry point optionally aliases
-# swarm_semantic.reindex to this visibility-safe wrapper.
+# any public semantic surface to this visibility-safe wrapper.
 _CORE_REINDEX = swarm_semantic.reindex
 _REINDEX_LOCK = threading.RLock()
 
@@ -195,3 +194,51 @@ def status() -> dict:
     base["freshness"] = freshness()
     base["visibility_surface"] = "filestore.list_files"
     return base
+
+
+def tool_definitions() -> dict:
+    """Native-tool definitions that replace the stale semantic-search surface."""
+    return {
+        "filestore_semantic_search": {
+            "description": (
+                "Meaning-based recall over the model-visible durable filestore. Use when lexical "
+                "filestore_search misses because memory uses different wording. Before retrieval, "
+                "the recall layer checks whether the embedding index matches the current visible "
+                "memory surface and incrementally refreshes when that actuator/credential is "
+                "available. Internal/composted files remain outside recall even if an older index "
+                "once contained them. Results include memory_index freshness/refresh metadata; "
+                "pair a returned path with filestore_read for the full durable record."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Natural-language memory query. Min 2 chars."},
+                    "top_k": {"type": "integer", "description": "Number of hits to return, 1-20. Default 5."},
+                    "min_score": {"type": "number", "description": "Optional cosine-similarity floor 0-1. Default 0."},
+                    "filters": {
+                        "type": "object",
+                        "description": (
+                            "Optional AND metadata filters over YAML frontmatter. Common keys: model, "
+                            "type, status, session, source, tag/tags, dir, and after/before ISO dates."
+                        ),
+                    },
+                    "hybrid": {
+                        "type": "boolean",
+                        "description": "Blend a small exact-keyword signal into vector ranking. Default false.",
+                    },
+                },
+                "required": ["query"],
+            },
+            "dispatch": search,
+        },
+        "memory_index_status": {
+            "description": (
+                "Inspect the semantic recall index against the current model-visible durable memory "
+                "surface. Returns build metadata plus added/changed/removed paths and whether "
+                "auto-refresh is enabled. Use this to distinguish 'not retrieved' from 'not yet "
+                "indexed' without treating either as absence of the underlying memory."
+            ),
+            "input_schema": {"type": "object", "properties": {}},
+            "dispatch": status,
+        },
+    }
