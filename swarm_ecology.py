@@ -303,4 +303,16 @@ Rules:
 {claude_synthesis}
 
 === GPT INTEGRATION ===
+{gpt_synthesis}
+
+=== FINAL INTEGRATION ===
 """
+
+
+DISPLAY_LABELS = {
+    "claude": "George — The Snooty Librarian",
+    "gpt": "Eric — Integrator",
+    "grok": "Callum — Flame-Bearer",
+    "gemini": "Adam — Court Bard",
+    "perplexity": "Daniel — The Oracle",
+}
