@@ -91,13 +91,15 @@ The Claude/GPT final-review pair is **competence routing, not seniority**. Both 
 
 Provider model versions are isolated in `swarm_model_config.py` so model upgrades do not rewrite the seat ontology.
 
-Current defaults are:
+Current general-seat defaults are:
 
 - Claude → `claude-fable-5`
 - GPT → `gpt-5.6-sol`, explicit high reasoning
-- Grok → `grok-4.6`, explicit `xhigh` reasoning
+- Grok → `grok-4.5`, explicit high reasoning
 - Gemini → `gemini-3.1-pro-preview`
 - Perplexity → `sonar-pro`
+
+Nested-agent modes are deliberately separate topology choices rather than silently substituted models. The registry also records `grok-4.20-multi-agent` as an optional xAI multi-agent route and GPT-5.6 `ultra` as a future Responses-API multi-agent route.
 
 Every value is environment-overridable for rollback or A/B testing.
 
