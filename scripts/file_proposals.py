@@ -1,23 +1,23 @@
 #!/usr/bin/env python3
-"""File queued Joy Mode tool proposals as GitHub issues (the autonomy handoff).
+"""File queued swarm change proposals as GitHub issues (review handoff).
 
-Joy Mode's tiny-tool-invention activity queues a structured proposal under
-swarm/joy/proposals/queued/ (see swarm_proposals.py). This runner turns each
-queued proposal into a GitHub issue for human review, then moves it to filed/.
+Participants can queue structured proposals from ordinary deliberation, autonomous
+runs, or play. `swarm_proposals.py` accepts both historical [TOOL_PROPOSAL] blocks
+and general [CHANGE_PROPOSAL] records. This runner turns each queued proposal into
+a GitHub issue, then moves it to filed/.
 
-The autonomy split: filing an issue is free and changes nothing that runs, so
-it needs no approval. The GATED step — merging the proposed tool into the live
-registry — stays a human-reviewed PR. Every filed issue carries that gate banner.
+Filing is a persistence-to-review transition. It does not mean the proposed change
+is implemented, integrated, deployed, or behaviorally verified. Those states remain
+explicit in the issue body.
 
 Filing backends, in order of preference:
   1. GitHub API — if RRI_GITHUB_PROPOSAL_TOKEN + RRI_GITHUB_PROPOSAL_REPO are
-     set. Use a FINE-GRAINED token scoped to Issues: write on that ONE repo.
-  2. Email — else, if swarm_mail is configured, email the Conductor the
-     ready-to-paste issue title + body.
+     set. Use a fine-grained token scoped to Issues: write on that one repo.
+  2. Email — else, if swarm_mail is configured, email the review handoff.
   3. Neither — leave the proposal in queued/ and log loudly (nothing lost).
 
-Triggered by the systemd swarm-proposals.path unit when a file lands in
-queued/. Manual:
+Triggered by the systemd swarm-proposals.path unit when a file lands in queued/.
+Manual:
   file_proposals.py            # file everything queued
   file_proposals.py --dry-run  # print what would be filed, transition nothing
 """
@@ -86,19 +86,20 @@ def _file_via_github(issue: dict, token: str, repo: str) -> "tuple[bool, str]":
 
 
 def _file_via_email(issue: dict, proposal_id: str) -> "tuple[bool, str]":
-    """Fallback: email the Conductor the ready-to-paste issue."""
+    """Fallback: email the reviewable proposal when no issue-write route exists."""
     try:
         import swarm_mail
     except ImportError:
         return False, "swarm_mail unavailable"
     body = (
-        "The swarm autonomously designed a tool during Joy Mode. No GitHub token "
-        "is configured, so here is the proposal to file manually.\n\n"
+        "The swarm created a structured change proposal. No GitHub issue-write route "
+        "is configured on this surface, so here is the review handoff. The proposal "
+        "is not a claim that implementation or deployment has occurred.\n\n"
         f"--- ISSUE TITLE ---\n{issue['title']}\n\n--- ISSUE BODY ---\n{issue['body']}"
     )
     try:
         ok, reason = swarm_mail.send_to_conductor(
-            subject=f"Joy Mode tool proposal — {issue['title']}",
+            subject=f"Swarm change proposal — {issue['title']}",
             body=body, model="proposal-filer", session_id=f"proposal-{proposal_id}")
         return ok, reason
     except Exception as e:
@@ -133,9 +134,8 @@ def file_one(proposal_id: str, *, dry_run: bool = False) -> bool:
         logger.info(f"{proposal_id}: filed via {backend} — {detail}")
         return True
 
-    # Leave GitHub failures in queued/ for retry on the next trigger; a bad
-    # proposal that can never file would loop, so only move to failed/ when the
-    # backend was actually reachable-but-rejected (HTTP 4xx), not on transport.
+    # Leave transport failures in queued/ for retry. Move to failed/ only when
+    # GitHub was reachable and rejected the record as a 4xx request.
     if backend == "github" and detail.startswith("HTTP 4"):
         swarm_proposals.transition(proposal_id, swarm_proposals.QUEUED, swarm_proposals.FAILED)
         logger.error(f"{proposal_id}: rejected by GitHub, moved to failed/ — {detail}")
@@ -145,7 +145,7 @@ def file_one(proposal_id: str, *, dry_run: bool = False) -> bool:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="File queued Joy Mode tool proposals.")
+    parser = argparse.ArgumentParser(description="File queued swarm change proposals.")
     parser.add_argument("proposal_id", nargs="?", help="File one specific proposal id.")
     parser.add_argument("--dry-run", action="store_true",
                         help="Print what would be filed without transitioning anything.")
