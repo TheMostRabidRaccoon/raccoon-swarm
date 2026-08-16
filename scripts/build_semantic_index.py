@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
 """Build (or rebuild) the swarm's semantic-search index.
 
-Walks the filestore, chunks every text file, embeds each chunk via
-OpenAI text-embedding-3-small, and writes the index to
-<storage_root>/swarm/_semantic_index/index.json.
+The vector engine is a locator over the durable filestore, so the index must obey
+the same visibility boundary as the filestore itself. This script therefore routes
+through `swarm_recall.reindex_visible()` rather than walking raw disk directly.
 
-Idempotent — only re-embeds files whose content_hash has changed.
-Pass --force to re-embed everything (use after upgrading the
-embedding model, or if the index is suspect).
+Consequences:
+- `_composted/` and other infrastructure-internal paths stay out of active recall;
+- incremental content-hash behavior from `swarm_semantic` is preserved;
+- the result includes freshness metadata against the current visible memory surface.
+
+Pass --force to re-embed everything (use after changing the embedding model or when
+an index is suspect).
 
 Usage:
   ./scripts/build_semantic_index.py
@@ -27,20 +31,10 @@ REPO_ROOT = SCRIPT_DIR.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-# Auto-reexec under the repo venv if we landed on a system Python that
-# doesn't have our deps. Without this guard, dotenv silently fails to
-# import on systems where python-dotenv lives only in venv/ — and the
-# script then complains about a missing OPENAI_API_KEY because .env
-# was never read. Re-running the script via os.execv preserves stdout,
-# argv, and exit code semantics.
 _VENV_PY = REPO_ROOT / "venv" / "bin" / "python3"
 if _VENV_PY.exists() and Path(sys.prefix).resolve() != (REPO_ROOT / "venv").resolve():
     os.execv(str(_VENV_PY), [str(_VENV_PY), str(Path(__file__).resolve()), *sys.argv[1:]])
 
-# Load .env from the repo root so OPENAI_API_KEY (and friends) are present
-# whether this script is invoked from systemd (which has EnvironmentFile=)
-# or from a shell that hasn't sourced .env. Loud failure if dotenv is
-# missing — so a misconfigured Python doesn't silently produce a bad run.
 try:
     from dotenv import load_dotenv
     load_dotenv(REPO_ROOT / ".env")
@@ -54,7 +48,7 @@ except ImportError:
         file=sys.stderr,
     )
 
-import swarm_semantic  # noqa: E402
+import swarm_recall  # noqa: E402
 
 logging.basicConfig(
     level=logging.INFO,
@@ -65,11 +59,11 @@ logging.basicConfig(
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--force", action="store_true",
-                        help="Re-embed every file regardless of content_hash.")
+                        help="Re-embed every visible file regardless of content_hash.")
     args = parser.parse_args()
 
     try:
-        result = swarm_semantic.reindex(force=args.force)
+        result = swarm_recall.reindex_visible(force=args.force)
     except RuntimeError as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
