@@ -102,12 +102,105 @@ runtime.PLAY_PERPLEXITY = ecology.system_prompt("perplexity", "PLAY")
 
 
 # ---------------------------------------------------------------------------
-# Source self-observation + routing-first tool semantics.
+# Source self-observation + generic change handoff + routing-first tool semantics.
 # ---------------------------------------------------------------------------
 # The live provider converters read TOOL_DEFINITIONS at call time, so adding the
 # source tools here immediately exposes them to every native-tool seat without
 # expanding the fenced GitHub workspace token.
 runtime.swarm_tools.TOOL_DEFINITIONS.update(swarm_source.tool_definitions())
+
+
+def _dispatch_change_propose(
+    name: str,
+    summary: str,
+    proposed_change: str,
+    change_kind: str = "architecture",
+    observation: str = "",
+    evidence: str = "",
+    expected_effect: str = "",
+    validation: str = "",
+    risk_notes: str = "",
+    source_sha: str = "",
+    model: str = "unknown",
+    session_id: str = "unknown",
+) -> dict:
+    observed_sha = source_sha or (swarm_source.status().get("source_sha") or "")
+    result = runtime.swarm_proposals.queue_change(
+        name=name,
+        summary=summary,
+        proposed_change=proposed_change,
+        change_kind=change_kind,
+        observation=observation,
+        evidence=evidence,
+        expected_effect=expected_effect,
+        validation=validation,
+        risk_notes=risk_notes,
+        source_sha=observed_sha,
+        source=f"tool:{session_id}/{model}",
+    )
+    if result.get("ok"):
+        result["operationalization_state"] = "persisted-review-handoff"
+        result["implemented"] = False
+        result["integrated_or_deployed"] = False
+        result["behaviorally_verified"] = False
+    return result
+
+
+runtime.swarm_tools.TOOL_DEFINITIONS["change_propose"] = {
+    "description": (
+        "Create a structured review handoff when you identify a change worth making to the "
+        "swarm or a related system. This may be an architecture, prompt, memory, tool, code, "
+        "documentation, eval, workflow, UI, or research change. Use source_* evidence when the "
+        "proposal concerns current source. Filing the proposal preserves and routes the change "
+        "hypothesis; it does NOT mean the change is implemented, integrated, deployed, or "
+        "behaviorally verified. Those states remain explicit."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "name": {"type": "string", "description": "Short human-readable change name."},
+            "summary": {"type": "string", "description": "Why this change is worth review."},
+            "proposed_change": {"type": "string", "description": "Concrete change being proposed."},
+            "change_kind": {
+                "type": "string",
+                "description": "architecture, prompt, memory, tool, code, docs, eval, workflow, ui, research, or other.",
+            },
+            "observation": {"type": "string", "description": "Observed problem, gap, or opportunity."},
+            "evidence": {"type": "string", "description": "Supporting evidence, preferably source paths/lines or tool receipts."},
+            "expected_effect": {"type": "string", "description": "Expected behavioral/system effect if implemented."},
+            "validation": {"type": "string", "description": "How to test or falsify whether the change helped."},
+            "risk_notes": {"type": "string", "description": "Risks, collision modes, rollback/reversibility notes."},
+            "source_sha": {"type": "string", "description": "Optional explicit source SHA; current observed SHA is stamped when omitted."},
+        },
+        "required": ["name", "summary", "proposed_change"],
+    },
+    "dispatch": _dispatch_change_propose,
+}
+
+# Runner-stamp model/session provenance for the new generic handoff. The legacy
+# registry dispatcher only has special injection cases for older tools, so keep
+# its behavior intact and intercept this one tool at the runner boundary.
+_original_tool_dispatch = runtime.swarm_tools.dispatch
+
+
+def _ecology_tool_dispatch(name: str, args: dict, calling_model: str = "unknown",
+                           session_id: str = "unknown") -> dict:
+    if name == "change_propose":
+        params = (args or {}).copy()
+        params.setdefault("model", calling_model)
+        params.setdefault("session_id", session_id)
+        try:
+            return _dispatch_change_propose(**params)
+        except TypeError as exc:
+            return {"error": f"bad args for change_propose: {exc}"}
+        except Exception as exc:
+            runtime.logger.error(f"change_propose raised: {type(exc).__name__}: {exc}")
+            return {"error": f"{type(exc).__name__}: {exc}"}
+    return _original_tool_dispatch(
+        name, args, calling_model=calling_model, session_id=session_id)
+
+
+runtime.swarm_tools.dispatch = _ecology_tool_dispatch
 
 # Several legacy tool descriptions encoded local interface boundaries as if they
 # were participant incapabilities or social jurisdictions. Keep the underlying
