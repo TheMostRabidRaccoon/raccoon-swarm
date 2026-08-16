@@ -95,7 +95,7 @@ Current defaults are:
 
 - Claude → `claude-fable-5`
 - GPT → `gpt-5.6-sol`, explicit high reasoning
-- Grok → `grok-4.5`, explicit high reasoning
+- Grok → `grok-4.6`, explicit `xhigh` reasoning
 - Gemini → `gemini-3.1-pro-preview`
 - Perplexity → `sonar-pro`
 
