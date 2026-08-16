@@ -271,7 +271,11 @@ def test_run_joy_session_queues_proposal_for_tiny_tool(storage):
     import swarm_proposals as sp
     assert len(sp.list_state(sp.QUEUED)) == 1
     doc = fs.read_file("joy/runs/2026-07-05/tool-proposal.md")
-    assert doc and "AUTONOMY GATE" in doc and "word-counter" in doc
+    assert doc
+    assert "REVIEW HANDOFF" in doc
+    assert "proposal, not deployed state" in doc
+    assert "Behaviorally verified" in doc
+    assert "word-counter" in doc
 
 
 def test_run_joy_session_no_proposal_when_block_absent(storage):
