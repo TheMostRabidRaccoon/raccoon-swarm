@@ -1,7 +1,10 @@
 """Tests for the read-only Google Drive observation surface."""
-from types import SimpleNamespace
 from pathlib import Path
+from types import SimpleNamespace
 import json
+import zipfile
+
+import pytest
 
 import swarm_drive as drive
 
@@ -45,17 +48,18 @@ def test_search_uses_provider_fulltext_query_and_returns_ids(monkeypatch):
     assert out["results"][0]["name"] == "RRI memory design"
 
 
-def test_read_fetches_by_id_to_local_temp_and_extracts_text(monkeypatch):
+def test_read_caps_transfer_before_local_file_is_admitted(monkeypatch):
     monkeypatch.setattr(drive, "_configured", lambda: (True, "configured"))
     monkeypatch.setattr(drive, "_remote", lambda: "gdrive:")
     seen = {}
 
     def fake_run(args, timeout=None):
         seen["args"] = args
-        # Last positional destination is immediately after the file id.
         dest = Path(args[5])
         dest.mkdir(parents=True, exist_ok=True)
-        (dest / "Memory Notes.txt").write_text("remember the White Rose and the checker is also blind")
+        (dest / "Memory Notes.txt").write_text(
+            "remember the White Rose and the checker is also blind"
+        )
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(drive, "_run", fake_run)
@@ -66,8 +70,40 @@ def test_read_fetches_by_id_to_local_temp_and_extracts_text(monkeypatch):
     assert seen["args"][:4] == ["rclone", "backend", "copyid", "gdrive:"]
     assert seen["args"][4] == "ABCDEFGH1234"
     assert "--drive-export-formats" in seen["args"]
+    assert "--max-size" in seen["args"]
+    assert "--max-transfer" in seen["args"]
+    assert "--cutoff-mode" in seen["args"]
+    cutoff_i = seen["args"].index("--cutoff-mode")
+    assert seen["args"][cutoff_i + 1] == "HARD"
     # No remote mutation verb is exposed by the read implementation.
     assert not any(v in seen["args"] for v in ("delete", "move", "purge", "rcat", "copyto"))
+
+
+def test_transfer_failure_does_not_attempt_extraction(monkeypatch):
+    monkeypatch.setattr(drive, "_configured", lambda: (True, "configured"))
+    monkeypatch.setattr(drive, "_remote", lambda: "gdrive:")
+    monkeypatch.setattr(
+        drive,
+        "_run",
+        lambda args, timeout=None: SimpleNamespace(
+            returncode=1,
+            stdout="",
+            stderr="max transfer limit reached",
+        ),
+    )
+    out = drive.read("ABCDEFGH1234")
+    assert out["ok"] is False
+    assert "max transfer limit" in out["error"]
+
+
+def test_office_archive_expansion_is_bounded(tmp_path, monkeypatch):
+    path = tmp_path / "bomb.docx"
+    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("word/document.xml", "x" * 4096)
+
+    monkeypatch.setattr(drive, "MAX_ARCHIVE_UNCOMPRESSED_BYTES", 1024)
+    with pytest.raises(ValueError, match="archive expansion exceeds limit"):
+        drive._assert_archive_safe(path)
 
 
 def test_read_rejects_invalid_drive_id(monkeypatch):
