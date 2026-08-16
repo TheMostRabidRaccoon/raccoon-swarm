@@ -1,74 +1,153 @@
 # Architecture
 
-**What are the pieces, and how does data move?**
+Raccoon Swarm now separates **cognitive semantics**, **runtime orchestration**, and **hard environmental boundaries**.
 
-The system is a **hub + satellites** design: one Flask server orchestrates
-deliberation and synthesis; every capability lives in its own `swarm_*.py`
-module with a single responsibility. That grain is deliberate — a model or
-human can work on one subsystem without loading the whole stack into context.
+That separation is intentional. Natural-language roles can shape what a model notices or considers legitimate, but secrets, protected branches, deployment posture, and other invariants should be enforced mechanically.
 
-## Modules
+## Layers
 
-| Module | Responsibility |
-|--------|----------------|
-| `raccoon_swarm_server.py` | The hub. Flask routes, deliberation loops (loop / round-table / attention-lab / woodland-council), synthesis, UI, auth, the swarm daemon, SSE streams. |
-| `swarm_tools.py` | Unified tool registry — the tool schemas + dispatch the models call (`filestore_*`, `code_exec`, `web_search`, `web_verify`, `image_generate`, `mail`, `dispatch_queue_write`). |
-| `swarm_filestore.py` | Persistent shared memory (`positions/`, `questions/`, `pursuits/`, `tasks/`, `frameworks/`, `artifacts/`, `logs/`, `joy/`). Path safety, atomic writes, and **write verification** (phantom-claim detection). The `joy/` lane is kept out of the normal worker's auto-injected context (still indexable/searchable). |
-| `swarm_semantic.py` | Semantic search over the filestore — OpenAI embeddings, an mtime-keyed in-process cache, metadata filters + hybrid keyword/vector. No vector DB (see OPERATIONS). |
-| `swarm_evidence.py` | **Evidence catalog** (M1a) — a provenance-carrying SQLite index of *source* material a claim can cite (vs the filestore's own memory). Origin classes (conductor/swarm/third-party) to defeat citation-laundering, content-hash dedup for export sprawl, FTS5 search + `resolve_citation` (the seed of a `citation_gap`). Read-only; stdlib-only. See [`stack/evidence.md`](stack/evidence.md). |
-| `swarm_auth.py` | Stdlib-only auth primitives: constant-time token/password comparison, trusted-CIDR parsing. |
-| `swarm_deploy.py` | Stdlib-only deployment profiles (`local`/`lan`/`public`) — fail closed, fail loud. |
-| `swarm_dispatch.py` | Production-pipeline dispatch **queue** — a filesystem state machine (`queued/ → processing/ → done|failed/`) with atomic transitions. |
-| `swarm_codeexec.py` | Sandboxed Python runner (homelab-grade; gated on `public` by the deployment profile). |
-| `swarm_imagegen.py` | Image generation — Gemini Imagen / Grok Imagine / OpenAI backends. |
-| `swarm_websearch.py` / `swarm_webverify.py` | Web search (Tavily default) and URL-existence verification. |
-| `swarm_prosody.py` | Emotion-map / reverse-TTS via the `prosody-intelligence` engine. |
-| `swarm_mail.py` | The swarm's one outbound channel: email the Conductor. |
-| `swarm_orchestrator.py` | Round Orchestrator — winds down runaway tool loops, detects truncations. |
-| `swarm_closer.py` | Post-session Closer — emails a digest **and** writes the mechanical `scorecard-<id>.json` (incl. `persistence_gap`). |
-| `swarm_joy.py` | **Joy Mode** — a bounded daily Core-4 play ritual with receipts (one activity → artifact → reflection → **mechanical** scorecard, persisted under `joy/`). Server-free (round runner injected); own personal-data-free context; invented tools are *proposed*, never auto-installed. |
-| `swarm_proposals.py` | **Tool-proposal queue** — the Joy Mode autonomy handoff. A `tiny-tool-invention` run parses a `[TOOL_PROPOSAL]` block and queues it (`joy/proposals/queued/ → filed/ → failed/`, atomic transitions like `swarm_dispatch`). Stdlib-only, no network. The filer opens a GitHub issue; **merging into the live registry stays a human-reviewed PR** (the one gated step). |
-| `raccoon_mcp_server.py` | Exposes the filestore + code_exec / image_generate / web_search as MCP tools for external clients. |
-| `scripts/run_dispatch.py` | The dispatch **runner** — executes the video pipeline for queued payloads. |
-| `scripts/run_joy.py` | The Joy Mode **runner** — wires the server engine into `swarm_joy` and runs one ritual as a systemd oneshot (isolates persona-mode globals). Fired daily by `swarm-joy.timer`. |
-| `scripts/file_proposals.py` | The proposal **filer** — opens a GitHub issue per queued tool proposal (fine-grained token, else emails the Conductor). Fired by `swarm-proposals.path` when a proposal lands. |
-| `scripts/swarm_observer.py` | Cross-session observer (reads across sessions; never writes to the swarm filestore). |
-
-## Request → response data flow
-
-```
-HTTP request
-  → auth            (require_auth + deployment profile: local/lan/public)
-  → route           (a deliberation mode in raccoon_swarm_server.py)
-  → rounds          (the 5 models respond; later speakers may see earlier ones)
-      └ tool_use    (swarm_tools → filestore / semantic / code_exec /
-                     web_search / web_verify / image_generate / mail / dispatch)
-  → orchestrator    (winds down tool loops before the cliff)
-  → synthesis       (dual-model synthesis merges the round)
-  → persist         (MEMORY_WRITE directives land in the filestore)
-  → closer          (digest email + scorecard: counters + persistence_gap)
+```text
+Kyra / external request
+        │
+        ▼
+swarm_ecology.py
+  peer standing · attentional roles · exploration · thread sovereignty
+  seat identities · Claude/GPT reliability-routed final review
+        │
+        ├── swarm_memory_policy.py
+        │     selective persistence / autonomous-pursuit semantics
+        │
+        ▼
+raccoon_swarm_server.py
+  active entry point: installs current ecology + current model registry
+        │
+        ▼
+swarm_runtime.py
+  Flask · SSE · provider SDK loops · daemon · headless · UI · media pipelines
+        │
+        ├── swarm_tools.py          shared model tool registry
+        ├── swarm_filestore.py      external memory + write/ghost verification
+        ├── swarm_memory.py         compact cross-session state
+        ├── swarm_semantic.py       embedding/hybrid retrieval
+        ├── swarm_evidence.py       provenance-carrying evidence catalog
+        ├── swarm_codeexec.py       bounded execution + receipts
+        ├── swarm_imagegen.py       image-generation backends
+        ├── swarm_websearch.py      public-web search
+        ├── swarm_webverify.py      narrow URL verification
+        ├── swarm_prosody.py        prosody/TTS service bridge
+        ├── swarm_workspace.py      fenced repository workspace
+        ├── swarm_dispatch.py       deterministic production queue
+        ├── swarm_closer.py         mechanical post-session telemetry
+        ├── swarm_orchestrator.py   tool-budget wind-down
+        └── swarm_joy.py            bounded autonomous ritual
 ```
 
-## Production pipeline (async, off the request path)
+## Cognitive unit of analysis
 
+The architecture does not assume that capability belongs only to one model. Depending on the question, the useful unit may be:
+
+- a model alone;
+- model + current context;
+- model + tool;
+- model + external memory;
+- a sequence of models transforming one another's representations;
+- Kyra + models + tools + persistent state.
+
+This is why roles are not implemented as permissions. **Backbone**, **Integrator**, **Chaos Processor**, **Court Bard**, **Oracle**, and **Conductor** are cultural identities and attentional signatures.
+
+> **Do not mistake the current division of labor for the boundary of anyone's capability.**
+
+## Request → cognition → persistence
+
+```text
+HTTP / headless / daemon request
+  │
+  ├── authentication + deployment profile      [hard gate]
+  │
+  ▼
+active peer-ecology system prompt
+  │
+  ▼
+model round(s)
+  │    ├── shared tool calls
+  │    ├── parallel or daisy interaction
+  │    └── optional human turn
+  │
+  ▼
+Claude + GPT independent integration
+  │
+  ▼
+final integration
+  │
+  ├── selective memory extraction
+  ├── verified filestore writes when warranted
+  ├── mechanical closer / telemetry
+  └── output log / DOCX / downstream artifact
 ```
-synthesis (image-review passed)
-  → swarm_dispatch.write_payload()      → swarm/dispatch/queued/<id>.json
-  → systemd swarm-dispatch.path watcher → scripts/run_dispatch.py
-  → TTS + frames + ffmpeg composition   → done/ (+ manifest) | failed/
-  → email the Conductor
-```
 
-The boundary is deliberate: **model-driven phases upstream, deterministic
-Python downstream.** Creative raccoons write the script; the machine renders
-the video.
+The Claude/GPT final-review pair is **competence routing, not seniority**. Both remain challengeable by every participant. Claude emits the final merge string because one call must do so; that mechanical position does not make Claude the superior node.
 
-## Governance loop
+## Model registry
 
-`route → deliberate → verify → persist → score → observe → adapt`
+Provider model versions are isolated in `swarm_model_config.py` so model upgrades do not rewrite the seat ontology.
 
-- **verify / persist** — `swarm_filestore` write-verification: announcing a
-  write is not a write (the Existence Criterion).
-- **score** — `swarm_closer` scorecard: mechanical counters + `persistence_gap`
-  computed from *verified* filestore paths.
-- **observe** — `scripts/swarm_observer.py`, read-only across sessions.
+Current defaults are:
+
+- Claude → `claude-fable-5`
+- GPT → `gpt-5.6-sol`, explicit high reasoning
+- Grok → `grok-4.5`, explicit high reasoning
+- Gemini → `gemini-3.1-pro-preview`
+- Perplexity → `sonar-pro`
+
+Every value is environment-overridable for rollback or A/B testing.
+
+## Shared action space
+
+Claude, GPT, Grok, and Gemini receive the same unified tool registry where the provider supports native tool calling. A habitual specialty does not imply ownership of a tool or task type.
+
+Examples:
+
+- Gemini may normally notice visual representation first, but Claude may invoke image generation when that is the best available path.
+- Grok may normally stress-test assumptions, but it may synthesize, research, code, or build when useful.
+- GPT may normally integrate systems, but exploration does not need to end in architecture.
+- Claude may normally track coherence, but it is not the supervisor of the other nodes.
+
+Technical inability to invoke a capability is an environmental fact, not a social rule.
+
+## Memory
+
+Two persistence layers coexist:
+
+1. `swarm_memory.py` — compact cross-session state used by headless/daemon continuation.
+2. `swarm_filestore.py` — richer shared external memory and durable artifacts.
+
+`swarm_memory_policy.py` now applies a selective-memory test. The system favors costly mistakes, behavior-changing insights, high-value human continuity, compact recurring hazards, useful conceptual handles, deliberately parked threads, and reusable state.
+
+It normally rejects routine agreement, ordinary tool success, competence receipts, transcript duplication, and lore that cannot guide future cognition.
+
+This distinction matters because `next_pursuits` can drive autonomous daemon work: **interesting is not automatically obligatory**.
+
+## Environment = physics
+
+Hard boundaries remain code-enforced:
+
+- secret / `.env` restrictions;
+- repository and path allowlists;
+- protected branches;
+- auth and deployment posture;
+- execution/network boundaries;
+- merge and credential gates;
+- runner-stamped provenance;
+- write/read-back verification.
+
+These are not evidence that one cognitive participant outranks another.
+
+A useful shorthand is:
+
+> **Language shapes the cognitive constitution; code defines the physics. The physics wins.**
+
+## Historical governance modes
+
+Round Table governance, declaration parsing, convergence analysis, the Existence Criterion, and prior procedural experiments remain part of the research record and may still be invoked as experimental topologies.
+
+They no longer define the default ontology of the swarm.
