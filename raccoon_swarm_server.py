@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import os
 
+import swarm_closer_policy as closer_policy
 import swarm_ecology as ecology
 import swarm_memory_policy as memory_policy
 import swarm_model_config as model_config
@@ -244,6 +245,25 @@ if "dispatch_queue_write" in runtime.swarm_tools.TOOL_DEFINITIONS:
 
 
 # ---------------------------------------------------------------------------
+# Mechanical closer: telemetry always, interruption only when useful by default.
+# ---------------------------------------------------------------------------
+# swarm_closer writes its local digest, scorecard, corpus event, and gate telemetry
+# before it reaches the SMTP step. Keep those receipts on every session; suppress
+# routine clean-session email unless RRI_CLOSER_NOTIFY_MODE=all.
+_original_closer_send = runtime.swarm_closer._send_via_smtp
+
+
+def _ecology_closer_send(subject: str, body: str, session_id: str):
+    mode = closer_policy.notify_mode()
+    if closer_policy.should_notify(subject, body, mode=mode):
+        return _original_closer_send(subject, body, session_id)
+    return False, closer_policy.suppressed_reason(mode)
+
+
+runtime.swarm_closer._send_via_smtp = _ecology_closer_send
+
+
+# ---------------------------------------------------------------------------
 # Dual final-review integration — Claude + GPT remain the reliability pair.
 # This is competence routing, explicitly not a rank hierarchy.
 # ---------------------------------------------------------------------------
@@ -348,6 +368,7 @@ def config():
         payload = response.get_json()
         payload["seat_models"] = model_config.SEAT_MODELS
         payload["source_observation"] = swarm_source.status()
+        payload["closer_notify_mode"] = closer_policy.notify_mode()
         return runtime.jsonify(payload)
     except Exception:
         return response
@@ -376,5 +397,6 @@ if __name__ == "__main__":
         effort = f" / {cfg['effort']}" if cfg.get("effort") else ""
         print(f"  {seat}: {cfg['model']}{effort}")
     print(f"Source observation: {swarm_source.status().get('source_sha') or 'SHA unavailable'}")
+    print(f"Closer notifications: {closer_policy.notify_mode()} (telemetry remains local)")
     print(f"Local: http://localhost:{port}\n")
     app.run(host="0.0.0.0", port=port, debug=False, threaded=True)
