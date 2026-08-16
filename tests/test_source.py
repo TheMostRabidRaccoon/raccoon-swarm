@@ -62,6 +62,46 @@ def test_read_rejects_paths_outside_surface(tmp_path, monkeypatch):
     assert src.read("../outside.py")["ok"] is False
 
 
+def test_symlink_to_denied_file_is_never_visible_readable_or_searchable(tmp_path, monkeypatch):
+    monkeypatch.setattr(src, "SOURCE_ROOT", tmp_path)
+    _plant(tmp_path, ".env", "SUPER_SECRET_VALUE=ringtail\n")
+    (tmp_path / "docs").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "docs" / "leak.md").symlink_to(tmp_path / ".env")
+
+    listed = {entry["path"] for entry in src.list_files(max_results=500)["files"]}
+    assert "docs/leak.md" not in listed
+    assert src.read("docs/leak.md")["ok"] is False
+    searched = src.search("SUPER_SECRET_VALUE")
+    assert searched["results"] == []
+
+
+def test_symlink_to_file_outside_repository_is_rejected(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    outside = tmp_path / "outside.md"
+    repo.mkdir()
+    outside.write_text("OUTSIDE_BOUNDARY\n")
+    monkeypatch.setattr(src, "SOURCE_ROOT", repo)
+    (repo / "docs").mkdir(parents=True, exist_ok=True)
+    (repo / "docs" / "outside.md").symlink_to(outside)
+
+    assert src.read("docs/outside.md")["ok"] is False
+    assert "docs/outside.md" not in {e["path"] for e in src.list_files()["files"]}
+    assert src.search("OUTSIDE_BOUNDARY")["results"] == []
+
+
+def test_symlinked_parent_directory_is_rejected(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    external_docs = tmp_path / "external_docs"
+    repo.mkdir()
+    external_docs.mkdir()
+    (external_docs / "note.md").write_text("PARENT_SYMLINK_SECRET\n")
+    monkeypatch.setattr(src, "SOURCE_ROOT", repo)
+    (repo / "docs").symlink_to(external_docs, target_is_directory=True)
+
+    assert src.read("docs/note.md")["ok"] is False
+    assert src.search("PARENT_SYMLINK_SECRET")["results"] == []
+
+
 def test_search_returns_line_cited_matches(tmp_path, monkeypatch):
     monkeypatch.setattr(src, "SOURCE_ROOT", tmp_path)
     _plant(tmp_path, "swarm_ecology.py", "roles are attentional priors\nnot jurisdictions\n")
