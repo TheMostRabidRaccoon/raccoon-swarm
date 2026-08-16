@@ -105,9 +105,18 @@ def _escape_drive_literal(value: str) -> str:
 
 
 def _terms(query: str, limit: int = 7) -> list[str]:
+    """Extract useful Drive full-text terms without destroying word-internal marks.
+
+    Apostrophes matter: `swarm's` is a legitimate literal that must reach
+    `_escape_drive_literal()` intact rather than silently degrading to `swarm`.
+    Curly apostrophes are normalized to ASCII before Drive-query escaping.
+    Dots/hyphens/underscores are retained only when they join non-empty segments.
+    """
     seen: set[str] = set()
     terms: list[str] = []
-    for token in re.findall(r"[A-Za-z0-9][A-Za-z0-9_.-]*", query or ""):
+    pattern = r"[A-Za-z0-9]+(?:['’][A-Za-z0-9]+)*(?:[_.-][A-Za-z0-9]+)*"
+    for raw_token in re.findall(pattern, query or ""):
+        token = raw_token.replace("’", "'")
         low = token.lower().strip("._-")
         if len(low) < 3 or low in _STOPWORDS or low in seen:
             continue
