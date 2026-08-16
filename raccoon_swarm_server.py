@@ -2,12 +2,13 @@
 """RRI Raccoon Swarm — active peer-cognitive-ecology entry point.
 
 The Flask/model/tool plumbing lives in :mod:`swarm_runtime`. Prompt ontology is
-kept separate in :mod:`swarm_ecology`, and memory-selection semantics live in
-:mod:`swarm_memory_policy`.
+kept separate in :mod:`swarm_ecology`, memory-selection semantics live in
+:mod:`swarm_memory_policy`, and provider model/version choices live in
+:mod:`swarm_model_config`.
 
 This separation is deliberate: changing what "Backbone", "Council", or
-"Conductor" means should not require editing the server's transport/runtime
-machinery.
+"Conductor" means should not require editing transport machinery, and upgrading
+a provider model should not rewrite a seat's cultural identity.
 """
 from __future__ import annotations
 
@@ -15,7 +16,48 @@ import os
 
 import swarm_ecology as ecology
 import swarm_memory_policy as memory_policy
+import swarm_model_config as model_config
 import swarm_runtime as runtime
+
+
+# ---------------------------------------------------------------------------
+# Install current provider models. Environment variables in swarm_model_config
+# remain the rollback / A-B-test escape hatch.
+# ---------------------------------------------------------------------------
+runtime.CLAUDE_MODEL = model_config.CLAUDE_MODEL
+runtime.GPT_MODEL = model_config.GPT_MODEL
+runtime.GROK_MODEL = model_config.GROK_MODEL
+runtime.GEMINI_MODEL = model_config.GEMINI_MODEL
+runtime.PERPLEXITY_MODEL = model_config.PERPLEXITY_MODEL
+runtime.GROK_REASONING_EFFORT = model_config.GROK_REASONING_EFFORT
+
+
+# GPT-5.6 supports explicit reasoning effort. The legacy runtime helper already
+# carries provider-specific parameters through `extra_body`; use that path so
+# the Integrator does not silently fall back to the API's medium default.
+def call_gpt(query, max_tokens=runtime.MAX_OUTPUT_TOKENS, images=None, session_id="unknown"):
+    try:
+        return runtime._openai_chat_with_tools(
+            client=runtime.get_gpt_client(),
+            model_name=runtime.GPT_MODEL,
+            max_tokens=max_tokens,
+            tokens_param="max_completion_tokens",
+            sys_prompt=runtime.get_system_prompt("gpt"),
+            query=query,
+            images=images,
+            calling_model="gpt",
+            label="GPT",
+            session_id=session_id,
+            extra_body={"reasoning_effort": model_config.GPT_REASONING_EFFORT},
+        )
+    except Exception as exc:
+        runtime.logger.error(f"GPT Error: {exc}")
+        return f"[GPT error: {str(exc)}]"
+
+
+runtime.call_gpt = call_gpt
+runtime.SWARM_SINGLE["gpt"] = call_gpt
+runtime.SWARM_LOOP["GPT"] = call_gpt
 
 
 # ---------------------------------------------------------------------------
@@ -24,7 +66,6 @@ import swarm_runtime as runtime
 # daemon, headless sessions, Woodland Council pipeline, and model call loops all
 # inherit the new semantics without duplicating transport/tool code here.
 # ---------------------------------------------------------------------------
-
 def _active_system_prompt(model_name: str) -> str:
     return ecology.system_prompt(model_name, runtime.current_mode_label())
 
@@ -61,7 +102,6 @@ runtime.PLAY_PERPLEXITY = ecology.system_prompt("perplexity", "PLAY")
 # Dual final-review integration — Claude + GPT remain the reliability pair.
 # This is competence routing, explicitly not a rank hierarchy.
 # ---------------------------------------------------------------------------
-
 def _integration_failed(label: str, text: str) -> bool:
     low = (text or "").lower()
     return low.startswith(f"[{label.lower()} error") or "synthesis error" in low[:120]
@@ -152,6 +192,24 @@ if hasattr(runtime, "COUNCIL_CHARACTERS") and "GPT" in runtime.COUNCIL_CHARACTER
     })
 
 
+# Add live model metadata to /config without changing the original runtime route
+# contract. The UI can display it later; tests/canaries can inspect it now.
+_original_config = runtime.config
+
+
+def config():
+    response = _original_config()
+    try:
+        payload = response.get_json()
+        payload["seat_models"] = model_config.SEAT_MODELS
+        return runtime.jsonify(payload)
+    except Exception:
+        return response
+
+
+runtime.app.view_functions["config"] = config
+
+
 # Flask / gunicorn entry point.
 app = runtime.app
 
@@ -167,5 +225,9 @@ if __name__ == "__main__":
     port = int(os.getenv("PORT", "5000"))
     print("\n🦝 RRI RACCOON SWARM — PEER COGNITIVE ECOLOGY")
     print("Identity is not hierarchy · roles are attentional priors, not jurisdictions")
+    print("Models:")
+    for seat, cfg in model_config.SEAT_MODELS.items():
+        effort = f" / {cfg['effort']}" if cfg.get("effort") else ""
+        print(f"  {seat}: {cfg['model']}{effort}")
     print(f"Local: http://localhost:{port}\n")
     app.run(host="0.0.0.0", port=port, debug=False, threaded=True)
