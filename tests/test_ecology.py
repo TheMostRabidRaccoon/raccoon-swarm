@@ -1,8 +1,8 @@
 """Prompt invariants for the peer cognitive ecology.
 
 These tests protect semantics, not line wrapping: titles/lore may evolve, but rank,
-jurisdiction, compulsory productivity, and old probation language must not silently
-creep back into the active ecology prompts.
+jurisdiction, compulsory productivity, old probation language, and interface limits
+must not silently become cognitive ceilings in the active ecology prompts.
 """
 import swarm_ecology as eco
 
@@ -41,6 +41,16 @@ def test_conductor_is_historical_cultural_not_authority():
     assert "esteemed" in text and "—the conductor" in text
 
 
+def test_action_surface_is_not_capability():
+    ecology = _norm(eco.PEER_ECOLOGY)
+    rails = _norm(eco.EPISTEMIC_RAIL + "\n" + eco.TOOL_RAIL)
+    assert "capability / action-surface semantics" in ecology
+    assert "interface fact, not a claim" in ecology
+    assert "local tool boundary" in ecology and "global statement of incapacity" in ecology
+    assert "not visible/exposed on this surface" in rails
+    assert "current action surface" in rails and "permanent capability" in rails
+
+
 def test_open_exploration_is_explicit():
     text = _norm(eco.PEER_ECOLOGY)
     assert "unless the task explicitly constrains the route" in text
@@ -76,6 +86,14 @@ def test_memory_is_selective_not_a_paperwork_quota():
         assert signal in text
     for refusal in ("everyone agreed", "demonstrated competence", "tool succeeded", "lore is flattering"):
         assert refusal in text
+
+
+def test_persistence_is_not_operationalization():
+    text = _norm(eco.MEMORY_RAIL)
+    assert "persistence is not operationalization" in text
+    assert "does not by itself change the running system" in text
+    assert "behaviorally verified" in text
+    assert "do not close a change request merely because" in text
 
 
 def test_final_review_is_reliability_routing_not_rank():
