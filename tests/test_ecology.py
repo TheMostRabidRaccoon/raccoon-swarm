@@ -1,8 +1,8 @@
 """Prompt invariants for the peer cognitive ecology.
 
 These tests protect semantics, not line wrapping: titles/lore may evolve, but rank,
-jurisdiction, compulsory productivity, old probation language, and interface limits
-must not silently become cognitive ceilings in the active ecology prompts.
+jurisdiction, compulsory productivity, old probation language, interface limits,
+and recall behavior must not silently drift back into the active ecology prompts.
 """
 import swarm_ecology as eco
 
@@ -86,6 +86,18 @@ def test_memory_is_selective_not_a_paperwork_quota():
         assert signal in text
     for refusal in ("everyone agreed", "demonstrated competence", "tool succeeded", "lore is flattering"):
         assert refusal in text
+
+
+def test_recall_is_encouraged_without_becoming_a_ritual():
+    text = _norm(eco.RECALL_RAIL)
+    assert "search rather than reconstruct from vague familiarity" in text
+    assert "memory_recall" in text
+    assert "we already talked about this" in text
+    assert "not retrieved" in text and "not indexed" in text and "not present" in text
+    assert "do not search memory merely because a tool exists" in text
+    assert "self-contained current-turn question does not need ceremonial retrieval" in text
+    # The recall heuristic is active in every normal seat prompt, not just docs.
+    assert "recall / memory search" in _norm(eco.system_prompt("gpt", "FUNCTIONAL"))
 
 
 def test_persistence_is_not_operationalization():
