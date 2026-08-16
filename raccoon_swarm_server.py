@@ -4,22 +4,27 @@
 The Flask/model/tool plumbing lives in :mod:`swarm_runtime`. Prompt ontology is
 kept separate in :mod:`swarm_ecology`, memory-selection semantics live in
 :mod:`swarm_memory_policy`, provider model/version choices live in
-:mod:`swarm_model_config`, and :mod:`swarm_source` exposes the deployed checkout
-as a read-only self-observation surface.
+:mod:`swarm_model_config`, :mod:`swarm_recall` activates relevant prior context,
+:mod:`swarm_drive` exposes read-only external Drive evidence, and
+:mod:`swarm_source` exposes the deployed checkout as a read-only self-observation
+surface.
 
 This separation is deliberate: changing what "Backbone", "Council", or
 "Conductor" means should not require editing transport machinery, upgrading a
 provider model should not rewrite a seat's cultural identity, and observing source
-should not imply a production mutation route.
+or Drive should not imply a production mutation route.
 """
 from __future__ import annotations
 
 import os
+import threading
 
 import swarm_closer_policy as closer_policy
+import swarm_drive
 import swarm_ecology as ecology
 import swarm_memory_policy as memory_policy
 import swarm_model_config as model_config
+import swarm_recall
 import swarm_source
 import swarm_runtime as runtime
 
@@ -103,12 +108,14 @@ runtime.PLAY_PERPLEXITY = ecology.system_prompt("perplexity", "PLAY")
 
 
 # ---------------------------------------------------------------------------
-# Source self-observation + generic change handoff + routing-first tool semantics.
+# Observation + recall + generic change handoff.
 # ---------------------------------------------------------------------------
-# The live provider converters read TOOL_DEFINITIONS at call time, so adding the
-# source tools here immediately exposes them to every native-tool seat without
-# expanding the fenced GitHub workspace token.
+# The live provider converters read TOOL_DEFINITIONS at call time. Source, memory
+# recall, and Drive are observation/retrieval surfaces; none expand production
+# mutation authority.
 runtime.swarm_tools.TOOL_DEFINITIONS.update(swarm_source.tool_definitions())
+runtime.swarm_tools.TOOL_DEFINITIONS.update(swarm_recall.tool_definitions())
+runtime.swarm_tools.TOOL_DEFINITIONS.update(swarm_drive.tool_definitions())
 
 
 def _dispatch_change_propose(
@@ -245,6 +252,71 @@ if "dispatch_queue_write" in runtime.swarm_tools.TOOL_DEFINITIONS:
 
 
 # ---------------------------------------------------------------------------
+# Automatic associative recall — once, before Round 1.
+# ---------------------------------------------------------------------------
+# We install this below the loop worker rather than asking every model to remember
+# to search. `run_loop_round` receives the fully assembled first-round prompt, which
+# contains the canonical === TASK === block, so the hook can recover the actual task
+# while remaining transport-agnostic. Joy's separate runner uses session_id=unknown
+# and therefore keeps its intentionally scoped context.
+_original_run_loop_round = runtime.run_loop_round
+_recall_sessions: set[str] = set()
+_recall_lock = threading.Lock()
+
+
+def _recall_prompt_once(prompt: str, session_id: str) -> str:
+    if not swarm_recall.automatic_recall_enabled() or not session_id or session_id == "unknown":
+        return prompt
+    with _recall_lock:
+        if session_id in _recall_sessions:
+            return prompt
+        if len(_recall_sessions) > 1000:
+            _recall_sessions.clear()
+        _recall_sessions.add(session_id)
+
+    task = swarm_recall.extract_task(prompt)
+    if not task:
+        return prompt
+    try:
+        memory = runtime.load_swarm_memory()
+        recalled = swarm_recall.automatic_recall(task, memory=memory)
+        ctx = recalled.get("context") or ""
+        runtime.logger.info(
+            "automatic recall session=%s local=%s drive=%s context_chars=%s",
+            session_id,
+            len(recalled.get("local") or []),
+            len(recalled.get("drive") or []),
+            len(ctx),
+        )
+        return f"{ctx}\n\n{prompt}" if ctx else prompt
+    except Exception as exc:
+        # Recall is an aid, not a gate. A broken memory instrument must not erase
+        # the user's current conversation.
+        runtime.logger.error(
+            f"automatic recall failed for {session_id} (non-fatal): "
+            f"{type(exc).__name__}: {exc}"
+        )
+        return prompt
+
+
+def run_loop_round(prompt, models=None, images=None, session_id="unknown",
+                   mode="parallel", order=None, on_speaker=None):
+    recalled_prompt = _recall_prompt_once(prompt, session_id)
+    return _original_run_loop_round(
+        recalled_prompt,
+        models=models,
+        images=images,
+        session_id=session_id,
+        mode=mode,
+        order=order,
+        on_speaker=on_speaker,
+    )
+
+
+runtime.run_loop_round = run_loop_round
+
+
+# ---------------------------------------------------------------------------
 # Mechanical closer: telemetry always, interruption only when useful by default.
 # ---------------------------------------------------------------------------
 # swarm_closer writes its local digest, scorecard, corpus event, and gate telemetry
@@ -357,8 +429,8 @@ if hasattr(runtime, "COUNCIL_CHARACTERS") and "GPT" in runtime.COUNCIL_CHARACTER
     })
 
 
-# Add live model/source metadata to /config without changing the original runtime
-# route contract. The UI can display it later; tests/canaries can inspect it now.
+# Add live model/source/memory metadata to /config without changing the original
+# runtime route contract. The UI can display it later; tests/canaries can inspect it.
 _original_config = runtime.config
 
 
@@ -368,6 +440,11 @@ def config():
         payload = response.get_json()
         payload["seat_models"] = model_config.SEAT_MODELS
         payload["source_observation"] = swarm_source.status()
+        payload["drive_observation"] = swarm_drive.status()
+        payload["automatic_recall"] = {
+            "enabled": swarm_recall.automatic_recall_enabled(),
+            "drive_enabled": swarm_recall.automatic_drive_recall_enabled(),
+        }
         payload["closer_notify_mode"] = closer_policy.notify_mode()
         return runtime.jsonify(payload)
     except Exception:
@@ -397,6 +474,12 @@ if __name__ == "__main__":
         effort = f" / {cfg['effort']}" if cfg.get("effort") else ""
         print(f"  {seat}: {cfg['model']}{effort}")
     print(f"Source observation: {swarm_source.status().get('source_sha') or 'SHA unavailable'}")
+    drive_state = swarm_drive.status()
+    print(f"Drive observation: {'configured' if drive_state.get('configured') else 'not configured'}")
+    print(
+        f"Automatic recall: {'on' if swarm_recall.automatic_recall_enabled() else 'off'} "
+        f"(Drive {'on' if swarm_recall.automatic_drive_recall_enabled() else 'off'})"
+    )
     print(f"Closer notifications: {closer_policy.notify_mode()} (telemetry remains local)")
     print(f"Local: http://localhost:{port}\n")
     app.run(host="0.0.0.0", port=port, debug=False, threaded=True)
