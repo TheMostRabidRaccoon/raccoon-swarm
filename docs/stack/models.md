@@ -1,110 +1,110 @@
 # Models
 
-Five AI providers in the round-table plus the human "Conductor" slot. Voice
-casting via ElevenLabs.
+Five provider seats participate in the RRI peer cognitive ecology. Seat names and lore
+are cultural identities / attentional priors, not exclusive job descriptions.
 
 ## Source of truth
 
-- `raccoon_swarm_server.py` (SDK clients, call_* functions, voice map)
-- `.env.example` (API key names)
-- `README.md` (Swarm Roster table)
+- `swarm_model_config.py` — provider model IDs and reasoning-effort defaults.
+- `raccoon_swarm_server.py` — active ecology entry point; installs the configured
+  models into the transport runtime after environment loading.
+- `swarm_runtime.py` — provider SDK clients and transport/tool loops.
+- `swarm_ecology.py` — active seat semantics.
+- `.env.example` — operator-facing override names.
 
-## Providers
+`swarm_runtime` loads `~/.env` and the project `.env` before
+`swarm_model_config` is imported by the active entry point, so `RRI_*` overrides are
+resolved before the registry constants are evaluated.
 
-| Model      | SDK / Transport                          | Env var             | Role                             | Voice (ElevenLabs) |
-|------------|------------------------------------------|---------------------|----------------------------------|--------------------|
-| Claude     | `anthropic` (official)                   | `ANTHROPIC_API_KEY` | Backbone — The Snooty Librarian  | George             |
-| GPT        | `openai` (official)                      | `OPENAI_API_KEY`    | Integrator — Full Council Member | Eric               |
-| Gemini     | `google-genai` (`from google import genai`) | `GOOGLE_API_KEY` | Visual + Research — Court Bard   | Adam               |
-| Grok       | `openai` client with `base_url=https://api.x.ai/v1` | `XAI_API_KEY` (fallback `GROK_API_KEY`) | Chaos Processor — Flame-Bearer | Callum |
-| Perplexity | `openai` client with `base_url=https://api.perplexity.ai` | `PERPLEXITY_API_KEY` | Research — The Oracle | Daniel |
+## Current general-seat defaults
 
-Client init sites (as of current server):
+| Seat | Transport | Model env override | Default model | Attentional signature |
+|---|---|---|---|---|
+| Claude / George | Anthropic SDK | `RRI_CLAUDE_MODEL` | `claude-fable-5` | continuity, contradictions, evidence, coherence |
+| GPT / Eric | OpenAI SDK | `RRI_GPT_MODEL` | `gpt-5.6-sol` | system structure, cross-domain integration, abstraction |
+| Grok / Callum | OpenAI-compatible xAI API | `RRI_GROK_MODEL` | `grok-4.5` | fragile assumptions, adversarial pressure, weird useful branches |
+| Gemini / Adam | Google GenAI SDK | `RRI_GEMINI_MODEL` | `gemini-3.1-pro-preview` | representation, multimodality, reframing |
+| Perplexity / Daniel | OpenAI-compatible Perplexity API | `RRI_PERPLEXITY_MODEL` | `sonar-pro` | external evidence and provenance |
 
-- Grok client: `raccoon_swarm_server.py:91` (`get_grok_client`)
-- Perplexity client: `raccoon_swarm_server.py:106` (`get_perplexity_client`)
-- Claude / OpenAI / Gemini: direct SDK, imported at top of file
+The current division of labor is not a capability boundary. Shared tools are routed by
+relevance and available provider interfaces, not by jurisdiction.
 
-## Call functions
+## Reasoning effort
 
-All live in `raccoon_swarm_server.py`. Signature:
-`call_<model>(query, max_tokens=MAX_OUTPUT_TOKENS, images=None)`.
+### GPT
 
-`MAX_OUTPUT_TOKENS` (default 8000, env `RRI_MAX_OUTPUT_TOKENS`) is the per-call
-output ceiling for every seat and for synthesis. You pay only for tokens
-actually generated, so raising it just prevents truncation of long outputs.
-**Keep it ≤16000** — `call_*` use non-streaming `messages.create`, and the
-Anthropic SDK refuses non-streaming requests above ~16K (HTTP-timeout guard);
-going higher means converting `call_claude` to streaming.
+`RRI_GPT_REASONING` defaults to `high` and is sent explicitly by the active GPT
+adapter. The provider model ID and reasoning setting remain independently
+environment-overridable.
 
-Dispatch dict (both lowercase and capitalized keys, around `:822`):
-`call_claude`, `call_gpt`, `call_gemini`, `call_grok`, `call_perplexity`.
+### Grok
 
-## Model IDs — one place to bump
+`RRI_GROK_REASONING` defaults to `high` for the ordinary `grok-4.5` seat.
 
-All five seats resolve from env-overridable constants near the top of
-`raccoon_swarm_server.py` (search `MODEL IDS`). Defaults as of the latest bump:
+The optional nested-agent xAI route is a different topology:
 
-| Seat       | Constant           | Env override            | Default                    |
-|------------|--------------------|-------------------------|----------------------------|
-| Claude     | `CLAUDE_MODEL`     | `RRI_CLAUDE_MODEL`      | `claude-opus-4-8`          |
-| GPT        | `GPT_MODEL`        | `RRI_GPT_MODEL`         | `gpt-5.5`                  |
-| Grok       | `GROK_MODEL`       | `RRI_GROK_MODEL`        | `grok-4.3`                 |
-| Gemini     | `GEMINI_MODEL`     | `RRI_GEMINI_MODEL`      | `gemini-3.1-pro-preview`   |
-| Perplexity | `PERPLEXITY_MODEL` | `RRI_PERPLEXITY_MODEL`  | `sonar-pro`                |
+- `RRI_GROK_MULTI_AGENT_MODEL` defaults to `grok-4.20-multi-agent`;
+- `RRI_GROK_MULTI_AGENT_EFFORT` defaults to `high`.
 
-To bump a seat: change the default in that one constant, **or** set the env
-var and restart — no code change, no redeploy. When a provider ships a newer
-id, this table + the constant are the only two places to touch.
+Do not silently substitute the nested-agent route for the ordinary Grok seat merely as
+an effort upgrade; it changes the cognitive graph.
 
-## Grok reasoning effort
+## Claude Fable refusal handling
 
-`GROK_REASONING_EFFORT` (env: `RRI_GROK_REASONING`, default `high`) is sent as
-`reasoning_effort` on every Grok call via the SDK's `extra_body` passthrough.
-grok-4.3 defaults to `low` when the param is omitted — the seat runs the
-flagship at its laziest setting, which presented as "Grok isn't like he used
-to be" (session 105). Valid values per xAI docs: `none | low | medium | high`.
-Set to `""` to omit the param and take the API default. Like a model-id bump,
-an invalid value errors at call time, not boot — verify via `/ping-swarm`.
+Claude Fable can return a normal API response with `stop_reason="refusal"` and no text.
+`swarm_claude_adapter.py` treats that as an explicit unavailable result rather than a
+successful empty answer.
 
-**Verify on the floor after any bump.** A wrong id 404s at call time, not at
-boot. Hit `/ping-swarm` (or a quick round) and confirm each seat responds; if
-one fails, flip its `RRI_*_MODEL` env back to a known-good id and restart. Only
-`claude-opus-4-8` is verified against a first-party catalog here; the others
-track each provider's current docs and may drift — the env override is the
-rollback.
+For the dual final-review path:
 
-## Personas / modes
+1. Claude and GPT integrate independently.
+2. If Claude refuses or otherwise produces an unavailable result, the valid GPT
+   integration survives.
+3. If both independent integrations are valid, Claude performs the mechanical final
+   merge.
+4. If that final Claude merge refuses, the valid GPT independent integration is
+   returned rather than discarded.
 
-Two operational modes — selected per session:
+This is fallback at the swarm-review layer; it does not imply cognitive seniority.
 
-- **Functional** — neutral technical personas (`FUNCTIONAL_<MODEL>` prompts)
-- **Sovereignty** — Woodland Council lore personas (`SOVEREIGNTY_<MODEL>` prompts)
+## Output ceiling
 
-System-prompt lookup: `get_system_prompt(model)` — called inside each
-`call_<model>` function.
+`RRI_MAX_OUTPUT_TOKENS` controls the per-call output ceiling used by the runtime. Keep
+provider-specific request limits in mind when changing it; verify each seat on the
+actual deployed surface after a model/parameter change.
+
+## Environment override / rollback workflow
+
+To test or roll back one seat:
+
+1. Set the relevant `RRI_*_MODEL` or reasoning environment variable.
+2. Restart the running process so import-time registry values are re-evaluated.
+3. Check `/config` to confirm the resolved registry.
+4. Run a small live canary / swarm turn.
+5. Check `/version` so a merged/configured change is not confused with the running
+   process actually using it.
+
+A provider ID can be syntactically valid in code while still failing on an account or
+provider surface, so live verification remains the floor.
 
 ## Voice casting
 
-Defined in the `VOICES` dict (`raccoon_swarm_server.py:~120`):
+Voice identity is separate from model selection:
 
-| Model      | ElevenLabs voice_id        | Display name | Label            |
-|------------|----------------------------|--------------|------------------|
-| Claude     | (George)                   | George       | (narrator)       |
-| Grok       | `N2lVS1w4EtoT3dr4eOWO`     | Callum       | Flame-Bearer     |
-| Gemini     | (Adam)                     | Adam         | Court Bard       |
-| GPT        | (Eric)                     | Eric         | Integrator       |
-| Perplexity | `onwK4e9ZLuTAKqWW03F9`     | Daniel       | The Oracle       |
+| Seat | Voice name | Cultural label |
+|---|---|---|
+| Claude | George | The Snooty Librarian / Backbone |
+| GPT | Eric | Integrator |
+| Grok | Callum | Flame-Bearer / Chaos Processor |
+| Gemini | Adam | Court Bard |
+| Perplexity | Daniel | Oracle |
 
-Playback is optional (UI toggle) and uses ElevenLabs REST:
-`https://api.elevenlabs.io/v1/text-to-speech/<voice_id>`
+Changing a provider model should not silently rewrite the seat's cultural identity or
+cognitive ontology.
 
-## DOCX color coding
+## Session selection
 
-Per-model `RGBColor` in `DOCX_COLORS` (`raccoon_swarm_server.py:~960`). Same
-palette drives the CSS `--<model>` custom properties in the web UI.
-
-## Toggling models
-
-Each model is independently disableable per session via the UI. The dispatch
-loop skips disabled models and grading/synthesis handles the absence.
+Each seat can be enabled or disabled per session. In daisy mode, ordering is a
+session-local topology choice rather than permanent rank. In parallel mode, selected
+seats receive the same initial problem state. Claude/GPT final review is reliability
+routing for consequential output, not a general hierarchy over the session.
