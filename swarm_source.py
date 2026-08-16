@@ -79,14 +79,43 @@ def _is_allowed_rel(rel: str) -> bool:
     return suffix in _ALLOWED_SUFFIXES
 
 
+def _has_symlink_component(rel: str) -> bool:
+    """Reject symlink-mediated observation, including symlinked parent dirs.
+
+    The source surface is a lexical allowlist over the deployed checkout. A path like
+    ``docs/leak.md`` must not acquire broader visibility merely because the filesystem
+    redirects it to ``.env`` or outside the repository. Rejecting every symlink
+    component keeps the observation boundary simple and auditable.
+    """
+    current = SOURCE_ROOT
+    for part in Path(rel).parts:
+        current = current / part
+        try:
+            if current.is_symlink():
+                return True
+        except OSError:
+            # An unreadable/ambiguous path is not promoted into observable source.
+            return True
+    return False
+
+
 def _resolve(rel: str) -> Path | None:
     rel = (rel or "").strip().lstrip("/")
-    if not _is_allowed_rel(rel):
+    if not _is_allowed_rel(rel) or _has_symlink_component(rel):
         return None
-    target = (SOURCE_ROOT / rel).resolve()
+
+    root = SOURCE_ROOT.resolve()
+    lexical = SOURCE_ROOT / rel
     try:
-        target.relative_to(SOURCE_ROOT.resolve())
-    except ValueError:
+        target = lexical.resolve(strict=True)
+        resolved_rel = target.relative_to(root).as_posix()
+    except (OSError, ValueError):
+        return None
+
+    # Re-apply the allow/deny policy to the resolved referent as defense in depth.
+    # Even if symlink handling changes later, a lexically-allowed path may never
+    # become a tunnel into a denied file such as .env.
+    if not _is_allowed_rel(resolved_rel):
         return None
     return target
 
@@ -96,15 +125,18 @@ def _visible_files() -> list[Path]:
     if not SOURCE_ROOT.exists():
         return out
     for p in SOURCE_ROOT.rglob("*"):
-        if not p.is_file():
-            continue
         try:
             rel = _rel(p)
         except ValueError:
             continue
-        if _is_allowed_rel(rel):
-            out.append(p)
-    return sorted(out, key=lambda p: _rel(p))
+        target = _resolve(rel)
+        if target is None or not target.is_file():
+            continue
+        out.append(target)
+    # De-duplicate defensively in case filesystem aliases ever appear without being
+    # symlinks; expose each actual source referent only once.
+    unique = {p: p for p in out}
+    return sorted(unique.values(), key=lambda p: _rel(p))
 
 
 def _git_sha() -> str | None:
@@ -162,7 +194,7 @@ def read(path: str, start_line: int = 1, end_line: int = 0) -> dict:
     target = _resolve(path)
     if target is None:
         return {"ok": False, "path": path, "error": "path is outside the source observation surface"}
-    if not target.exists() or not target.is_file():
+    if not target.is_file():
         return {"ok": False, "path": path, "error": "source file not found on this checkout"}
     try:
         lines = target.read_text(encoding="utf-8", errors="replace").splitlines()
