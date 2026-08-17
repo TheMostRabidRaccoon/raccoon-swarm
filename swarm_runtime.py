@@ -249,14 +249,14 @@ def generate_voice(text, model_name):
     model_key = model_name.lower()
     if model_key not in VOICE_CAST:
         return None
-    
+
     text_hash = hashlib.md5(f"{model_key}:{text[:500]}".encode()).hexdigest()
     cache_path = os.path.join(AUDIO_CACHE_DIR, f"{model_key}_{text_hash}.mp3")
     if os.path.exists(cache_path):
         return cache_path
-    
+
     tts_text = text[:800] if len(text) > 800 else text
-    
+
     try:
         voice_id = VOICE_CAST[model_key]["voice_id"]
         resp = http_requests.post(
@@ -1989,10 +1989,10 @@ def tts_endpoint():
     data = request.get_json()
     text = data.get("text", "")
     model_name = data.get("model", "")
-    
+
     if not text or not model_name:
         return jsonify({"error": "Missing text or model"}), 400
-    
+
     filepath = generate_voice(text, model_name)
     if filepath and os.path.exists(filepath):
         return send_file(filepath, mimetype="audio/mpeg")
@@ -3360,7 +3360,7 @@ def loop_stream(session_id):
         if not q:
             yield f"event: error_msg\ndata: {json.dumps({'message': 'Session not found'})}\n\n"
             return
-        
+
         # Max idle (no real events) before treating the stream as dead. Must
         # exceed the human-in-loop window — during a human turn the worker blocks
         # and puts nothing on the queue, so a short timeout here was killing the
@@ -3385,10 +3385,10 @@ def loop_stream(session_id):
                     yield f"event: error_msg\ndata: {json.dumps({'message': 'Timeout'})}\n\n"
                     break
                 yield ": keepalive\n\n"  # SSE comment — keeps the connection alive during long waits
-        
+
         if session_id in loop_sessions:
             del loop_sessions[session_id]
-    
+
     return Response(generate(), mimetype='text/event-stream', headers={
         'Cache-Control': 'no-cache',
         'X-Accel-Buffering': 'no',
