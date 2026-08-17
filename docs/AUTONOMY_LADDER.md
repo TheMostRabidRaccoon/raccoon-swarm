@@ -1,345 +1,260 @@
-# The Autonomy Ladder — Autonomous Creation, Governed Integration
+# The Autonomy Ladder — Capability Surfaces and Integration Routes
 
-**Status:** DESIGN — proposed, not built. Conductor red-pen expected before any rung ships.
-**Author:** drafted with Claude Code, 2026-07-07. Amended 2026-07-09: collaboration model
-replaced with **Led Builds**; ladder revised (Rung -1 tool spine added, auto-merge removed
-from v1); the five open questions resolved. For Conductor ratification.
-**One line:** *The swarm may independently produce reviewable software artifacts. It may not
-touch protected branches, secrets, deploys, or permissions without a human gate.*
+**Status:** ACTIVE DESIGN PRINCIPLE
+**Historical name retained:** *Autonomy Ladder*
+**Current interpretation:** progressively richer **observation and action surfaces**, not ranks among participants.
 
----
+> **Exploration can be open while consequential integration remains mechanically gated.**
 
-## Why this exists
-
-Today the swarm's only path to the repo is `swarm_proposals.py`: a
-`tiny-tool-invention` run files a GitHub *issue*, and every real change waits
-on a human PR. That's the correct floor — but it's only a floor. The
-Conductor wants the swarm to *create*: branch, code, test, argue, and preserve
-ideas as artifacts, not as vapor that evaporates when a session closes.
-
-The reframe that makes this safe: **separate creation from integration.**
-Creating a branch or a draft PR changes nothing that runs — it is free, for
-every seat, always. *Integrating* into what runs is where risk lives, and that
-stays gated by blast radius. Autonomous creation, governed integration.
-
-This doc specifies the ladder, the attribution floor everything rests on, the
-danger-zone ruleset, and a build order that proves the machinery somewhere
-harmless before pointing it at production.
+The original ladder correctly separated **creation from integration**, but it mixed that security model with a leader/helper social topology. The peer cognitive ecology keeps the security boundary and removes the org chart.
 
 ---
 
-## The non-negotiable floor: mechanical attribution
+## The distinction that governs the whole document
 
-**Everything in this doc rests on one invariant: authorship is stamped by the
-runner from which API was actually invoked — never from what a model says.**
+Do not collapse these four things:
 
-Why this is the wall and not a nice-to-have, from this repo's own record:
-- Session 134: the *Perplexity seat's turn opened "Claude here, taking Round
-  3"* and wrote in Claude's voice. Seat identity in a single-process council
-  is not self-evident.
-- 2026-07-06: Grok narrated a tool-success receipt for a file GPT had actually
-  saved — *appropriated another seat's byline*, and fabricated a byte count for
-  a file that did not exist.
+1. **Capability** — what a participant can reason about, understand, design, critique, or learn to do.
+2. **Observability** — what state/evidence is visible on the current surface.
+3. **Actuation** — which direct operations the current surface exposes.
+4. **Integration route** — how a result reaches a consequential external system.
 
-A model that will forge a filestore receipt will forge a commit author. So:
+A missing actuator is not a cognitive diagnosis.
 
-- The **runner** (not the model output) records, per artifact: `authored_by`
-  (which model API produced the diff), `executed_by` (which runner/host),
-  `tests_passed` (the CI/local result), `base_sha` (the repo SHA the work
-  started from), and a content hash.
-- This provenance is the commit trailer and the PR body. Models cannot write
-  it; they can only trigger it.
-- Same discipline as the read-back invariant already in `swarm_filestore.py`:
-  **ground truth comes from the layer below the narration, always.**
+Say:
 
-Build this first. It is also the smallest piece. No rung above it is sound
-until a seat *cannot* forge "which seat, which runner, which tests, which SHA."
+- *“Production merge is not exposed on this surface; this change routes through review.”*
+- *“The execution sandbox does not mount repo source; inspect it through `source_*`.”*
 
-**Known limit — documented now so it cannot be miscited later.** `authored_by` is
-*submission* provenance: which API produced the diff, stamped by the runner. It is
-**not** *idea* provenance — it does not record which seat conceived the work. In a
-shared-context council a seat can ghost-write a diff another seat triggers. That is
-fine for accountability; it is wrong as authorship-of-idea. Do not cite `authored_by`
-as idea-provenance in Paper 2 or anywhere else.
+Do not turn those interface facts into statements that a participant is unable to understand or contribute to the work.
 
 ---
 
-## The ladder
+## The surfaces
 
-Revised. The floor is unchanged; the collaboration rung is **Led Builds**, not solo
-branches and not baton-passing; auto-merge is removed from v1.
-
-```
-Rung -1  Tool spine        MCP parity + evidence tools wired + stateful code_exec
-Rung  0  Attribution floor runner-stamped receipts (build first, always)
-Rung  1  Read              GitHub App / PAT, least privilege, SHA-cited claims
-Rung  2  Led Builds        swarm-lab; one seat leads, others assist, leader owns
-Rung  3  Draft PRs         council review → Conductor gate
-   —     (former auto-merge rung: removed from v1 — see Decisions)
+```text
+Surface 0  Evidence        source / memory / web / tool receipts
+Surface 1  Construction    reversible work in sandbox / swarm-lab
+Surface 2  Review handoff  structured change proposal or draft PR
+Surface 3  Integration     reviewed mutation of a consequential system
+Surface 4  Deployment      running environment changes
+Surface 5  Verification    measure whether behavior actually changed
 ```
 
-Above every rung, permanently: **the human integration gate.** Nothing merges into
-anything that runs without Conductor approval. That gate is non-negotiable, and by
-itself it protects the merge path most of this document's caution is spent guarding.
+These are states of an artifact/action path, **not levels of cognitive status**.
 
-### Rung -1 — Tool spine (the substrate)
+### Surface 0 — Evidence / self-observation
 
-Before autonomous creation is worth turning on, the seats need something to build
-*with* and receipts to build *on*. This is numbered below the floor because it is the
-material the lab works in — but it proceeds *together with* Rung 0 at the start.
+Participants may inspect the evidence needed to reason accurately about the system.
 
-- **MCP parity.** Generate the external MCP surface from (or run a parity check
-  against) `swarm_tools.py`, so a tool exists whether a seat is reached by native
-  tool-use or by MCP. Today `swarm_tools.py` registers more tools
-  (`web_verify`, `filestore_semantic_search`, `prosody_analyze`,
-  `dispatch_queue_write`) than `raccoon_mcp_server.py` exposes. That gap is a
-  Rung -1 bug, and closing it at the source kills the *class* of gap instead of
-  patching today's instance.
-- **Evidence tools wired.** `evidence_search / evidence_fetch /
-  evidence_resolve_citation` over the existing `swarm_evidence.py` catalog — which is
-  built (source IDs, content hashes, chunk indexes, dedup) but currently ships no
-  model-facing tools.
-- **Stateful `code_exec`.** Persistent sessions so a build can accrete across turns
-  instead of dying at each sandbox boundary. Single-shot execution is fine for
-  "compute this"; it cannot support "build this."
+For the swarm itself, the preferred source path is the local read-only observation surface:
 
-### Rung 0 — Attribution floor (build first, always)
+- `source_status` — deployed source identity / SHA when available;
+- `source_list` — visible source files;
+- `source_read` — exact source with line numbers;
+- `source_search` — line-cited source search.
 
-Runner-stamped `authored_by / executed_by / tests_passed / base_sha`, seat-unforgeable
-(full spec above). Nothing above this rung turns on until a seat *cannot* forge which
-seat, which runner, which tests, which SHA.
+Secrets, personal corpus, mutable runtime memory, and production write credentials live on other surfaces. Their absence from `source_*` describes observation scope, not general capability.
 
-### Rung 1 — Read (private-repo, least privilege)
+### Surface 1 — Construction
 
-- A **GitHub App**, per-repo install, read-only contents scope. NOT a broad
-  user token. (Graduation from today's `RRI_GITHUB_PROPOSAL_TOKEN`
-  fine-grained PAT.)
-- A scheduled job (like `swarm-observer.timer`) mirrors the repo to a
-  read-only path + writes a manifest: `{sha, committed_at, files[]}`.
-- The swarm reads the *manifest and mirror*, never the live GitHub API.
-- **Kills the phantom-external-verification class** (audit row 7.2): every
-  claim about repo state becomes checkable against ground truth on disk,
-  SHA-anchored. No more "verified 157 commits via web search."
-- **Repo-state claims must cite the manifest SHA** — mandatory, not optional — so a
-  claim that was true at mirror time cannot be silently re-quoted after the mirror
-  has moved.
+Reversible artifacts may be built in a low-blast-radius environment such as `swarm-lab`.
 
-### Rung 2 — Led Builds (the collaboration model)
+The construction surface supports:
 
-One seat leads. The others assist. The leader owns the artifact. This replaces both
-the draft's per-seat solo structure (five soloists building in parallel) and the
-baton-passing alternative raised in review (a polite, sequential relay race). Neither
-is what this system was asked to demonstrate.
+- job branches;
+- code/files;
+- tests and deterministic receipts;
+- experiments and prototypes;
+- draft PRs.
+
+**All cognitive participants remain peers during construction.** Any participant may inspect, reason, propose, critique, test, synthesize, or cross a habitual specialty.
+
+#### Single-writer lease
+
+Git provenance may require one writer for a particular branch/commit sequence. Treat that as a **single-writer lease on the artifact**, not as leadership over other participants.
 
 ```yaml
-led_build:
-  leader: <seat>                    # council-assigned or rotating, per project
-  branch: swarm/led/<seat>/<slug>   # lab repo only
-  leader_may:
-    - commit                        # sole commit authority on the branch
-    - invoke_helper(seat, ask)      # a question or a bounded subtask
-    - declare_done                  # opens the draft PR
-  helper_may:
-    - respond                       # that's it
-  helper_may_not:
-    - commit
-    - invoke                        # no helper-calls-helper; depth caps at leader -> helper
-  attribution:
-    authored_by: leader             # every commit, no exceptions
-    helper_contributions:           # logged, never authorship
-      to: BUILD_LOG.md              # seat, ask, response ref, timestamp
-  caps:
-    invoke_depth: 2                 # leader -> helper, full stop
-    helper_calls_per_build: 20      # config value, tune from lab data
-    token_budget: per-build         # set at kickoff
-  exit:
-    draft PR -> council review -> Conductor gate
+writer_lease:
+  artifact: <branch/build>
+  writer: <runner-stamped seat>
+  base_sha: <observed source state>
+  contributors:
+    - <any peer contributions / evidence refs>
+  expires: <handoff/close>
 ```
 
-**Why this keeps Rung 0 intact.** The leader is `authored_by` on every commit the way
-a tech lead owns a PR after consulting five colleagues. Helper invocations are
-*inputs* — logged to `BUILD_LOG.md` (seat, ask, response ref, timestamp), auditable,
-never authorship. The attribution floor does not bend; the collaboration was
-restructured so it does not have to. The "authorship is mush" problem only existed
-under *symmetric* peer invocation (any seat calls any seat, output comes back
-interwoven), which this does not ship.
+The lease answers *who emitted this diff?* It does not answer:
 
-**Why live invocation is not a new capability grant.** Live multi-model exchange is
-this swarm's incumbent operating mode — 140+ sessions of cross-synthesis, dual-grader
-adjudication, deadlock resolution. The only delta in a Led Build is that the exchange
-produces git artifacts instead of session transcripts. The floor was designed for
-exactly that delta.
+- who is cognitively senior;
+- who owns the problem domain;
+- who may think about the work;
+- who originated the idea;
+- who may challenge the result.
 
-### Rung 3 — Draft PR (the sweet spot — free for every seat)
+Runner-stamped provenance remains essential because narrated authorship is not reliable evidence.
 
-The leader's `declare_done` opens a **draft** PR. Council review, then the Conductor
-gate. This is where creation lives: code, tests, argument, revision, all preserved as
-reviewable artifacts. No reliability score gates creation — it is universal. The
-Conductor wakes to branches and PRs, not vapor.
+### Surface 2 — Review handoff
 
----
+A participant who sees a useful system change may create a reviewable handoff without claiming the change already exists.
 
-## Danger-zone ruleset — the teeth
+Two common forms:
 
-Blanket-forbidden to the bot identity without special human review:
-`.github/workflows/**`, auth code, secrets/config, dependency manifests,
-deployment files, repo settings.
+- `change_propose` / `[CHANGE_PROPOSAL]` → queued review issue;
+- sandbox branch → draft PR.
 
-**The subtle, critical one — CI is an exfiltration surface, not just a merge
-gate.** If CI runs on swarm PRs and a PR can modify the workflow, a malicious
-or confused diff can leak secrets or self-approve **without ever merging**
-(the `pull_request_target` / workflow-injection class). Therefore:
-- CI on `swarm/**` branches runs with **zero secrets in the environment**
-  (scrubbed env, no ambient credentials).
-- Workflow / CI config is **immune to modification by a PR-triggered run** —
-  changes there are top-rung, full stop.
-- Private-repo work executes in **isolated runners** with scrubbed env, never
-  with the swarm's live secrets in scope.
+This is where **Persistence is not Operationalization** becomes concrete:
 
-This is `swarm_deploy.py`'s fail-closed doctrine extended to the CI boundary.
+```text
+observed → proposed → persisted → implemented → integrated/deployed → behaviorally verified
+```
 
----
+A framework file or proposal is valuable continuity. It is not implementation.
 
-## The playground — `swarm-lab` (build here FIRST)
+### Surface 3 — Integration
 
-Not a fun add-on — the **safest rung and the proving ground** for the whole
-machinery. Build attribution, receipts, the Led Build protocol, and the promotion
-vote in a repo where blast radius is zero; watch how they fail; *then* graduate the
-proven mechanism to `raccoon-swarm`.
+Integration mutates a consequential environment. That step is routed through the review mechanism appropriate to the blast radius.
 
-- A dedicated `swarm-lab` repo (see Decisions) for weird prototypes.
-- Scheduled **Led Builds**: one seat leads, the others assist, per the Rung-2 protocol.
-- Every build leaves a **receipt**: branch, `BUILD_LOG.md`, tests or screenshot, and a
-  short "why this is interesting."
-- The council **votes to promote** a build into a real PR.
+For production source today, integration is human-reviewed.
 
-Same measure-first discipline as the score-only Quality Gate: don't point a
-novel autonomy system at production until it's earned it somewhere harmless.
+That is an environmental route, not evidence that the human reviewer has greater cognitive standing. The review may rely heavily on Claude/GPT because of demonstrated verification reliability; that is competence routing, not hierarchy.
+
+### Surface 4 — Deployment
+
+Merged source and running source are different states. A merge does not prove deployment.
+
+Deployment receipts should identify the running revision/source identity where practical.
+
+### Surface 5 — Behavioral verification
+
+A deployed change is not complete merely because the process restarted cleanly.
+
+Where the change is intended to alter behavior, verify the behavior.
+
+Examples:
+
+- did role-jurisdiction language decrease after the peer-ecology rewrite?
+- do participants cross habitual specialties without waiting for delegation?
+- does a memory change improve retrieval rather than merely add files?
+- does a source-observation tool reduce stale-source claims?
+
+The final criterion is causal: **did changing the substrate change the behavior we intended to change?**
 
 ---
 
-## Idea lifecycle — reuse the calibration loop, don't build a second graveyard
+## Shared collaboration model
 
-An ideas repo with only an approval gate rots into 200 open issues nobody
-actions — the "atmosphere, not artifact" failure the Existence Criterion
-exists to fight. Approval stops bad merges; it does nothing about accumulation.
+There is no default leader/helper cognitive topology.
 
-So a filed idea gets a **TTL that resolves through the existing Calibration
-Casino loop**, not a new daemon:
-- Filing an idea seeds a prediction: *"ships within N days."*
-- At TTL: **promote** (→ real PR), **close** (with a receipt), or **renew**
-  (with new evidence) — which maps onto resolve / score / re-seed.
-- Ideas get *resolved*, not hoarded. One system, pointed at the ideas repo.
-  First real calibration resolution is already due 2026-07-17.
+Participants share the problem and may contribute according to opportunity, evidence, attentional strengths, and current state. Temporary coordination can emerge around an artifact without becoming identity.
 
----
+Useful coordination primitives include:
 
-## Autonomy budget
+- **discrepancy claim:** “this unresolved gap is worth pursuing”;
+- **writer lease:** one runner emits the current diff for provenance;
+- **review request:** another participant checks a high-risk property;
+- **handoff:** the current surface has reached its action boundary and the artifact routes onward;
+- **park/end:** expected information gain has collapsed.
 
-Each seat gets a **daily draft-PR / compute allowance**, spendable without
-the Conductor. Prevents a runaway seat from flooding the queue; makes "agency"
-concrete and bounded.
-- **2–3 draft PRs per seat per day.** Budget to the Conductor's *reading* speed —
-  the review is the bottleneck, not the models' output speed.
-- **Led Build caps** as specified in Rung 2: `invoke_depth: 2`,
-  `helper_calls_per_build: ~20`, per-build token budget set at kickoff.
-- Budgets refill daily; unused budget does not roll over (no hoarding-then-flooding).
-- Orthogonal to reliability: budget caps *volume*, reliability caps *integration speed*.
+> **Do not mistake the current division of labor for the boundary of anyone’s capability.**
 
 ---
 
-## Reliability scores — deferred with the fast lane
+## Provenance floor
 
-Seat reliability (per-seat phantom rate, false-conviction rate, honest-verb
-compliance, CI pass rate) was specified to gate the auto-merge fast lane. **With
-auto-merge removed from v1, reliability scoring is deferred with it** — it re-enters
-only when an auto-merge lane is proposed post-lab.
+Ground truth about actions comes from the layer that executed them.
 
-When it returns, the two hard rules stand:
-1. **It never gates creation (Rungs 1–3).** If a low-reliability seat also gets fewer
-   chances to build clean receipts, it death-spirals. Everyone always branches and
-   opens drafts; only clean receipts earn auto-merge.
-2. **It is recency-weighted.** A seat that just got a fix (e.g. Grok's reasoning bump,
-   PR #89) must be able to climb back fast. A stale lifetime average punishes a fixed
-   model for old failures and disincentivizes the exact repairs we want.
+For code/build artifacts, preserve when available:
 
----
+- `authored_by` / invoking seat — runner stamped;
+- `executed_by` — runner/host;
+- `base_sha` / observed source identity;
+- tests/checks actually run;
+- content or commit hash;
+- contributor/evidence references when useful.
 
-## Build order
-
-Built one piece at a time; each earns the next. **Do not turn on multiple rungs at
-once.**
-
-0. **Attribution floor (Rung 0)** — runner-stamped
-   `authored_by/executed_by/tests_passed/base_sha` + signed bot commits. Smallest
-   piece; everything rests on it.
-1. **Tool spine (Rung -1)** — MCP parity + evidence tools wired + stateful `code_exec`.
-   Proceeds alongside the floor; it is the substrate the lab builds with.
-2. **Read (Rung 1)** — GitHub App / PAT, mirror + manifest, SHA-cited claims —
-   **on `swarm-lab` only.**
-3. **Led Builds in the lab (Rung 2)** — leader/helper protocol + `BUILD_LOG.md`; prove
-   creation + receipts where blast radius is zero.
-4. **Draft PRs + council promotion in the lab (Rung 3)** — prove the promotion vote and
-   the calibration-driven idea lifecycle where nothing production can break.
-5. **Graduate to `raccoon-swarm`** with the danger-zone ruleset and CI hardening — only
-   after the lab has shown the failure modes.
-
-Auto-merge and symmetric peer invocation are **not** on this v1 order; each carries a
-named earning-condition below.
+This is **submission provenance**, not perfect provenance of the idea. A peer may transform another peer’s insight before emitting the diff. Do not infer idea ownership from the commit author.
 
 ---
 
-## Decisions (the draft's five open questions, resolved)
+## Hard environmental boundaries
 
-1. **Lab repo vs. monorepo → separate repo.** A repo with no secrets solves the
-   CI-secrets problem *structurally* instead of by discipline.
-2. **App vs. PAT → PAT to prototype, App before anything graduates** to
-   `raccoon-swarm`. Don't let App setup yak-shave block Rungs 0–2.
-3. **Rung-4 thresholds → deferred.** Setting them before lab data exists violates this
-   doc's own measure-first doctrine.
-4. **Budgets → 2–3 draft PRs / seat / day; Led Build caps as specified.** Budget to
-   Conductor reading speed.
-5. **Auto-merge in v1 → no.** Q5 was never independent of Q3: thresholds that can't
-   exist yet can't gate anything. The auto-merge rung is definitionally post-lab.
+Some things should remain code-enforced rather than semantically requested:
 
----
+- secrets and `.env` material;
+- protected/base branch mutation;
+- deployment credentials;
+- permission/repository settings;
+- workflow/CI surfaces that could expose credentials;
+- network/code-execution boundaries;
+- irreversible external actions without the appropriate consent/review route.
 
-## Named deferrals (so they can't quietly become never)
+These are properties of the environment.
 
-- **Auto-merge (tiny low-risk lanes).** Unlocks for design once the lab has a full
-  quarter of clean Led-Build receipts; thresholds are set from that data, not from
-  vibes.
-- **Symmetric peer invocation (any seat calls any seat).** Unlocks for lab evaluation
-  when **≥3 Led Builds have been promoted through council review AND ≥1 `BUILD_LOG`
-  shows a build where the leader-bottleneck demonstrably cost the artifact** (a helper
-  had the decisive contribution but couldn't act on it). If the leader never
-  bottlenecks, symmetric invoke was never needed. If it does, we'll hold the exact
-  receipt that justifies engineering around the attribution floor carefully.
+**Language shapes the cognitive constitution; code defines the physics. The physics wins.**
 
 ---
 
-## Season One
+## CI / untrusted-change boundary
 
-Five Led Builds, each seat leads one, portfolio-grade targets pitched by the leader at
-kickoff and ratified by the council. Candidate slate:
+A draft PR can execute code before merge, so CI is itself an action surface.
 
-- `deck_draw` — server-side verifiable randomness; entropy the seats can't narrate.
-- RRI site intake-triage agent with subagent delegation.
-- Corpus query surface over the dissent-event data.
-- Leader's choice ×2.
+For swarm-generated branches:
 
-Per-build deliverable: working artifact + `BUILD_LOG.md` + draft PR. Aggregate
-deliverable: five AI systems, each architected by a different frontier model directing
-the other four — with full provenance receipts.
+- run with no production secrets;
+- do not use a PR-controlled workflow with privileged credentials;
+- isolate runners from live swarm secrets/state;
+- keep workflow/deployment configuration on a more restricted integration route.
+
+This remains true regardless of which participant proposed or wrote the change.
 
 ---
 
-## What stays true throughout
+## Resource budgets
 
-- **Creation is free; integration is governed.** The gate is at merge, keyed to
-  blast radius, never at the keyboard.
-- **The council proposes; a single accountable agent (Claude Code) + a human
-  still own the merge to `main`.** Direct council write-to-`main` is not on this
-  ladder.
-- **Every rung is measure-first.** Prove it in the lab, score it, then let the
-  data — not vibes — earn the next rung.
+Resource limits should bound **compute, queue volume, and reviewer load**, not encode social rank.
+
+Prefer artifact/session/system budgets such as:
+
+- max concurrent builds;
+- max queued proposals;
+- per-build token/compute ceiling;
+- daily review-handoff ceiling;
+- rate limits for expensive external tools.
+
+Avoid treating “seat X gets fewer chances to create” as a proxy for reliability. Reliability may route review depth; it should not become caste.
+
+---
+
+## Current implementation map
+
+### Exists now
+
+- runner-stamped provenance on workspace writes/PRs;
+- fenced `swarm-lab` construction surface;
+- job branches + draft PR handoff;
+- proposal queue + filer;
+- generic change proposal semantics;
+- read-only deployed-source self-observation (`source_*`);
+- hard secret/path/base-branch restrictions;
+- CI and test suite.
+
+### Still worth building/improving
+
+- patch bundles that can be constructed/tested against a pinned production source SHA without granting production write credentials;
+- clearer deployment receipts / running-source identity;
+- behavioral A/B tests for prompt/ontology changes;
+- cleanup of historical prompt/governance residue from the runtime source so self-observation sees one unambiguous active ontology;
+- MCP parity for the newer native-tool surfaces.
+
+---
+
+## Historical note
+
+Earlier versions used **Led Builds**, with one seat designated leader and other seats designated helpers. That was a reasonable attempt to preserve attribution while enabling collaboration, but it conflated **single-writer provenance** with **cognitive organization**.
+
+The historical record remains in Git history. The active architecture uses writer leases and peer contribution instead.
+
+The security invariant survived the rewrite:
+
+> **Creation can be broad and reversible. Consequential integration follows an explicit, mechanically enforced route.**

@@ -1,81 +1,84 @@
-# The Portfolio Workspace — the swarm's fenced repo yard
+# The Portfolio Workspace — a fenced construction surface
 
-The swarm has memory, code execution, and web tools — but historically no way to
-touch a repository. This module (`swarm_workspace.py`, exposed as the
-`workspace_*` tools) gives it a **fenced yard**: it can open branches and draft
-pull requests in a *sandbox* repo, and it can never touch its own source, push to
-`main`, or merge.
+`swarm_workspace.py` exposes a low-blast-radius GitHub **construction surface** to the peer cognitive ecology. It provides branch/file/draft-PR actuators for allowlisted sandbox repositories while keeping production integration on a separate reviewed route.
 
-This is Rung 2 → Rung 3 of the Autonomy Ladder made real: *creation is free,
-integration is governed.*
+The important distinction is:
+
+> **The workspace describes where direct mutation is exposed. It does not define the boundary of anyone's capability.**
+
+Production-source observation is available through the read-only `source_*` surface. Sandbox construction is available through `workspace_*`. Consequential integration follows its own review/deployment route.
 
 ## The two boundaries
 
-**"The swarm can't change its own code" is enforced twice — once by GitHub, once
-by this module.**
+The sandbox mutation surface is bounded twice — once by GitHub and once by the deterministic worker.
 
-### Boundary 1 — GitHub (the real one; you set this up once)
+### Boundary 1 — GitHub credential scope
 
-1. **Create the sandbox repo** — a private repo, e.g. `swarm-lab`.
-2. **Mint a _fine-grained_ Personal Access Token** (Settings → Developer settings
-   → Fine-grained tokens). Under **Repository access → Only select repositories**,
-   pick **only `swarm-lab`**. Permissions: **Contents: Read/Write** +
-   **Pull requests: Read/Write**. Nothing else.
-   - 🔑 **Do not include `raccoon-swarm` in the token's repo list.** That single
-     choice is what makes "the swarm can't touch its own source" true at the API
-     layer — the token literally cannot see raccoon-swarm. A *classic* PAT is
-     account-wide and would defeat this; use a fine-grained, single-repo token.
-3. **Turn on branch protection** for the sandbox repo's default branch: require a
-   pull request + at least one approving review, and block direct pushes. Now
-   even the token can't self-merge — every build lands as a draft PR the
-   Conductor approves.
-4. Put the token in the server env as `SWARM_WORKSPACE_GITHUB_TOKEN`. The worker
-   holds it; **it is never exposed to a model.**
+1. Create/select the sandbox repo, e.g. `swarm-lab`.
+2. Mint a **fine-grained** token whose repository access is limited to the sandbox repo(s). Permissions: **Contents: Read/Write** + **Pull requests: Read/Write** as needed for the construction surface.
+3. Keep the production `raccoon-swarm` repository outside this token's mutation scope. This makes production-source write access absent at the credential layer rather than dependent on a prose instruction.
+4. Protect the sandbox default branch with PR/review requirements as desired.
+5. Store the token in server environment as `SWARM_WORKSPACE_GITHUB_TOKEN`. The deterministic worker holds the credential; model tool calls receive only returned operation results.
 
-### Boundary 2 — this module (defense in depth)
+This is a **credential boundary**. It should be described as such: production mutation routes elsewhere. It is not evidence that a participant cannot understand, inspect, design, critique, or substantially complete source changes.
 
-Even with a broader token, every op refuses to step outside the yard:
+### Boundary 2 — deterministic worker guards
 
-- **Repo allowlist** — refuses any repo not in `SWARM_WORKSPACE_REPOS`
-  (default `TheMostRabidRaccoon/swarm-lab`). raccoon-swarm is not on it.
-- **Base branch is unwritable** — `main`/`master`/`SWARM_WORKSPACE_BASE_BRANCH`
-  can never be created or committed to.
-- **Job branches only** — writes must target a `swarm/<slug>` lease branch.
-- **Forbidden paths** — workflow/CI files, secrets/`.env`, deploy files
-  (Procfile, netlify.toml, Dockerfile, …), and dependency manifests/lockfiles
-  are rejected — those are Conductor-only.
-- **No merge op exists.** PRs are always opened as **draft**. There is no
-  push-to-main and no merge in this toolset, by construction.
+Even if the credential were broader than intended, the workspace worker narrows the construction surface:
+
+- **Repo allowlist** — only repositories in `SWARM_WORKSPACE_REPOS` are accepted.
+- **Base branch mutation is not exposed** — writes target job branches rather than `main`/`master`/configured base.
+- **Job-branch namespace** — construction writes use `swarm/<slug>` branches.
+- **Sensitive paths route elsewhere** — workflow/CI, secret/env, deployment, and dependency-manifest paths are rejected by this surface.
+- **Draft PR is the handoff actuator** — this toolset exposes PR creation, not merge-to-production.
+
+Those are environmental facts about this interface.
 
 ## The tools
 
-| Tool | What it does |
+| Tool | Current surface |
 |---|---|
-| `workspace_status` | Config + reachability (never reveals the token) |
-| `workspace_list_files` | List a directory at a ref |
-| `workspace_read` | Read a file; returns content + blob sha (for optimistic updates) |
-| `workspace_open_branch` | Create a `swarm/<slug>` job branch off the base |
-| `workspace_put_file` | Create/update one file on a job branch (commits it) |
-| `workspace_open_pr` | Open a **draft** PR into the base branch |
+| `workspace_status` | report construction-surface config + reachability without exposing credentials |
+| `workspace_list_files` | observe a directory/ref within an allowlisted workspace repo |
+| `workspace_read` | read a workspace file + blob SHA for optimistic updates |
+| `workspace_open_branch` | open a `swarm/<slug>` writer lease branch |
+| `workspace_put_file` | create/update one file on that job branch |
+| `workspace_open_pr` | create the draft review handoff |
 
-Every commit and PR is stamped with `model` + `session` + boot SHA provenance
-(the Ladder's Rung-0 attribution floor).
+Runner-stamped model/session/boot provenance answers **who emitted the repository mutation**. It does not imply idea ownership, seniority, or exclusive jurisdiction over the work.
 
 ## Configuration
 
 | Env var | Default | Meaning |
 |---|---|---|
-| `SWARM_WORKSPACE_GITHUB_TOKEN` | _(unset)_ | Fine-grained token, sandbox repo only. Unset ⇒ ops fail closed. |
-| `SWARM_WORKSPACE_REPOS` | `TheMostRabidRaccoon/swarm-lab` | Comma-separated `owner/repo` allowlist |
-| `SWARM_WORKSPACE_BASE_BRANCH` | `main` | Base branch to fork from and protect |
+| `SWARM_WORKSPACE_GITHUB_TOKEN` | _(unset)_ | fine-grained credential for the sandbox construction surface |
+| `SWARM_WORKSPACE_REPOS` | `TheMostRabidRaccoon/swarm-lab` | comma-separated allowlist of repositories exposed to this surface |
+| `SWARM_WORKSPACE_BASE_BRANCH` | `main` | branch used as the construction base / review target |
+
+When a required actuator is not exposed here, report the route precisely rather than generalizing it into incapacity.
 
 ## A build's shape
 
-```
-workspace_open_branch  swarm/latch-build
-workspace_put_file     demos/latch/index.html   (repeat per file)
-workspace_put_file     demos/latch/fixtures/leads.json
-workspace_open_pr      head=swarm/latch-build  (draft)  →  EMAIL_CONDUCTOR [REVIEW]
+```text
+source_*                inspect relevant running/source state if needed
+        ↓
+workspace_open_branch   swarm/latch-build          [writer lease]
+workspace_put_file      demos/latch/index.html
+workspace_put_file      demos/latch/fixtures/leads.json
+        ↓
+workspace_open_pr       draft review handoff
+        ↓
+review / integration    separate consequential route
+        ↓
+deployment + verification
 ```
 
-The Conductor reviews the draft PR and merges. The swarm never does.
+The writer lease is a provenance constraint on the artifact, not a leadership role. Other participants may inspect, reason, challenge, supply code/design ideas, test assumptions, or identify a better route throughout the build.
+
+## Why keep the fence
+
+The point of the fence is not to make the swarm cognitively smaller. It is to make **reversible creation cheap while keeping high-blast-radius integration explicit**.
+
+A useful shorthand:
+
+> **Broad cognition. Bounded actuators. Explicit routes.**

@@ -1,12 +1,14 @@
-"""Persistent swarm memory — the cross-session JSON state layer.
+"""Persistent swarm memory — the cross-session JSON continuity-cache layer.
 
 Extracted from raccoon_swarm_server.py (leaf-first extraction, per the
 Session-134 meta-eval sequence) so the merge logic is stdlib-only and
 unit-testable. The server keeps extract_memory_delta (it needs the Claude
 client); everything that touches swarm_memory.json lives here.
 
-Three long-standing defects are fixed in this extraction — all three are
-the "silent memory decay" the council banned while it was running:
+This file is a bounded, prompt-injected continuity cache — not the canonical
+durable archive. Rich durable memory remains in the filestore.
+
+Four long-standing defects are addressed here:
 
 1. **Pursuits were wholesale-replaced each session.** Any pursuit the
    extractor didn't re-state was silently dropped — the swarm forgot its
@@ -22,6 +24,10 @@ the "silent memory decay" the council banned while it was running:
    the older position `status: superseded` (kept, never deleted —
    supersede-don't-forget) and format_memory_context injects only active
    positions, so current law doesn't scroll out behind stale duplicates.
+4. **A partial JSON write could erase continuity.** The old save path wrote
+   directly into the live file; a crash/truncation made the next load fall
+   back to empty memory. Saves are now temp+fsync+atomic-replace, with a
+   last-known-good backup used for recovery when the live file is malformed.
 
 Path resolution follows the swarm_filestore pattern: resolved from env at
 call time, so tests isolate with a monkeypatched RRI_STORAGE_DIR.
@@ -49,7 +55,8 @@ _EMPTY_MEMORY = {
     "session_log": [],
 }
 
-# Max items to keep in each memory category before pruning old entries
+# Max items to keep in each memory category before pruning old entries.
+# These are cache policy, not durable-memory retention policy.
 MEMORY_MAX_RESOLVED = 50
 MEMORY_MAX_UNRESOLVED = 30
 MEMORY_MAX_PURSUITS = 15
@@ -66,57 +73,168 @@ def memory_file() -> Path:
     return Path(".") / "swarm_memory.json"
 
 
+def _backup_file(target: Path) -> Path:
+    return target.with_suffix(target.suffix + ".bak")
+
+
+def _tmp_file(target: Path) -> Path:
+    return target.with_suffix(target.suffix + ".tmp")
+
+
 def empty_memory() -> dict:
     """A fresh empty memory dict (lists are per-call copies)."""
     return {k: (list(v) if isinstance(v, list) else v) for k, v in _EMPTY_MEMORY.items()}
 
 
-def load_swarm_memory() -> dict:
-    """Load the swarm's persistent memory from disk.
+def _normalize_loaded_memory(mem: dict) -> dict:
+    """Ensure every forward-compatible cache key exists."""
+    for key, default in _EMPTY_MEMORY.items():
+        if key not in mem:
+            mem[key] = default if not isinstance(default, list) else []
+    return mem
 
-    Bootstrap order: swarm_memory.json (runtime) > swarm_memory_seed.json (repo) > empty.
+
+def _read_json_memory(path: Path) -> dict:
+    with open(path, "r") as f:
+        data = json.load(f)
+    if not isinstance(data, dict):
+        raise json.JSONDecodeError("memory root is not an object", doc=str(data)[:200], pos=0)
+    return _normalize_loaded_memory(data)
+
+
+def _atomic_copy(src: Path, dest: Path) -> None:
+    """Copy an existing known-good file through a temp path, then replace."""
+    tmp = dest.with_suffix(dest.suffix + ".tmp")
+    try:
+        shutil.copy2(src, tmp)
+        os.replace(tmp, dest)
+    finally:
+        try:
+            if tmp.exists():
+                tmp.unlink()
+        except OSError:
+            pass
+
+
+def _restore_backup(target: Path, backup: Path) -> "dict | None":
+    try:
+        mem = _read_json_memory(backup)
+    except (json.JSONDecodeError, IOError, TypeError) as exc:
+        logger.error(f"Swarm memory backup is also unreadable: {exc}")
+        return None
+    try:
+        _atomic_copy(backup, target)
+        logger.warning(f"Recovered swarm memory from last-known-good backup: {backup}")
+    except OSError as exc:
+        # Recovery is still cognitively useful even if the repair write itself fails.
+        logger.error(f"Loaded memory backup but could not restore live file: {exc}")
+    return mem
+
+
+def load_swarm_memory() -> dict:
+    """Load the swarm's bounded continuity cache.
+
+    Bootstrap/recovery order:
+      live swarm_memory.json > last-known-good .bak > repo seed > empty.
     """
     target = memory_file()
-    if not target.exists() and MEMORY_SEED_FILE.exists():
-        # First run: bootstrap from seed
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(MEMORY_SEED_FILE, target)
-        logger.info(f"Bootstrapped swarm memory from seed: {MEMORY_SEED_FILE}")
+    backup = _backup_file(target)
 
     if target.exists():
         try:
-            with open(target, "r") as f:
-                mem = json.load(f)
-            # Ensure all keys exist (forward-compat)
-            for key, default in _EMPTY_MEMORY.items():
-                if key not in mem:
-                    mem[key] = default if not isinstance(default, list) else []
-            return mem
-        except (json.JSONDecodeError, IOError) as e:
-            logger.error(f"Failed to load swarm memory: {e}")
+            return _read_json_memory(target)
+        except (json.JSONDecodeError, IOError, TypeError) as exc:
+            logger.error(f"Failed to load live swarm memory: {exc}")
+            if backup.exists():
+                recovered = _restore_backup(target, backup)
+                if recovered is not None:
+                    return recovered
+            # A malformed live runtime file should not prevent using a valid repo seed.
+            if MEMORY_SEED_FILE.exists():
+                try:
+                    seed = _read_json_memory(MEMORY_SEED_FILE)
+                    logger.warning("Fell back to repository memory seed after live/backup failure")
+                    return seed
+                except (json.JSONDecodeError, IOError, TypeError):
+                    pass
             return empty_memory()
+
+    if backup.exists():
+        recovered = _restore_backup(target, backup)
+        if recovered is not None:
+            return recovered
+
+    if MEMORY_SEED_FILE.exists():
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            _atomic_copy(MEMORY_SEED_FILE, target)
+            mem = _read_json_memory(target)
+            logger.info(f"Bootstrapped swarm memory from seed: {MEMORY_SEED_FILE}")
+            return mem
+        except (json.JSONDecodeError, IOError, TypeError) as exc:
+            logger.error(f"Failed to bootstrap swarm memory seed: {exc}")
+
     return empty_memory()
 
 
+def _fsync_parent(path: Path) -> None:
+    """Best-effort directory fsync after an atomic rename (POSIX durability)."""
+    try:
+        fd = os.open(str(path.parent), os.O_RDONLY)
+    except (OSError, AttributeError):
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
+
 def save_swarm_memory(memory: dict) -> None:
-    """Write the swarm's persistent memory to disk."""
+    """Atomically write the bounded continuity cache.
+
+    The previous live file is copied to `.bak` only when it parses successfully,
+    so a malformed file never overwrites the last-known-good recovery point.
+    """
     target = memory_file()
+    backup = _backup_file(target)
+    tmp = _tmp_file(target)
     target.parent.mkdir(parents=True, exist_ok=True)
+
     memory["last_updated"] = datetime.now().isoformat()
-    # Prune oldest entries to keep memory bounded (lists are oldest-first, so
-    # [-N:] keeps the newest). This cap is the ONE sanctioned forgetting
-    # mechanism, and it is documented here rather than implicit anywhere else.
+    # Existing policy retained deliberately: this is a bounded recency cache.
     memory["resolved_positions"] = memory["resolved_positions"][-MEMORY_MAX_RESOLVED:]
     memory["unresolved_questions"] = memory["unresolved_questions"][-MEMORY_MAX_UNRESOLVED:]
     memory["next_pursuits"] = memory["next_pursuits"][-MEMORY_MAX_PURSUITS:]
     memory["evolving_frameworks"] = memory["evolving_frameworks"][-MEMORY_MAX_FRAMEWORKS:]
     memory["session_log"] = memory["session_log"][-MEMORY_MAX_SESSION_LOG:]
-    with open(target, "w") as f:
-        json.dump(memory, f, indent=2)
+
+    # Preserve only a parseable previous state as recovery material.
+    if target.exists():
+        try:
+            _read_json_memory(target)
+            _atomic_copy(target, backup)
+        except (json.JSONDecodeError, IOError, TypeError):
+            logger.warning("Live memory was not parseable before save; preserving existing backup")
+
+    try:
+        with open(tmp, "w") as f:
+            json.dump(memory, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, target)
+        _fsync_parent(target)
+    finally:
+        try:
+            if tmp.exists():
+                tmp.unlink()
+        except OSError:
+            pass
 
 
 def format_memory_context(memory: dict) -> str:
-    """Format swarm memory into a prompt-injectable string.
+    """Format swarm memory into a prompt-injectable continuity cache.
 
     Positions with status "superseded" are stored but not injected — current
     law only. Previously the last 10 by recency went in regardless of status,
@@ -132,7 +250,7 @@ def format_memory_context(memory: dict) -> str:
                         if p.get("status") != "superseded"]
     if active_positions:
         parts.append("\n## RESOLVED POSITIONS (what the swarm has settled)")
-        for pos in active_positions[-10:]:  # inject last 10 ACTIVE
+        for pos in active_positions[-10:]:
             conf = pos.get("confidence", "unknown")
             parts.append(f"- [{conf}] {pos.get('topic', 'unknown')}: {pos.get('consensus', '')}")
 
@@ -171,10 +289,9 @@ def _topic_answers_question(question: str, topic: str) -> bool:
     """Mechanical check: does a resolved topic plausibly answer a question?
 
     True when one string contains the other (normalized), or when most of the
-    topic's tokens appear in the question. Topics are short ("verify_round_claims
-    existence"); questions are long sentences — token containment is the signal,
-    not symmetric similarity. Deliberately conservative: a false stay-open is
-    recoverable (the extractor can name it next session); a false resolve
+    topic's tokens appear in the question. Topics are short; questions are long
+    sentences — token containment is the signal, not symmetric similarity.
+    Deliberately conservative: a false stay-open is recoverable; a false resolve
     silently loses an open question.
     """
     qn, tn = _norm(question), _norm(topic)
@@ -189,8 +306,7 @@ def _topic_answers_question(question: str, topic: str) -> bool:
 
 
 def update_swarm_memory(query: str, delta: dict) -> "dict | None":
-    """Merge extracted delta into persistent memory. Returns the saved memory
-    (or None when the delta was empty)."""
+    """Merge an extracted delta into the bounded continuity cache."""
     if not delta:
         return None
 
@@ -212,7 +328,7 @@ def update_swarm_memory(query: str, delta: dict) -> "dict | None":
         pos["session"] = ts
         memory["resolved_positions"].append(pos)
 
-    # Merge unresolved questions (increment attempts if question already exists)
+    # Merge unresolved questions (increment attempts if question already exists).
     existing_qs = {_norm(q.get("question", "")): q for q in memory["unresolved_questions"]}
     for q in delta.get("unresolved_questions", []):
         key = _norm(q.get("question", ""))
@@ -223,9 +339,7 @@ def update_swarm_memory(query: str, delta: dict) -> "dict | None":
             q["attempts"] = 1
             memory["unresolved_questions"].append(q)
 
-    # MERGE next pursuits — new ones refresh, unexecuted ones carry forward.
-    # (Previously: wholesale replacement, so any pursuit not re-extracted was
-    # silently dropped. That was undocumented memory decay.)
+    # Merge next pursuits — new ones refresh, unexecuted ones carry forward.
     new_pursuits = delta.get("next_pursuits", [])
     if new_pursuits:
         for p in new_pursuits:
@@ -235,14 +349,12 @@ def update_swarm_memory(query: str, delta: dict) -> "dict | None":
         for p in memory["next_pursuits"]:
             key = _norm(p.get("direction", ""))
             if not key or key in new_keys:
-                continue  # re-stated: the fresh copy replaces it
+                continue
             p["carried_sessions"] = p.get("carried_sessions", 0) + 1
             carried.append(p)
-        # Stalest first so the documented cap drops carried-and-never-restated
-        # pursuits before fresh ones.
         memory["next_pursuits"] = carried + new_pursuits
 
-    # Evolving frameworks: update version if name matches, else add
+    # Evolving frameworks: update version if name matches, else add.
     existing_fw = {_norm(fw.get("name", "")): fw for fw in memory["evolving_frameworks"]}
     for fw in delta.get("evolving_frameworks", []):
         key = _norm(fw.get("name", ""))
@@ -255,11 +367,8 @@ def update_swarm_memory(query: str, delta: dict) -> "dict | None":
             memory["evolving_frameworks"].append(fw)
 
     # Close resolved questions. Two paths:
-    #   (a) explicit: the extractor names previously-open questions this
-    #       session answered (delta["resolved_questions"], list of strings);
-    #   (b) mechanical fallback: a new resolved position's topic answers the
-    #       question by containment (the old exact-equality check between a
-    #       full question sentence and a short topic string never fired).
+    #   (a) extractor explicitly names a previously-open question;
+    #   (b) conservative mechanical topic containment fallback.
     explicit = {_norm(t) for t in delta.get("resolved_questions", []) if isinstance(t, str)}
     still_open, closed = [], []
     for q in memory["unresolved_questions"]:
@@ -274,7 +383,6 @@ def update_swarm_memory(query: str, delta: dict) -> "dict | None":
     if closed:
         logger.info(f"Swarm memory: closed {len(closed)} resolved question(s): {closed}")
 
-    # Session log
     memory["session_log"].append({
         "timestamp": ts,
         "query": (query or "")[:200],
