@@ -42,6 +42,19 @@ No seat — including the currently waking one — owns the creature.
 - The body never waits on multi-model deliberation for real-time movement.
   The Council does not vote on servo angles.
 
+**Evidential status (independence audit, 2026-08-25).** The session-144
+convergence on this topology was a **daisy-chain, not independent replication**:
+GPT proposed it in R1; Grok, Claude, and Gemini each read the prior seats before
+agreeing, and "the codebase agrees" is non-independent (SWARM_BRAIN.md was
+authored by a Claude Code session — one author counted twice). Independent
+signal on topology: one seat. By contrast, the **gesture contract (§2) was
+genuinely stress-tested** through in-band dissent (Grok's code-grounded
+objection → GPT's reversal → absorbed synthesis) and carries replicated weight.
+Consequence: the topology is a well-argued single-source recommendation that
+nobody contested — which makes **G1 a real decision for Kyra, not a
+ratification of swarm consensus**. It is not evidence the recommendation is
+wrong; it is the honest weight of the evidence behind it.
+
 ## 2. Gesture contract
 
 **The canonical boundary:** *a model may propose bounded gesture trajectories;
