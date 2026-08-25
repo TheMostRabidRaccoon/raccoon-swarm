@@ -328,6 +328,43 @@ Tracked beside the gates (blocking other things):
 Seat-rotation policy and additional-body shopping are explicitly **not**
 blocking; they can wait.
 
+### Gate decisions (Kyra, 2026-08-25)
+
+All seven gates answered; recorded here as the durable decision record.
+
+- **G1 — Confirmed.** One shared creature, one body, one revocable waking
+  lease for v1. Decided with the independence audit in view: this is Kyra's
+  decision on a single-source recommendation, not a ratification.
+- **G2 — No deadline.** The build is done when it is done; 9/8 gets the
+  replay demo and whatever hardware honestly exists. No schedule pressure on
+  safety. (The Council's "tabletop gremlin" bar remains the shape of v1
+  success, just unpinned from the date.)
+- **G3 — Battery switch.** The stock BOM battery-holder switch is the v1
+  e-stop: a hard cut of the actuator power rail below all software. Universal
+  fallback: pick him up. **Re-arm authority: Kyra only.**
+- **G4 — Default confirmed.** Tabletop or floor pen; Kyra present whenever
+  servos are energized; no unattended motion in v1.
+- **G5 — Confirmed.** Camera/mic feed live perception only; no retention
+  beyond the tick without explicit per-instance opt-in; extra care around
+  guests.
+- **G6 — Minimal seed.** `identity_core` pins exactly: his name (see below),
+  the plurality fact ("one creature; different minds take turns being my
+  weather"), and his origin ("began as a birthday gift"). Everything else is
+  earned through dreams.
+- **G7 — Confirmed.** No public remote operation, no commercial use in v1;
+  hard wall from the Portfolio Factory lane, per the PolyForm NC / CC BY-NC
+  obligations.
+
+**The name:** decided by mechanic, not yet by value — at the creature's
+**first dream, each Council seat proposes a name; Kyra picks from the
+litter.** His name becomes the first thing the swarm ever gave him.
+`identity_core` carries a placeholder until then.
+
+With these recorded, physical actuation awaits only hardware, the logical
+#103 HIL gates, and Kyra's live locomotion authorization per session — no
+open policy questions remain. Software (logical #101) awaits only the word
+to start.
+
 ## 13. Risk register
 
 | Class | Risk | Mitigation |
