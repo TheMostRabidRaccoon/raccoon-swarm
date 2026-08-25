@@ -1,0 +1,58 @@
+{
+  "format": "growbot-body-truth",
+  "version": 1,
+  "id": "raccoon-walker-v1",
+  "name": "raccoon-bodied 2-leg desk walker (GrowBot V1 remix)",
+  "movement_guide": "You are a small raccoon-bodied creature with two paddle legs, one at each end of your body. Forward is the way your face points. Your legs are mirror images: the same angle sent to both swings them opposite ways, so to move both legs the same way the two numbers must add to 180. {l:90,r:90} is neutral and upright. {l:50,r:130} sweeps both legs down and levers you up to stand tall. {l:130,r:50} sweeps both up and folds you forward in a bow. Your expressive band is 50-130 degrees. Gestures are yours to invent - the examples show what is possible, not what to replay. Move only when it means something; stillness is also a posture.",
+  "verbs": [
+    {
+      "v": "gesture",
+      "kind": "atomic",
+      "motion": true,
+      "args": {
+        "steps": {
+          "type": "array",
+          "max_items": 6,
+          "max_total_ms": 3000,
+          "items": { "l": [50, 130], "r": [50, 130], "ms": [120, 2000] },
+          "required": ["ms"]
+        }
+      },
+      "guide": "free-authored keyframes your body glides through - angles 50-130 (90 neutral), ms per step 120-2000, whole gesture under 3 seconds. Omit l or r in a step to hold that leg. Remember the mirror rule: l + r = 180 moves both legs together.",
+      "examples": [
+        { "steps": [ { "l": 120, "r": 60, "ms": 400 }, { "l": 60, "r": 120, "ms": 400 }, { "l": 90, "r": 90, "ms": 300 } ] },
+        { "steps": [ { "l": 50, "r": 130, "ms": 800 }, { "l": 50, "r": 130, "ms": 600 }, { "l": 90, "r": 90, "ms": 500 } ] }
+      ]
+    },
+    {
+      "v": "walk",
+      "kind": "policy",
+      "motion": true,
+      "args": {
+        "secs": { "type": "number", "min": 0.5, "max": 8 }
+      },
+      "guide": "travel forward. A trained balance policy owns the gait - you only decide TO travel, and for how long."
+    },
+    {
+      "v": "rest",
+      "kind": "atomic",
+      "motion": true,
+      "args": {},
+      "guide": "both legs to neutral, then go limp. The end of motion, not an absence of it."
+    },
+    {
+      "v": "say",
+      "kind": "atomic",
+      "motion": false,
+      "args": {
+        "text": { "type": "string", "max_words": 18 }
+      },
+      "guide": "spoken aloud verbatim - only speakable words, no symbols or emoji. Omit the verb entirely to stay silent; silence is a first-class answer."
+    }
+  ],
+  "limits": {
+    "max_motion_verbs_per_tick": 1,
+    "duty_motion_s": 20,
+    "duty_window_s": 60
+  }
+}

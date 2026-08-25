@@ -52,6 +52,9 @@ swarm_memory.backup.*.json
 
 # Persistent swarm filestore — populated per-instance at runtime
 swarm/
+
+# GrowBot soul file — the robot's live memory, seeded from memory_seed.json
+growbot/harness/memory.json
 .env.bak
 .env.save
 .env.*
