@@ -15,9 +15,9 @@ implements it. That open seam is what this project plugs into.
 |---|---|---|
 | 0 | Study upstream: protocol, firmware, agent-harness, walk policy | done — see notes below |
 | 1 | Order parts ([SHOPPING_LIST.md](SHOPPING_LIST.md)), print/remix the body ([RACCOON_BODY.md](RACCOON_BODY.md)) | Kyra |
-| 2 | Software harness: body client + verb contract + tick loop, runnable in mock mode with no hardware | this directory |
+| 2 | Software harness: body client + verb contract + tick loop, runnable in mock mode with no hardware | merged (PR #100) |
 | 3 | First contact: flash stock firmware, pass the conformance test, wiggle the legs from our harness | needs hardware |
-| 4 | Swarm brain: Council at the dream tier, one seat on the waking loop ([SWARM_BRAIN.md](SWARM_BRAIN.md)) | designed |
+| 4 | Swarm brain: Council at the dream tier, one seat on the waking loop ([SWARM_BRAIN.md](SWARM_BRAIN.md), [EMBODIMENT_RFC.md](EMBODIMENT_RFC.md)) | Council-recommended baseline; PR #101–#104 sequenced |
 
 ## What's here
 
@@ -26,6 +26,7 @@ implements it. That open seam is what this project plugs into.
 | [SHOPPING_LIST.md](SHOPPING_LIST.md) | parts to order, with the gotchas that catch everyone |
 | [RACCOON_BODY.md](RACCOON_BODY.md) | constraints + ideas for remixing the printed body into a raccoon |
 | [SWARM_BRAIN.md](SWARM_BRAIN.md) | how the Council maps onto GrowBot's two-tier mind |
+| [EMBODIMENT_RFC.md](EMBODIMENT_RFC.md) | the Council-recommended engineering baseline for whole-swarm embodiment (session 144) |
 | [harness/](harness/) | our Python brain-side harness: body protocol client, verb validator, tick loop |
 
 ## Architecture in one picture
