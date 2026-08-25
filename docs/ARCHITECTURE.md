@@ -160,6 +160,16 @@ It normally rejects routine agreement, ordinary tool success, competence receipt
 
 This distinction matters because `next_pursuits` can drive autonomous daemon work: **interesting is not automatically obligatory**.
 
+### No silent decay — supersede, don't forget
+
+`swarm_memory.py` merges by *supersession*, never deletion. A re-resolved topic marks the older position `status: superseded` (kept for the record, skipped at injection); unexecuted pursuits carry forward with a `carried_sessions` counter rather than being wholesale-replaced; questions close only on an explicit `resolved_questions` signal or a conservative topic-containment match. The one sanctioned forgetting mechanism is the documented per-category cap in `save_swarm_memory` (oldest-first), and it is the *only* place memory is bounded. This is deliberate: undocumented, implicit forgetting is the "silent memory decay" the council banned.
+
+### Deferred: the three-axis memory graph (Session-134 design)
+
+The swarm has repeatedly designed an expansive graph memory — `(kind, integrity, time)` authority, a `TypedEdgeValidator` enforcing validity at construction, a `TemporalIndex` derived only from committed edges, graph-as-projection-never-authority. **That design is sound and preserved in the session artifacts. It is deliberately not built.**
+
+The reason is *sufficient before elaborate*: supersession-on-flat-JSON (above) already delivers supersede-don't-forget, and no retrieval or provenance query exists that the flat model provably cannot answer. A typed-edge graph with a temporal index would add machinery with no consumer and no forcing question. Re-proposing the graph requires **naming that concrete failing query first** — a claim that needs a receipt, not a recurring session opener. Deferred, not rejected: the day a real query needs edges the flat model can't express, the design is already written down.
+
 ## Environment = physics
 
 Hard boundaries remain code-enforced:
