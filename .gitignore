@@ -55,6 +55,8 @@ swarm/
 
 # GrowBot soul file — the robot's live memory, seeded from memory_seed.json
 growbot/harness/memory.json
+# GrowBot tick receipts — per-run journal output
+growbot/harness/journal.jsonl
 .env.bak
 .env.save
 .env.*

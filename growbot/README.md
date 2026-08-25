@@ -17,7 +17,7 @@ implements it. That open seam is what this project plugs into.
 | 1 | Order the correct parts ([SHOPPING_LIST.md](SHOPPING_LIST.md)); print/remix the body ([RACCOON_BODY.md](RACCOON_BODY.md)) | waiting on parts; Kyra owns the order |
 | 2 | Software harness: body client + verb contract + tick loop, runnable in mock mode with no hardware | merged in [PR #100](https://github.com/TheMostRabidRaccoon/raccoon-swarm/pull/100); mock path available now |
 | 3 | Council embodiment baseline: topology, bounded gestures, leases/capabilities, memory regions, dream verification, gates, and work split ([EMBODIMENT_RFC.md](EMBODIMENT_RFC.md)) | draft [PR #101](https://github.com/TheMostRabidRaccoon/raccoon-swarm/pull/101); **Council-recommended baseline, pending Kyra's decisions** |
-| 4A | Contracts + replay: schemas/adapters, leases, arbiter, journal, replay isolation (RFC logical #101) | ready to implement; **zero physical actuation** |
+| 4A | Contracts + replay: schemas/adapters, leases, arbiter, journal, replay isolation (RFC logical #101) | in progress — Claude packages landed (contracts, seat adapters, journal, `--seat` path); Codex packages (lease SM, arbiter, replay isolation) pending; **zero physical actuation** |
 | 4B | Council dream pipeline + validated memory commits (RFC logical #102; [SWARM_BRAIN.md](SWARM_BRAIN.md)) | specified; not implemented |
 | 4C | Fake-Pico, bounded `/act`, conformance, and first hardware-in-the-loop posture shift (RFC logical #103) | waiting on correct hardware, HIL approval, and G1–G7 |
 | 4D | `/ws` + trained walking policy (RFC logical #104) | gated stretch; only after earlier gates pass and Kyra keeps walking in scope |
