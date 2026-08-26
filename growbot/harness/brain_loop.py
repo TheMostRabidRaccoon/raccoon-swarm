@@ -20,18 +20,23 @@ import argparse
 import json
 import shutil
 import sys
+import time
 from pathlib import Path
 
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
     from growbot.harness import contracts, verbs as V
+    from growbot.harness.arbiter import Arbiter
     from growbot.harness.body_client import BodyActuator, BodyClient, ConsoleActuator
     from growbot.harness.journal import Journal
+    from growbot.harness.lease import LeaseManager
     from growbot.harness.seat_adapter import get_seat
 else:
     from . import contracts, verbs as V
+    from .arbiter import Arbiter
     from .body_client import BodyActuator, BodyClient, ConsoleActuator
     from .journal import Journal
+    from .lease import LeaseManager
     from .seat_adapter import get_seat
 
 HERE = Path(__file__).parent
@@ -194,25 +199,41 @@ SEAT_EVENTS = [
 
 
 def run_seats(specs, ticks, journal_path):
-    """Run the same tick sequence through each seat. One seat: console
-    actuation. Several seats: propose-only comparison — the seed of the
-    logical-#101 demonstration (distinct proposals, identical dispositions)."""
+    """Run the same tick sequence through each seat, through the REAL
+    admission path: per-seat lease (issued, then SPEECH_GESTURE granted with
+    the CLI operator's ack — console printing, not servos) and the arbiter.
+    One seat: console actuation. Several seats: propose-only comparison —
+    the logical-#101 demonstration with full lease/arbiter receipts."""
     body = V.load_body()
     mem = json.loads(SEED_PATH.read_text())
     seats = [get_seat(s) for s in specs]
-    actuate = ConsoleActuator() if len(seats) == 1 else None
     journal = Journal(journal_path)
+    single = len(seats) == 1
+    rigs = []
+    for seat in seats:
+        leases = LeaseManager()
+        grant = leases.issue(seat.name, ttl_ms=600_000)
+        leases.grant("SPEECH_GESTURE", grant.proof, ttl_ms=600_000,
+                     human_ack={"by": "cli-operator", "at": "session start"},
+                     prerequisites_met=True)
+        arbiter = Arbiter(leases, body, journal,
+                          executor=ConsoleActuator() if single else None)
+        rigs.append((seat, leases, grant, arbiter))
     for n in range(ticks):
         event = SEAT_EVENTS[n % len(SEAT_EVENTS)]
-        tick = build_tick_input(body, event, mem, tick_id=n + 1)
         print(f"\n— tick {n + 1} · {event['kind']}")
-        for seat in seats:
-            duty = V.DutyMeter(body["limits"].get("duty_motion_s", 20),
-                               body["limits"].get("duty_window_s", 60))
-            proposal, executed, rejections = seat_tick(
-                seat, tick, body, duty, journal, actuator=actuate)
+        for seat, leases, grant, arbiter in rigs:
+            live = leases.snapshot()
+            now_ms = int(time.monotonic() * 1000)
+            tick = build_tick_input(
+                body, event, mem, tick_id=n + 1,
+                lease_id=live.lease_id, epoch=live.epoch,
+                capabilities=live.capabilities, deadline_ms=now_ms + 5000)
+            proposal = seat.propose(tick)
+            d = arbiter.dispose(tick, proposal, seat=seat.name, proof=grant.proof)
             verbs = ", ".join(v.get("v", "?") for v in proposal.verbs) or "(silence)"
-            print(f"  [{seat.name}] proposed: {verbs} · admitted {len(executed)} · rejected {len(rejections)}")
+            print(f"  [{seat.name}] proposed: {verbs} · {d.state}"
+                  + (f" · rejected {len(d.rejected_reasons)}" if d.rejected_reasons else ""))
     print(f"\nreceipts: {journal_path} ({len(journal.entries())} entries)")
 
 
