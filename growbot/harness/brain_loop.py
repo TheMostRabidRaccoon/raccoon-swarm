@@ -20,15 +20,24 @@ import argparse
 import json
 import shutil
 import sys
+import time
 from pathlib import Path
 
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-    from growbot.harness import verbs as V
+    from growbot.harness import contracts, verbs as V
+    from growbot.harness.arbiter import Arbiter
     from growbot.harness.body_client import BodyActuator, BodyClient, ConsoleActuator
+    from growbot.harness.journal import Journal
+    from growbot.harness.lease import LeaseManager
+    from growbot.harness.seat_adapter import get_seat
 else:
-    from . import verbs as V
+    from . import contracts, verbs as V
+    from .arbiter import Arbiter
     from .body_client import BodyActuator, BodyClient, ConsoleActuator
+    from .journal import Journal
+    from .lease import LeaseManager
+    from .seat_adapter import get_seat
 
 HERE = Path(__file__).parent
 MEM_PATH = HERE / "memory.json"
@@ -139,6 +148,95 @@ class Brain:
         print(f"  identity now: {self.mem['identity']}")
 
 
+def build_tick_input(body, event, mem, tick_id, *, creature_id="raccoon-01",
+                     body_id="null-body", session_id="local",
+                     lease_id="lease_0", epoch=0,
+                     capabilities=("SPEECH_GESTURE",), deadline_ms=5000):
+    """Assemble one TickInput. Lease fields are a static stub until Codex's
+    lease state machine issues real leases — the contract shape is final,
+    the values are not."""
+    wm = mem["working_memory"]
+    return contracts.TickInput(
+        creature_id=creature_id, body_id=body_id, session_id=session_id,
+        tick_id=tick_id, lease_id=lease_id, epoch=epoch,
+        deadline_monotonic_ms=deadline_ms, capabilities=tuple(capabilities),
+        event=event,
+        body_state={"moving": False, "queued_ms": 0},
+        memory_slice={"identity": mem["identity"],
+                      "working": {"state": wm.get("state", "")},
+                      "diary_tail": [e["txt"] for e in mem["episodic_log"][-5:]]},
+        verb_menu_ref=f"body_truth_raccoon.json@{body['id']}",
+    )
+
+
+def seat_tick(seat, tick, body, duty, journal, actuator=None):
+    """One contracts-path tick: seat proposes, the verb contract disposes,
+    every step leaves a receipt. actuator=None means propose-only — the
+    logical-#101 default; nothing physical exists on this path."""
+    proposal = seat.propose(tick)
+    journal.record("proposed", seat=seat.name, tick_id=tick.tick_id,
+                   action_id=proposal.action_id,
+                   extra={"verbs": [v.get("v") for v in proposal.verbs]})
+    executed, rejections = V.filter_tick(list(proposal.verbs), body, duty)
+    for why in rejections:
+        journal.record("rejected", seat=seat.name, tick_id=tick.tick_id,
+                       action_id=proposal.action_id, reason=why)
+    for v in executed:
+        journal.record("admitted", seat=seat.name, tick_id=tick.tick_id,
+                       action_id=proposal.action_id, verb=v["v"])
+        if actuator is not None:
+            actuator.execute(v)
+            journal.record("executed", seat=seat.name, tick_id=tick.tick_id,
+                           action_id=proposal.action_id, verb=v["v"])
+    return proposal, executed, rejections
+
+
+SEAT_EVENTS = [
+    {"kind": "wake", "text": "you just woke up — take in this very first moment"},
+    {"kind": "person_speech", "text": "hello little one"},
+    {"kind": "quiet_beat", "text": "a quiet beat — what do you feel?"},
+]
+
+
+def run_seats(specs, ticks, journal_path):
+    """Run the same tick sequence through each seat, through the REAL
+    admission path: per-seat lease (issued, then SPEECH_GESTURE granted with
+    the CLI operator's ack — console printing, not servos) and the arbiter.
+    One seat: console actuation. Several seats: propose-only comparison —
+    the logical-#101 demonstration with full lease/arbiter receipts."""
+    body = V.load_body()
+    mem = json.loads(SEED_PATH.read_text())
+    seats = [get_seat(s) for s in specs]
+    journal = Journal(journal_path)
+    single = len(seats) == 1
+    rigs = []
+    for seat in seats:
+        leases = LeaseManager()
+        grant = leases.issue(seat.name, ttl_ms=600_000)
+        leases.grant("SPEECH_GESTURE", grant.proof, ttl_ms=600_000,
+                     human_ack={"by": "cli-operator", "at": "session start"},
+                     prerequisites_met=True)
+        arbiter = Arbiter(leases, body, journal,
+                          executor=ConsoleActuator() if single else None)
+        rigs.append((seat, leases, grant, arbiter))
+    for n in range(ticks):
+        event = SEAT_EVENTS[n % len(SEAT_EVENTS)]
+        print(f"\n— tick {n + 1} · {event['kind']}")
+        for seat, leases, grant, arbiter in rigs:
+            live = leases.snapshot()
+            now_ms = int(time.monotonic() * 1000)
+            tick = build_tick_input(
+                body, event, mem, tick_id=n + 1,
+                lease_id=live.lease_id, epoch=live.epoch,
+                capabilities=live.capabilities, deadline_ms=now_ms + 5000)
+            proposal = seat.propose(tick)
+            d = arbiter.dispose(tick, proposal, seat=seat.name, proof=grant.proof)
+            verbs = ", ".join(v.get("v", "?") for v in proposal.verbs) or "(silence)"
+            print(f"  [{seat.name}] proposed: {verbs} · {d.state}"
+                  + (f" · rejected {len(d.rejected_reasons)}" if d.rejected_reasons else ""))
+    print(f"\nreceipts: {journal_path} ({len(journal.entries())} entries)")
+
+
 def mock_model():
     state = {"n": 0}
 
@@ -159,10 +257,19 @@ def main(argv=None):
     p.add_argument("--mock", action="store_true", help="canned replies, no model call")
     p.add_argument("--ticks", type=int, default=4)
     p.add_argument("--body", metavar="URL", help="base URL of a real body (e.g. http://192.168.1.50); default: console actuator")
+    p.add_argument("--seat", action="append", metavar="SPEC",
+                   help="contracts path (logical #101): run a seat adapter, e.g. mock:precise. "
+                        "Repeat for a propose-only multi-seat comparison; receipts land in the journal")
+    p.add_argument("--journal", default=str(HERE / "journal.jsonl"),
+                   help="receipts file for the --seat path (JSONL, append-only)")
     args = p.parse_args(argv)
 
+    if args.seat:
+        run_seats(args.seat, args.ticks, args.journal)
+        return
+
     if not args.mock:
-        p.error("only --mock is wired up so far; the live model path arrives with the swarm brain (phase 4a)")
+        p.error("use --mock (canned contract demo) or --seat SPEC (contracts path); the live model path arrives with the swarm dispatch adapters")
 
     body = V.load_body()
     actuator = BodyActuator(BodyClient(args.body)) if args.body else ConsoleActuator()

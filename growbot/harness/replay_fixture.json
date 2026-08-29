@@ -1,0 +1,35 @@
+{
+  "format": "growbot-replay/0",
+  "ticks": [
+    {
+      "schema": "growbot.tick/0",
+      "creature_id": "raccoon-01",
+      "body_id": "null-body",
+      "session_id": "replay-001",
+      "tick_id": 1,
+      "lease_id": "recorded-lease",
+      "epoch": 1,
+      "deadline_monotonic_ms": 5000,
+      "capabilities": ["SPEECH_GESTURE"],
+      "event": {"kind": "wake", "text": "you just woke up"},
+      "body_state": {"moving": false, "queued_ms": 0},
+      "memory_slice": {"identity": "a small unnamed raccoon", "working": {"state": "new"}, "diary_tail": []},
+      "verb_menu_ref": "body_truth_raccoon.json@replay"
+    },
+    {
+      "schema": "growbot.tick/0",
+      "creature_id": "raccoon-01",
+      "body_id": "null-body",
+      "session_id": "replay-001",
+      "tick_id": 2,
+      "lease_id": "recorded-lease",
+      "epoch": 1,
+      "deadline_monotonic_ms": 5000,
+      "capabilities": ["SPEECH_GESTURE"],
+      "event": {"kind": "person_speech", "text": "hello little one"},
+      "body_state": {"moving": false, "queued_ms": 0},
+      "memory_slice": {"identity": "a small unnamed raccoon", "working": {"state": "curious"}, "diary_tail": []},
+      "verb_menu_ref": "body_truth_raccoon.json@replay"
+    }
+  ]
+}

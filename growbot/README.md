@@ -14,10 +14,19 @@ implements it. That open seam is what this project plugs into.
 | Phase | What | Status |
 |---|---|---|
 | 0 | Study upstream: protocol, firmware, agent-harness, walk policy | done — see notes below |
-| 1 | Order parts ([SHOPPING_LIST.md](SHOPPING_LIST.md)), print/remix the body ([RACCOON_BODY.md](RACCOON_BODY.md)) | Kyra |
-| 2 | Software harness: body client + verb contract + tick loop, runnable in mock mode with no hardware | this directory |
-| 3 | First contact: flash stock firmware, pass the conformance test, wiggle the legs from our harness | needs hardware |
-| 4 | Swarm brain: Council at the dream tier, one seat on the waking loop ([SWARM_BRAIN.md](SWARM_BRAIN.md)) | designed |
+| 1 | Order the correct parts ([SHOPPING_LIST.md](SHOPPING_LIST.md)); print/remix the body ([RACCOON_BODY.md](RACCOON_BODY.md)) | waiting on parts; Kyra owns the order |
+| 2 | Software harness: body client + verb contract + tick loop, runnable in mock mode with no hardware | merged in [PR #100](https://github.com/TheMostRabidRaccoon/raccoon-swarm/pull/100); mock path available now |
+| 3 | Council embodiment baseline: topology, bounded gestures, leases/capabilities, memory regions, dream verification, gates, and work split ([EMBODIMENT_RFC.md](EMBODIMENT_RFC.md)) | draft [PR #101](https://github.com/TheMostRabidRaccoon/raccoon-swarm/pull/101); G1–G7 decided and recorded; implementation/integration/verification remain |
+| 4A | Contracts + replay: schemas/adapters, leases, arbiter, journal, replay isolation (RFC logical #101) | implemented in draft PR #101; full repository suite green; **zero physical actuation** |
+| 4B | Council dream pipeline + validated memory commits (RFC logical #102; [SWARM_BRAIN.md](SWARM_BRAIN.md)) | specified; not implemented |
+| 4C | Fake-Pico, bounded `/act`, conformance, and first hardware-in-the-loop posture shift (RFC logical #103) | waiting on correct hardware, HIL approval, and G1–G7 |
+| 4D | `/ws` + trained walking policy (RFC logical #104) | gated stretch; only after earlier gates pass and Kyra keeps walking in scope |
+| 5 | Multiple bodies / one body per model | deliberately deferred until one body is trustworthy |
+
+> **Numbering note:** PR #101 is the actual draft RFC. Its logical #101–#104
+> labels describe dependency order; they do not reserve future GitHub PR numbers.
+> Parts and the Drive credential are tracked beside G1–G7, not counted as extra
+> operational gates.
 
 ## What's here
 
@@ -26,7 +35,8 @@ implements it. That open seam is what this project plugs into.
 | [SHOPPING_LIST.md](SHOPPING_LIST.md) | parts to order, with the gotchas that catch everyone |
 | [RACCOON_BODY.md](RACCOON_BODY.md) | constraints + ideas for remixing the printed body into a raccoon |
 | [SWARM_BRAIN.md](SWARM_BRAIN.md) | how the Council maps onto GrowBot's two-tier mind |
-| [harness/](harness/) | our Python brain-side harness: body protocol client, verb validator, tick loop |
+| [EMBODIMENT_RFC.md](EMBODIMENT_RFC.md) | the Council-recommended engineering baseline for whole-swarm embodiment (session 144) |
+| [harness/](harness/) | brain-side harness: contracts, seats, leases, arbiter, journal, isolated replay, verb validator, and tick loop |
 
 ## Architecture in one picture
 
