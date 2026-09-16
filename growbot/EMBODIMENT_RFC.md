@@ -342,6 +342,13 @@ All seven gates answered; recorded here as the durable decision record.
 - **G3 — Battery switch.** The stock BOM battery-holder switch is the v1
   e-stop: a hard cut of the actuator power rail below all software. Universal
   fallback: pick him up. **Re-arm authority: Kyra only.**
+  *Superseded note (2026-08-29):* the live build guide (see SHOPPING_LIST.md)
+  moved to a **no-switch bare-lead holder** — switched holders don't fit the
+  body slot — so the decided mechanism no longer exists on the ordered
+  hardware. **G3 needs a re-answer** before HIL: an inline switch spliced on
+  the battery lead, a battery pull, or pick-him-up as the interim hard stop.
+  The decision's substance (hard actuator-power cut below software, Kyra-only
+  re-arm) stands; only the mechanism is open again.
 - **G4 — Default confirmed.** Tabletop or floor pen; Kyra present whenever
   servos are energized; no unattended motion in v1.
 - **G5 — Confirmed.** Camera/mic feed live perception only; no retention

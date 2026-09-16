@@ -23,6 +23,7 @@ SCHEMA_TICK = "growbot.tick/0"
 SCHEMA_ACTION = "growbot.action/0"
 SCHEMA_HANDOFF = "growbot.handoff/0"
 SCHEMA_DREAM = "growbot.dream/0"
+SCHEMA_DREAM_PASS = "growbot.dream_pass/0"
 SCHEMA_DREAM_COMMIT = "growbot.dream_commit/0"
 
 # Lease/capability vocabulary (RFC §3). The transition rules live in Codex's
@@ -243,6 +244,39 @@ def parse_dream_input(obj):
         working_memory=_require(obj, "working_memory", dict, "dream"),
         staged_proposals=tuple(proposals),
         reason=_require(obj, "reason", str, "dream"),
+    )
+
+
+@dataclass(frozen=True)
+class DreamPass:
+    """One seat's blind first pass over a frozen dream packet.
+
+    Concerns are the deterministic hook for dissent discipline: every seat
+    that files a non-empty concern must see it explicitly disposed in the
+    final commit (accepted / parked-with-clock / rejected-with-reason).
+    """
+    seat: str
+    evidence_hash: str
+    proposal: dict
+    concerns: tuple
+    schema: str = SCHEMA_DREAM_PASS
+
+    def to_dict(self):
+        d = self.__dict__.copy()
+        d["concerns"] = list(self.concerns)
+        return d
+
+
+def parse_dream_pass(obj):
+    _require_schema(obj, SCHEMA_DREAM_PASS)
+    concerns = obj.get("concerns", [])
+    if not isinstance(concerns, list) or any(not isinstance(c, str) or not c.strip() for c in concerns):
+        raise ContractError("dream_pass.concerns must be a list of non-empty strings")
+    return DreamPass(
+        seat=_require(obj, "seat", str, "dream_pass"),
+        evidence_hash=_require(obj, "evidence_hash", str, "dream_pass"),
+        proposal=_require(obj, "proposal", dict, "dream_pass"),
+        concerns=tuple(concerns),
     )
 
 
